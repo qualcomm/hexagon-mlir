@@ -1,47 +1,38 @@
-**After repository creation:**
-- [ ] Update this `README.md`. Update the Project Name, description, and all sections. Remove this checklist.
-- [ ] If required, update `LICENSE.txt` and the License section with your project's approved license
-- [ ] Search this repo for "REPLACE-ME" and update all instances accordingly
-- [ ] Update `CONTRIBUTING.md` as needed
-- [ ] Review the workflows in `.github/workflows`, updating as needed. See https://docs.github.com/en/actions for information on what these files do and how they work.
-- [ ] Review and update the suggested Issue and PR templates as needed in `.github/ISSUE_TEMPLATE` and `.github/PULL_REQUEST_TEMPLATE`
+# Hexagon-MLIR
 
-# Project Name
+Hexagon-MLIR is a compiler toolchain for compiling and executing AI kernels and models on Qualcomm Hexagon Neural Processing Units (NPUs).
+It provides support for compiling `Triton` and `PyTorch` graphs.
 
-*\<update with your project name and a short description\>*
+## Table of Contents
 
-Project that does ... implemented in ... runs on Qualcomm® *\<processor\>*
+- [Features](#features)
+- [Documentation](#documentation)
+- [License](#license)
+- [Support](#support)
 
-## Branches
+## Features
+- **Triton Kernel Compilation & Execution**: Compile Triton kernels and execute on Hexagon NPU targets
+- **PyTorch Model Compilation & Execution**: Compile PyTorch models and execute on Hexagon NPU targets
+- **Performance Optimization**: Leverage Hexagon-specific features for maximum performance, including:
+  - **Multi-threading**: Hexagon-optimized parallel execution of operations for improved performance
+  - **Vector Processing**: Optimized code generation targeting Hexagon Vector eXtensions (HVX) units
+  - **TCM Utilization**: Leverage Tightly Coupled Memory (TCM) for reduced memory latency
+  - **DMA Optimization**: Efficient DMA transfers between DDR and TCM memory spaces
+  - **Matrix Processing (experimental)**: Leverage Qualcomm's Hexagon Kernel Library for matrix multiplication
+- **IR Inspection**: Inspect and analyze IR lowering passes, helping you understand how your code is optimized
 
-**main**: Primary development branch. Contributors should develop submissions based on this branch, and submit pull requests to this branch.
-
-## Requirements
-
-List requirements to run the project, how to install them, instructions to use docker container, etc...
-
-## Installation Instructions
-
-How to install the software itself.
-
-## Usage
-
-Describe how to use the project.
-
-## Development
-
-How to develop new features/fixes for the software. Maybe different than "usage". Also provide details on how to contribute via a [CONTRIBUTING.md file](CONTRIBUTING.md).
-
-## Getting in Contact
-
-How to contact maintainers. E.g. GitHub Issues, GitHub Discussions could be indicated for many cases. However a mail list or list of Maintainer e-mails could be shared for other types of discussions. E.g.
-
-* [Report an Issue on GitHub](../../issues)
-* [Open a Discussion on GitHub](../../discussions)
-* [E-mail us](mailto:REPLACE-ME@qti.qualcomm.com) for general questions
+## Documentation
+- 📖 [User Guide](docs/user-guide.md) - For instructions on how to download, setup our compiler and start running Triton kernels or PyTorch models on Hexagon NPUs
+- 🎓 [Tutorials](docs/tutorials/README.md) - A set of tutorials on Triton kernels and PyTorch models
+- ❓ [FAQ](docs/faq.md) - Frequently asked questions
+- 🏗️ [Developer Guide](docs/developer-guide.md) - Insights on how to develop, debug and profile using our compiler toolchain for Triton kernels and PyTorch models
 
 ## License
 
-*\<update with your project name and license\>*
+Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 
-*\<REPLACE-ME\>* is licensed under the [BSD-3-clause License](https://spdx.org/licenses/BSD-3-Clause.html). See [LICENSE.txt](LICENSE.txt) for the full license text.
+---
+
+<div align="center">
+  <sub>Built with ❤️ by the  Hexagon-MLIR Team</sub>
+</div>
