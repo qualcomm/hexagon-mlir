@@ -1,0 +1,8 @@
+// Test to check if -emit-obj options works with linalg-hexagon-translate
+
+// RUN: linalg-hexagon-translate -emit=obj -no-hexagon-runtime %s
+
+llvm.func @constant_42() -> i32 {
+  %c42 = llvm.mlir.constant(42 : i32) : i32
+  llvm.return %c42 : i32
+}
