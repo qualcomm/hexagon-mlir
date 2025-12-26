@@ -1,0 +1,37 @@
+//===-- HexagonMemAttrs.cpp - HexagonMem dialect attributes ---------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+//
+// This file implements the HexagonMem dialect attributes.
+//===----------------------------------------------------------------------===//
+
+#include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/DialectImplementation.h"
+#include "llvm/ADT/TypeSwitch.h"
+
+using namespace mlir;
+using namespace mlir::hexagonmem;
+
+/// Dialect creation, the instance will be owned by the context. This is the
+/// point of registration of custom attributes for the dialect.
+void HexagonMemDialect::registerAttributes() {
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "hexagon/Dialect/HexagonMem/IR/HexagonMemAttrs.cpp.inc"
+      >();
+}
+
+//===----------------------------------------------------------------------===//
+// ODS-Generated Declarations
+//===----------------------------------------------------------------------===//
+
+#include "hexagon/Dialect/HexagonMem/IR/HexagonMemEnums.cpp.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "hexagon/Dialect/HexagonMem/IR/HexagonMemAttrs.cpp.inc"
