@@ -47,14 +47,6 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive --depth 1
 
-      - name: Checkout models repo
-        uses: actions/checkout@v4
-        with:
-          repository: ai-tools/models
-          ref: ${{ env.BRANCH }}
-          token: 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
-          path: models
-
       - name: Add common tools to PATH
         run: |
           echo "/prj/qct/llvm/devops/build_tools/mlir/venv/triton-ubuntu22/bin" >> $GITHUB_PATH
