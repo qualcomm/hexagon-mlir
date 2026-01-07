@@ -46,8 +46,6 @@ jobs:
           set -ex
           git submodule sync --recursive
           git submodule update --init --recursive --depth 1
-          ls -al triton
-          ls -al triton_shared
 
       - name: Checkout models repo
         uses: actions/checkout@v4
@@ -95,7 +93,6 @@ jobs:
         run: |
           set -ex
           export PATH="/pkg/qct/software/cmake/3.23.1/bin:/pkg/qct/software/llvm/build_tools/venv/buildbot-2.7.0/Ubuntu-16.04-1/bin:/pkg/qct/software/python/2.7.12/bin/:/usr/bin:/bin:/pkg/qct/software/hexagon/util/bin:/pkg/qct/software/gnu/git/1.8.3/bin"
-          
           source "$TRITON_VENV/bin/activate"
           buildbot/build_triton.sh "${LLVM_INSTALL_DIR:-}"
           
