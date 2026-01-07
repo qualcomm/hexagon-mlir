@@ -1,0 +1,121 @@
+
+name: checkin upstream mlir CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: false
+        default: 'main'
+      downstream_llvm_build:
+        description: 'Build LLVM downstream?'
+        required: false
+        default: 'false'
+
+
+jobs:
+  pipeline:
+    runs-on: self-hosted
+    env:
+      TRITON_VENV: ${{ github.workspace }}/.venv
+      PIP_CACHE_DIR: /prj/qct/llvm/devops/aether/hexbuild/.cache
+      CCACHE_DIR: /prj/qct/llvm/target/aitools/mlir/.cache/mlir_ccache_${{ github.job }}
+      BRANCH: ${{ github.event.inputs.branch || 'main' }}
+      MLIR_REPO_PATH: ${{ github.workspace }}/hexagon-mlir
+      
+
+    steps:
+      - name: Sanity check
+        run: |
+          whoami
+      
+      - name: Checkout main repo (hexagon-mlir) to path
+        uses: actions/checkout@v4
+        with:
+          path: hexagon-mlir
+          clean: true
+          submodules: recursive
+      
+      - name: Init & update submodules
+        working-directory: ${{ github.workspace }}/hexagon-mlir
+        run: |
+          set -ex
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+          ls -al triton
+          ls -al triton_shared
+
+      - name: Checkout models repo
+        uses: actions/checkout@v4
+        with:
+          repository: ai-tools/models
+          ref: ${{ env.BRANCH }}
+          token: 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
+          path: models
+
+      - name: Add common tools to PATH
+        run: |
+          echo "/prj/qct/llvm/devops/build_tools/mlir/venv/triton-ubuntu22/bin" >> $GITHUB_PATH
+          echo "${{ github.workspace }}" >> $GITHUB_PATH
+
+      - name: Build LLVM (upstream)
+        id: llvm
+        working-directory: ${{ env.MLIR_REPO_PATH }}/buildbot
+        run: |
+          set -ex
+          export PATH="/pkg/qct/software/python/3.8.3/bin:/pkg/qct/software/cmake/3.23.1/bin:${PATH}"
+          OUTPUT=$(./build_llvm.sh --internal --upstream -s "${{ github.workspace }}/src/llvm-project")
+          echo "$OUTPUT"
+          LLVM_INSTALL_DIR=$(echo "$OUTPUT" | grep 'LLVM_INSTALL_DIR=' | tail -n1 | cut -d '=' -f2)
+          LLVM_BUILD_STATUS=$(echo "$OUTPUT" | grep 'LLVM_BUILD_STATUS=' | tail -n1 | cut -d '=' -f2)
+          echo "LLVM_INSTALL_DIR=$LLVM_INSTALL_DIR" >> $GITHUB_ENV
+          echo "LLVM_BUILD_STATUS=$LLVM_BUILD_STATUS" >> $GITHUB_ENV
+
+      - name: Create venv and install requirements
+        working-directory: ${{ env.MLIR_REPO_PATH }}/buildbot
+        run: |
+          set -ex
+          rm -rf $TRITON_VENV
+          /bin/python3.11 -m venv "$TRITON_VENV"
+          source "$TRITON_VENV/bin/activate"
+          pip install --upgrade pip
+          PIP_CACHE_DIR="$PIP_CACHE_DIR" pip install -r requirements.txt
+
+      - name: Build Triton
+        working-directory: ${{ env.MLIR_REPO_PATH }}
+        env:
+          TRITON_VENV: ${{ env.TRITON_VENV }}
+          CCACHE_DIR: ${{ env.CCACHE_DIR }}
+          LLVM_INSTALL_DIR: ${{ env.LLVM_INSTALL_DIR }}
+          LD_LIBRARY_PATH: /prj/qct/llvm/devops/build_tools/mlir/Python-3.11.4/lib:/.singularity.d/libs
+        run: |
+          set -ex
+          export PATH="/pkg/qct/software/cmake/3.23.1/bin:/pkg/qct/software/llvm/build_tools/venv/buildbot-2.7.0/Ubuntu-16.04-1/bin:/pkg/qct/software/python/2.7.12/bin/:/usr/bin:/bin:/pkg/qct/software/hexagon/util/bin:/pkg/qct/software/gnu/git/1.8.3/bin"
+          
+          source "$TRITON_VENV/bin/activate"
+          buildbot/build_triton.sh "${LLVM_INSTALL_DIR:-}"
+          
+
+      - name: lit test - triton
+        working-directory: ${{ env.MLIR_REPO_PATH }}
+        env:
+          TRITON_VENV: ${{ env.TRITON_VENV }} 
+          LD_LIBRARY_PATH: /prj/qct/llvm/devops/build_tools/mlir/Python-3.11.4/lib
+        run: |
+          set -ex
+          source "$TRITON_VENV/bin/activate"
+          source buildbot/e2e_env.sh
+          cd triton/build/cmake.linux-x86_64-cpython-3.11
+          lit test
+
+      - name: Clean up / Release device (always)
+        if: always()
+        working-directory: ${{ env.MLIR_REPO_PATH }}
+        run: |
+          set -ex
+          echo done
+
