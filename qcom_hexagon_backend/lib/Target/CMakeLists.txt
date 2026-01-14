@@ -1,2 +1,0 @@
-add_subdirectory(HEX_LLVMIR)
-add_subdirectory(Linalg_MLLVMIR)

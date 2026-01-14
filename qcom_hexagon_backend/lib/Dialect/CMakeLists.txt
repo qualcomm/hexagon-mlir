@@ -1,6 +1,0 @@
-add_subdirectory(Crouton)
-add_subdirectory(HexagonMem)
-add_subdirectory(HexagonTPtr)
-add_subdirectory(HexKL)
-add_subdirectory(TmTensor)
-add_subdirectory(TTX)
