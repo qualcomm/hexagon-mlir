@@ -49,4 +49,30 @@ jobs:
           ./ci/setup_submodules.sh
         shell: bash
       
+      # Read expected LLVM hash from the triton submodule
+      - name: Get Expected LLVM Hash
+        id: llvmhash
+        run: |
+          HASH=$(cat triton/cmake/llvm-hash.txt | tr -d '[:space:]')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+        
+      # Cache LLVM build based on the expected hash
+      - name: Cache LLVM Build + Install 
+        uses: actions/cache@v4
+        with: 
+          path: |
+            ~/llvm-triton/build
+            ~/llvm-triton/llvm-project
+          key: llvm-${{ runner.os }}-${{ steps.llvmhash.outputs.hash }}
+        
+      # Run setup script for LLVM if cache miss
+      - name: Setup LLVM for Triton if needed
+        run: |
+          chmod +x ./ci/setup_llvm.sh
+          ./ci/setup_llvm.sh
+          export LLVM_PROJECT_BUILD_DIR="$HOME/llvm-triton/build"
+          echo "LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR" >> $GITHUB_ENV
+        shell: bash
+      
+
       

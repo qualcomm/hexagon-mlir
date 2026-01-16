@@ -14,7 +14,6 @@ SDK_URL="https://softwarecenter.qualcomm.com/api/download/software/sdks/Hexagon_
 
 # Install directory
 INSTALL_DIR="$HOME/hexagon-mlir-artifacts"
-#INSTALL_DIR="/local/mnt/workspace/hex-mlir-oss/hexagon-mlir-artifacts" DEBUG 
 SDK_DIR="${INSTALL_DIR}/Hexagon_SDK/${SDK_VERSION}"
 
 mkdir -p "${INSTALL_DIR}"
