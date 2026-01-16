@@ -15,6 +15,7 @@ jobs:
           path: |
             ~/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2
             ~/hexagon-mlir-artifacts/Tools
+          key: hexagon-mlir-artifacts-${{ runner.os }}-v1
 
       - name: Install Tools and Dependencies if needed
         run: |
