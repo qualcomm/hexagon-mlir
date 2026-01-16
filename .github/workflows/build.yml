@@ -36,13 +36,6 @@ jobs:
           echo "HEXKL_ROOT=$HEXKL_ROOT" >> $GITHUB_ENV
         shell: bash
 
-      - name: Verify Environment Variables
-        run: |
-          echo "Using HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT"
-          echo "Using HEXAGON_TOOLS=$HEXAGON_TOOLS"
-          echo "Using HEXKL_ROOT=$HEXKL_ROOT"
-        shell: bash
-      
       - name: Setup Submodules
         run: |
           chmod +x ./ci/setup_submodules.sh
@@ -78,6 +71,15 @@ jobs:
           export LLVM_PROJECT_BUILD_DIR="$HOME/llvm-triton/build"
           echo "LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR" >> $GITHUB_ENV
         shell: bash
+      
+      - name: Verify Environment Variables
+        run: |
+          echo "Using HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT"
+          echo "Using HEXAGON_TOOLS=$HEXAGON_TOOLS"
+          echo "Using HEXKL_ROOT=$HEXKL_ROOT"
+          echo "Using LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR"
+        shell: bash
+      
       
 
       
