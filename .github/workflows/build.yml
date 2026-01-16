@@ -42,3 +42,11 @@ jobs:
           echo "Using HEXAGON_TOOLS=$HEXAGON_TOOLS"
           echo "Using HEXKL_ROOT=$HEXKL_ROOT"
         shell: bash
+      
+      - name: Setup Submodules
+        run: |
+          chmod +x ./ci/setup_submodules.sh
+          ./ci/setup_submodules.sh
+        shell: bash
+      
+      

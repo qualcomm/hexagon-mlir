@@ -76,3 +76,6 @@ fi
 export HEXKL_ROOT="${HEXKL_ADDON_DIR}"
 
 echo "HEXKL_ROOT=${HEXKL_ROOT}"
+
+echo "Hexagon SDK, Tools, and HexKL have been set up successfully."
+exit 0
