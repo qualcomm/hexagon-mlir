@@ -26,7 +26,8 @@ jobs:
           else
             echo "Hexagon SDK and Tools found in cache. Skipping installation."
           fi
-
+          export HEXAGON_SDK_ROOT="$HOME/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2"
+          export HEXAGON_TOOLS="$HOME/hexagon-mlir-artifacts/Tools"
           # Persist environment variables for future steps
           echo "HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" >> $GITHUB_ENV
           echo "HEXAGON_TOOLS=$HEXAGON_TOOLS" >> $GITHUB_ENV
