@@ -1,3 +1,9 @@
+# 
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
 #!/usr/bin/env bash 
 set -euo pipefail
 
@@ -26,3 +32,16 @@ echo "Setting HEXAGON_SDK_ROOT to ${HEXAGON_SDK_ROOT}"
 # Source the environment setup script
 source "${HEXAGON_SDK_ROOT}/setup_sdk_env.source"
 
+# Hexagon Toolchain 
+TOOLCHAIN_VERSION="19.0.02"
+TOOLCHAIN_TAR="Hexagon_open_access.Core.${TOOLCHAIN_VERSION}.Linux-Any.tar.gz"
+TOOLCHAIN_URL="https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_open_access/Linux/Debian/${TOOLCHAIN_VERSION}/${TOOLCHAIN_TAR}"
+
+echo "Downloading Hexagon Toolchain version ${TOOLCHAIN_VERSION}..."
+wget -q --show-progress "${TOOLCHAIN_URL}" -O "${INSTALL_DIR}/${TOOLCHAIN_TAR}"
+
+echo "Extracting Hexagon Toolchain..."
+tar -xzf "${INSTALL_DIR}/${TOOLCHAIN_TAR}" -C "${INSTALL_DIR}"
+
+export HEXAGON_TOOLS="${INSTALL_DIR}/Tools"
+echo "Setting HEXAGON_TOOLS to ${HEXAGON_TOOLS}"

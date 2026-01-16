@@ -9,16 +9,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Tools and Dependencies
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2
+            ~/hexagon-mlir-artifacts/Tools
+
+      - name: Install Tools and Dependencies if needed
         run: |
-          chmod +x ./ci/setup_tools.sh
-          ./ci/setup_tools.sh
+          if [ ! -d "$HOME/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2" ] || [ ! -d "$HOME/hexagon-mlir-artifacts/Tools" ]; then
+            echo "Hexagon SDK or Tools not found in cache. Installing..."
+            chmod +x ./ci/setup_tools.sh
+            ./ci/setup_tools.sh
+          else
+            echo "Hexagon SDK and Tools found in cache. Skipping installation."
+          fi
 
           # Persist environment variables for future steps
           echo "HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" >> $GITHUB_ENV
+          echo "HEXAGON_TOOLS=$HEXAGON_TOOLS" >> $GITHUB_ENV
         shell: bash
 
-      - name: Verify HEXAGON_SDK_ROOT
+      - name: Verify Environment Variables
         run: |
           echo "Using HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT"
+          echo "Using HEXAGON_TOOLS=$HEXAGON_TOOLS"
         shell: bash
