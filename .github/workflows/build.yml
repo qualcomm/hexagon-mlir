@@ -55,6 +55,11 @@ jobs:
         run: |
           HASH=$(cat triton/cmake/llvm-hash.txt | tr -d '[:space:]')
           echo "hash=$HASH" >> $GITHUB_OUTPUT
+      
+      # Install ccache to speed up LLVM builds
+      - name: Install ccache
+        run: |
+          sudo apt-get update && sudo apt-get install -y ccache
         
       # Cache LLVM build based on the expected hash
       - name: Cache LLVM Build + Install 
