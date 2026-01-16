@@ -1,0 +1,24 @@
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tools and Dependencies
+        run: |
+          chmod +x ./ci/setup_tools.sh
+          ./ci/setup_tools.sh
+
+          # Persist environment variables for future steps
+          echo "HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Verify HEXAGON_SDK_ROOT
+        run: |
+          echo "Using HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT"
+        shell: bash
