@@ -14,6 +14,7 @@ SDK_URL="https://softwarecenter.qualcomm.com/api/download/software/sdks/Hexagon_
 
 # Install directory
 INSTALL_DIR="$HOME/hexagon-mlir-artifacts"
+#INSTALL_DIR="/local/mnt/workspace/hex-mlir-oss/hexagon-mlir-artifacts" DEBUG 
 SDK_DIR="${INSTALL_DIR}/Hexagon_SDK/${SDK_VERSION}"
 
 mkdir -p "${INSTALL_DIR}"
@@ -45,3 +46,33 @@ tar -xzf "${INSTALL_DIR}/${TOOLCHAIN_TAR}" -C "${INSTALL_DIR}"
 
 export HEXAGON_TOOLS="${INSTALL_DIR}/Tools"
 echo "Setting HEXAGON_TOOLS to ${HEXAGON_TOOLS}"
+
+# HexKL 
+KL_VERSION="1.0.0"
+KL_OUTER_ZIP="Hexagon_KL.Core.${KL_VERSION}.Linux-Any.zip"
+KL_URL="https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/${KL_VERSION}/${KL_OUTER_ZIP}"
+
+KL_BASE="${INSTALL_DIR}/Hexagon_KL"
+KL_DIR="${KL_BASE}/${KL_VERSION}"
+
+mkdir -p "${KL_BASE}"
+echo "Downloading Hexagon KL version ${KL_VERSION}..."
+
+wget -q --show-progress "${KL_URL}" -O "${KL_BASE}/${KL_OUTER_ZIP}"
+
+INNER_ZIP="hexkl-1.0.0-beta1-6.4.0.0.zip"
+# Make sure inner zip exists inside the outer zip
+unzip -q -j "${KL_BASE}/${KL_OUTER_ZIP}" "${INNER_ZIP}" -d "${KL_BASE}"
+echo "Extracting Hexagon KL..."
+unzip -q "${KL_BASE}/${INNER_ZIP}" -d "${KL_DIR}"
+
+# Locate hexkl_addon directory 
+HEXKL_ADDON_DIR=$(find "${KL_DIR}" -type d -name "hexkl_addon" | head -n 1)
+if [ -z "${HEXKL_ADDON_DIR}" ]; then
+    echo "Error: hexkl_addon directory not found in ${KL_DIR}"
+    exit 1
+fi
+
+export HEXKL_ROOT="${HEXKL_ADDON_DIR}"
+
+echo "HEXKL_ROOT=${HEXKL_ROOT}"
