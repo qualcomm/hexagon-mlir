@@ -1,0 +1,52 @@
+name: Build
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2
+            ~/hexagon-mlir-artifacts/Tools
+            ~/hexagon-mlir-artifacts/Hexagon_KL/1.0.0/hexkl_addon
+          key: hexagon-mlir-artifacts-${{ runner.os }}-v1
+
+      - name: Install Tools and Dependencies if needed
+        run: |
+          if [ ! -d "$HOME/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2" ] || [ ! -d "$HOME/hexagon-mlir-artifacts/Tools" ]; then
+            echo "Hexagon SDK or Tools not found in cache. Installing..."
+            chmod +x ./ci/setup_tools.sh
+            ./ci/setup_tools.sh
+          else
+            echo "Hexagon SDK and Tools found in cache. Skipping installation."
+          fi
+          export HEXAGON_SDK_ROOT="$HOME/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2"
+          export HEXAGON_TOOLS="$HOME/hexagon-mlir-artifacts/Tools"
+          export HEXKL_ROOT="$HOME/hexagon-mlir-artifacts/Hexagon_KL/1.0.0/hexkl_addon"
+          # Persist environment variables for future steps
+          echo "HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" >> $GITHUB_ENV
+          echo "HEXAGON_TOOLS=$HEXAGON_TOOLS" >> $GITHUB_ENV
+          echo "HEXKL_ROOT=$HEXKL_ROOT" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Verify Environment Variables
+        run: |
+          echo "Using HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT"
+          echo "Using HEXAGON_TOOLS=$HEXAGON_TOOLS"
+          echo "Using HEXKL_ROOT=$HEXKL_ROOT"
+        shell: bash
+      
+      - name: Setup Submodules
+        run: |
+          chmod +x ./ci/setup_submodules.sh
+          ./ci/setup_submodules.sh
+        shell: bash
+      
+      
