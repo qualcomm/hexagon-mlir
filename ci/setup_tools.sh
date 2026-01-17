@@ -13,7 +13,7 @@ SDK_ZIP="Hexagon_SDK_lnx.zip"
 SDK_URL="https://softwarecenter.qualcomm.com/api/download/software/sdks/Hexagon_SDK/Linux/Debian/${SDK_VERSION}/${SDK_ZIP}"
 
 # Install directory
-INSTALL_DIR="$HOME/hexagon-mlir-artifacts"
+INSTALL_DIR="/tmp/hexagon-mlir-artifacts"
 SDK_DIR="${INSTALL_DIR}/Hexagon_SDK/${SDK_VERSION}"
 
 mkdir -p "${INSTALL_DIR}"
