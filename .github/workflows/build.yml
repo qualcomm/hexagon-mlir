@@ -1,39 +1,65 @@
 name: Build
 
-# on:
-#   pull_request_target:
-#     branches: [  ]
-#   push:
-#     branches: [  ]
+on:
+  pull_request_target:
+    branches: [  ]
+  push:
+    branches: [  ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python environment
+        run: |
+          # Install Miniconda
+          sudo apt-get update
+          sudo apt-get install -y wget
+
+          wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p /local/mnt/workspace/MLIR_build_artifacts/miniconda
+          eval "$(/local/mnt/workspace/MLIR_build_artifacts/miniconda/bin/conda shell.bash hook)"
+
+          # Create or reuse environment
+          conda create -y -n mlir-env python=3.10
+          conda activate mlir-env
+
+          # Install glibc-compatible libstdcxx
+          conda install -y -c conda-forge libstdcxx-ng=12
+
+          # Install Python dependencies
+          pip install -r ci/requirements.txt
+
+          # Persist environment path for later steps
+          echo "CONDA_ENV=/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env" >> $GITHUB_ENV
+        shell: bash
+
 
       - name: Cache Dependencies
         uses: actions/cache@v4
         with:
           path: |
-            ~/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2
-            ~/hexagon-mlir-artifacts/Tools
-            ~/hexagon-mlir-artifacts/Hexagon_KL/1.0.0/hexkl_addon
+            /local/mnt/workspace/MLIR_build_artifacts/Hexagon_SDK/6.4.0.2
+            /local/mnt/workspace/MLIR_build_artifacts/Tools
+            /local/mnt/workspace/MLIR_build_artifacts/Hexagon_KL/1.0.0/hexkl_addon
           key: hexagon-mlir-artifacts-${{ runner.os }}-v1
 
       - name: Install Tools and Dependencies if needed
         run: |
-          if [ ! -d "/tmp/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2" ] || [ ! -d "/tmp/hexagon-mlir-artifacts/Tools" ]; then
+          if [ ! -d "/local/mnt/workspace/MLIR_build_artifacts/Hexagon_SDK/6.4.0.2" ] || [ ! -d "/local/mnt/workspace/MLIR_build_artifacts/Tools" ]; then
             echo "Hexagon SDK or Tools not found in cache. Installing..."
             chmod +x ./ci/setup_tools.sh
             ./ci/setup_tools.sh
           else
             echo "Hexagon SDK and Tools found in cache. Skipping installation."
           fi
-          export HEXAGON_SDK_ROOT="/tmp/hexagon-mlir-artifacts/Hexagon_SDK/6.4.0.2"
-          export HEXAGON_TOOLS="/tmp/hexagon-mlir-artifacts/Tools"
-          export HEXKL_ROOT="/tmp/hexagon-mlir-artifacts/Hexagon_KL/1.0.0/hexkl_addon"
+          export HEXAGON_SDK_ROOT="/local/mnt/workspace/MLIR_build_artifacts/Hexagon_SDK/6.4.0.2"
+          export HEXAGON_TOOLS="/local/mnt/workspace/MLIR_build_artifacts/Tools"
+          export HEXKL_ROOT="/local/mnt/workspace/MLIR_build_artifacts/Hexagon_KL/1.0.0/hexkl_addon"
           # Persist environment variables for future steps
           echo "HEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" >> $GITHUB_ENV
           echo "HEXAGON_TOOLS=$HEXAGON_TOOLS" >> $GITHUB_ENV
@@ -74,6 +100,12 @@ jobs:
           ./ci/setup_llvm.sh
           export LLVM_PROJECT_BUILD_DIR="/tmp/llvm-triton/build"
           echo "LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR" >> $GITHUB_ENV
+        shell: bash
+      
+      - name: Build Triton 
+        run: |
+          chmod +x ./ci/build_triton.sh
+          ./ci/build_triton.sh
         shell: bash
       
       - name: Verify Environment Variables

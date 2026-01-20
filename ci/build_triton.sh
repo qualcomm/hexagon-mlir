@@ -8,7 +8,7 @@
 set -x
 export HEXAGON_MLIR_ROOT=$PWD
 export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
-export LLVM_INSTALL_DIR="/local/mnt/workspace/llvm-project/build/" # Override this path to point to your local LLVM build
+export LLVM_INSTALL_DIR=$LLVM_PROJECT_BUILD_DIR # Override this path to point to your local LLVM build
 
 source ${HEXAGON_MLIR_ROOT}/ci/setup_triton_env.sh
 
