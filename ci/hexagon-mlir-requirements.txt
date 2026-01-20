@@ -1,0 +1,9 @@
+cmake==3.31.6
+ninja
+numpy
+pytest
+pybind11
+scipy
+lit
+wheel
+transformers==4.52.4
