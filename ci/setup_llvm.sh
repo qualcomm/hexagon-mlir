@@ -18,7 +18,7 @@ EXPECTED_LLVM_HASH=$(cat "${REPO_ROOT}/triton/cmake/llvm-hash.txt" | tr -d '[:sp
 echo "Expected LLVM commit hash for Triton: ${EXPECTED_LLVM_HASH}"
 
 # Setup LLVM installation directory
-LLVM_INSTALL_DIR="/tmp/llvm-triton"
+LLVM_INSTALL_DIR="/local/mnt/workspace/MLIR_build_artifacts/llvm_triton"
 mkdir -p "${LLVM_INSTALL_DIR}"
 
 # Clone the LLVM repository if not already present
