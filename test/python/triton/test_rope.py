@@ -6,12 +6,9 @@
 #   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 #
 # ===------------------------------------------------------------------------===
-
 import pytest
 
 import torch
-import torchtune
-
 import triton
 import triton.language as tl
 from triton.backends.qcom_hexagon_backend.driver import HexagonDriver
@@ -55,6 +52,42 @@ def compute_thetas(
     cos_freqs = tl.cos(m_freqs)
     sin_freqs = tl.sin(m_freqs)
     return cos_freqs, sin_freqs
+
+
+def rope_reference_pytorch(x: torch.Tensor, theta: float) -> torch.Tensor:
+    """
+    Pure-PyTorch RoPE reference that mirrors the Triton kernel math:
+      - Same 'steps' construction (pairing even/odd feature indices)
+      - Same frequency scaling with THETA
+      - Same rotation rule using neighbors (i, i+1) and (i-1, i)
+    Shapes:
+      x: (BATCH_SIZE, SEQ_LEN, N_HEADS, N_FEATURES)
+    """
+    B, L, H, D = x.shape
+    device = x.device
+    # Recreate 'steps' exactly as in compute_thetas(): [0, 0, 2, 2, 4, 4, ...]
+    idx = torch.arange(D, device=device, dtype=torch.float32)
+    evens = idx
+    odds = idx - 1
+    step_mask = evens % 2 == 0
+    steps = torch.where(step_mask, evens, odds)
+
+    # Frequency scaling and per-token phase
+    freqs = 1.0 / (theta ** (steps / D))
+    m = torch.arange(L, device=device, dtype=torch.float32)
+    m_freqs = m[:, None] * freqs[None, :]  # (L, D)
+
+    cos = torch.cos(m_freqs).reshape(1, L, 1, D)
+    sin = torch.sin(m_freqs).reshape(1, L, 1, D)
+
+    # Pairwise rotation: even uses (i, i+1), odd uses (i-1, i)
+    x_shift_fwd = torch.roll(x, shifts=-1, dims=3)  # i+1
+    x_shift_bwd = torch.roll(x, shifts=+1, dims=3)  # i-1
+    rotary_mask = (torch.arange(D, device=device) % 2 == 0).view(1, 1, 1, D)
+    rope = torch.where(
+        rotary_mask, x * cos - x_shift_fwd * sin, x_shift_bwd * sin + x * cos
+    )
+    return rope.to(x.dtype)
 
 
 @pytest.mark.parametrize("num_threads", [1, 4])
@@ -181,6 +214,6 @@ def test_rope(num_threads, dtype):
         enableConvertToHexagonmem=true_if_single_threaded,
         enableHexagonmemCopyToDMA=true_if_single_threaded,
     )
-    RoPE = torchtune.modules.RotaryPositionalEmbeddings(N_FEATURES, SEQ_LEN, THETA)
-    reference = RoPE.forward(x)
-    assert torch.allclose(output, reference, atol=ATOL)
+
+    reference = rope_reference_pytorch(x, THETA)
+    torch.testing.assert_close(output, reference, atol=ATOL, rtol=0)
