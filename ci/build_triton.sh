@@ -1,0 +1,27 @@
+set -x
+export HEXAGON_MLIR_ROOT=$PWD
+export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
+export LLVM_INSTALL_DIR="/local/mnt/workspace/llvm-project/build/" # Override this path to point to your local LLVM build
+
+source ${HEXAGON_MLIR_ROOT}/ci/setup_triton_env.sh
+
+# Build Triton using upstream LLVM
+cd $TRITON_ROOT
+echo Building triton
+
+# Note: if getting compilations errors after pulling the most recent changes, temporary turn off TRITON_BUILD_WITH_CCACHE to make sure everything is completely rebuilt
+TRITON_BUILD_WITH_CLANG_LLD=1 \
+    TRITON_BUILD_WITH_CCACHE=true \
+    LLVM_INCLUDE_DIRS=$LLVM_INSTALL_DIR/include \
+    LLVM_LIBRARY_DIR=$LLVM_INSTALL_DIR/lib \
+    LLVM_SYSPATH=$LLVM_INSTALL_DIR \
+    pip3 install -e . --no-build-isolation --verbose
+if [ $? -ne 0 ]; then
+    echo Building hexagon-mlir failed
+else
+    echo hexagon-mlir successfully built
+fi
+
+cd $HEXAGON_MLIR_ROOT
+
+set +x

@@ -1,0 +1,2 @@
+-r torch-requirements.txt
+-r hexagon-mlir-requirements.txt
