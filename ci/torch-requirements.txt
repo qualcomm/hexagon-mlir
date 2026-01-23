@@ -1,7 +1,7 @@
---index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
 --pre
-torch==2.8.0+cpu
-torchvision==0.24.1
+torch==2.9.1+cpu
+torchvision==0.24.1+cpu
 torch-mlir==20260120.698
 torchao==0.10.0+cpu
