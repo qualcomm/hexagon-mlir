@@ -33,7 +33,8 @@ jobs:
           conda install -y -c conda-forge libstdcxx-ng=12
 
           # Install Python dependencies
-          pip install -r ci/requirements.txt
+          pip install --index-url https://download.pytorch.org/whl/torch/ -r ci/requirements.txt
+
 
           # Persist environment path
           echo "CONDA_ENV=/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env" >> $GITHUB_ENV
