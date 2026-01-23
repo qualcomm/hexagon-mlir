@@ -17,8 +17,6 @@ jobs:
       - name: Set up Python environment
         run: |
           # Install Miniconda
-          sudo apt-get update
-          sudo apt-get install -y wget
 
           wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
           bash miniconda.sh -b -p /local/mnt/workspace/MLIR_build_artifacts/miniconda
@@ -80,9 +78,9 @@ jobs:
           echo "hash=$HASH" >> $GITHUB_OUTPUT
       
       # Install ccache to speed up LLVM builds
-      - name: Install ccache
-        run: |
-          sudo apt-get update && sudo apt-get install -y ccache
+      # - name: Install ccache
+      #   run: |
+      #     sudo apt-get update && sudo apt-get install -y ccache
         
       # Cache LLVM build based on the expected hash
       - name: Cache LLVM Build + Install 
