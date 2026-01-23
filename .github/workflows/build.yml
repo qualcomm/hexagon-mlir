@@ -33,7 +33,7 @@ jobs:
           conda install -y -c conda-forge libstdcxx-ng=12
 
           # Install Python dependencies
-          pip install --index-url https://download.pytorch.org/whl/torch/ -r ci/requirements.txt
+          pip install -r ci/requirements.txt
 
 
           # Persist environment path
