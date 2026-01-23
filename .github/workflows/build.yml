@@ -16,10 +16,13 @@ jobs:
 
       - name: Set up Python environment
         run: |
-          # Install Miniconda
+          # Install Miniconda only if missing
+          if [ ! -d "/local/mnt/workspace/MLIR_build_artifacts/miniconda" ]; then
+            wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+            bash miniconda.sh -b -p /local/mnt/workspace/MLIR_build_artifacts/miniconda
+          fi
 
-          wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
-          bash miniconda.sh -b -p /local/mnt/workspace/MLIR_build_artifacts/miniconda
+          # Activate conda
           eval "$(/local/mnt/workspace/MLIR_build_artifacts/miniconda/bin/conda shell.bash hook)"
 
           # Create or reuse environment
@@ -32,7 +35,7 @@ jobs:
           # Install Python dependencies
           pip install -r ci/requirements.txt
 
-          # Persist environment path for later steps
+          # Persist environment path
           echo "CONDA_ENV=/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env" >> $GITHUB_ENV
         shell: bash
 
