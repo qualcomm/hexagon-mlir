@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cpu
+--index-url https://download.pytorch.org/whl/cpu
 -f https://github.com/llvm/torch-mlir-release/releases/expanded_assets/dev-wheels
 --pre
 torch==2.9.1+cpu
