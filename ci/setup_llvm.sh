@@ -8,6 +8,12 @@
 set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# Setup HOST_TOOLCHAIN environment variable
+wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+tar -xf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+export HOST_TOOLCHAIN="$(pwd)/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04"
+export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
+
 # Read the expected LLVM commit hash for Triton
 # Check if the file exists
 if [ ! -f "${REPO_ROOT}/triton/cmake/llvm-hash.txt" ]; then
