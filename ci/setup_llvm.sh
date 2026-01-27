@@ -61,6 +61,7 @@ cmake -G "Ninja" ../llvm-project/llvm \
     -DLLVM_BUILD_EXAMPLES:BOOL=OFF \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
     -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-gnu \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}/install"
 
 echo "Building LLVM..."
