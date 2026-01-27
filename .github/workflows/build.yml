@@ -100,7 +100,7 @@ jobs:
         run: |
           chmod +x ./ci/setup_llvm.sh
           ./ci/setup_llvm.sh
-          export LLVM_PROJECT_BUILD_DIR="/tmp/llvm-triton/build"
+          export LLVM_PROJECT_BUILD_DIR=" /local/mnt/workspace/MLIR_build_artifacts/llvm_triton/build/"
           echo "LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR" >> $GITHUB_ENV
         shell: bash
       
