@@ -1,0 +1,57 @@
+add_mlir_library(Transforms
+  DoubleBufferGenericS1.cpp
+  DoubleBufferGenericS2.cpp
+  Transforms.cpp
+  OptionsParsing.cpp
+  LowerLibdevicePass.cpp
+  AddFastMathPass.cpp
+  UseHexagonRoutines.cpp
+  PuntBufferPass.cpp
+  RVO.cpp
+  ScheduleMatmulForHVXPass.cpp
+  GeneralizePass.cpp
+  ReplaceWithLibraryCallsPass.cpp
+  VectorLoweringPass.cpp
+  DecomposeTensorConcatPass.cpp
+  MatmulToConvPass.cpp
+  MatmulToHexKLPass.cpp
+  CopyCanonicalizationPass.cpp
+  DecomposeHexKLMatmulPass.cpp
+  ConvTilingPass.cpp
+  ConvertLayoutPass.cpp
+  ExpandMathOpsPass.cpp
+  RemoveMLProgram.cpp
+  ExpandBoolVec.cpp
+  EraseUnusedLinalgOperands.cpp
+  CollapseAddressSpace.cpp
+  FastInversePass.cpp
+  ConvertZeroSizeMemrefPass.cpp
+  ConvertToHexagonmem.cpp
+  LowerTPtr.cpp
+  SmallExponentToMultiplyPass.cpp
+  LinalgUtils.cpp
+  MemoryOffsetsPass.cpp
+  HexagonLWPInstrumentation.cpp
+  LowerTmTensor.cpp
+  LowerTTX.cpp
+  ReduceContractionRankPass.cpp
+  HoistScalarOps.cpp
+  FoldMulFByZeroPass.cpp
+
+  DEPENDS
+  TransformsPassIncGen
+
+  LINK_COMPONENTS
+  Core
+
+  LINK_LIBS PUBLIC
+  MLIRArithDialect
+  MLIRDialectUtils
+  MLIRIR
+  MLIRMathDialect
+  MLIRPass
+  MLIRTensorDialect
+  MLIRTransforms
+  MLIRMathTransforms
+  MLIRSupport
+)
