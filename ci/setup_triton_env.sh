@@ -25,4 +25,7 @@ export TRITON_PLUGIN_DIRS="$HEXAGON_MLIR_ROOT/triton_shared;$HEXAGON_MLIR_ROOT/q
 export PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/bin/:$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt:$PATH
 export PYTHONPATH=$TRITON_ROOT/python:$PYTHONPATH
 
+# Add host toolchain to PATH
+export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
+
 set +x
