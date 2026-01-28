@@ -24,7 +24,7 @@ TRITON_BUILD_WITH_CLANG_LLD=1 \
     LLVM_INCLUDE_DIRS=$LLVM_INSTALL_DIR/include \
     LLVM_LIBRARY_DIR=$LLVM_INSTALL_DIR/lib \
     LLVM_SYSPATH=$LLVM_INSTALL_DIR \
-    pip3 install -vvv -e . --no-build-isolation --verbose
+    pip install - -e . --no-build-isolation --verbose
 if [ $? -ne 0 ]; then
     echo Building hexagon-mlir failed
 else
