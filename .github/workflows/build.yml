@@ -92,7 +92,7 @@ jobs:
           chmod +x ./ci/setup_llvm.sh
           ./ci/setup_llvm.sh
           export LLVM_PROJECT_BUILD_DIR="/local/mnt/workspace/MLIR_build_artifacts/llvm_triton/build/"
-          export HOST_TOOLCHAIN="/local/mnt/workspace/MLIR_build_artifacts/host_toolchain/clang+llvm-13.0.1-x86_64-linux-gnu-18.04"
+          export HOST_TOOLCHAIN="/local/mnt/workspace/MLIR_build_artifacts/host_toolchain/"
           echo "LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR" >> $GITHUB_ENV
           echo "HOST_TOOLCHAIN=$HOST_TOOLCHAIN" >> $GITHUB_ENV
         shell: bash
