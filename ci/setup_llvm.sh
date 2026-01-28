@@ -10,11 +10,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Setup HOST_TOOLCHAIN environment variable
 wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-# Save to /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/
 mkdir -p /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/
-tar -xvf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz -C /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/ --strip-components=1
+tar -xf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz -C /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/ --strip-components=1
 export HOST_TOOLCHAIN="/local/mnt/workspace/MLIR_build_artifacts/host_toolchain/"
 export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
+
+# Verify clang installation paths exist
+if [ ! -f "${HOST_TOOLCHAIN}/bin/clang" ] || [ ! -f "${HOST_TOOLCHAIN}/bin/clang++" ]; then
+  echo "Error: clang or clang++ not found in HOST_TOOLCHAIN at ${HOST_TOOLCHAIN}/bin/"
+  exit 1
+fi
+export CC="${HOST_TOOLCHAIN}/bin/clang"
+export CXX="${HOST_TOOLCHAIN}/bin/clang++"
 
 # Read the expected LLVM commit hash for Triton
 # Check if the file exists
@@ -50,8 +57,8 @@ cd "${BUILD_DIR}"
 echo "Configuring LLVM build with CMake..."
 cmake -G "Ninja" ../llvm-project/llvm \
     -DLLVM_ENABLE_PROJECTS="llvm;mlir;lld" \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_COMPILER=${CC} \
+    -DCMAKE_CXX_COMPILER=${CXX} \
     -DLLVM_BUILD_EXAMPLES=ON \
     -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_TARGETS_TO_BUILD="AMDGPU;NVPTX;X86;Hexagon" \
