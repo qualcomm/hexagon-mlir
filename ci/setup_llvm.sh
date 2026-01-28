@@ -9,10 +9,14 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 # Setup HOST_TOOLCHAIN environment variable
-wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-mkdir -p /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/
-tar -xf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz -C /local/mnt/workspace/MLIR_build_artifacts/host_toolchain/ --strip-components=1
 export HOST_TOOLCHAIN="/local/mnt/workspace/MLIR_build_artifacts/host_toolchain/"
+# if HOST_TOOLCHAIN does not exist, download and set it up
+if [ ! -d "${HOST_TOOLCHAIN}" ]; then
+  echo "HOST_TOOLCHAIN not found at ${HOST_TOOLCHAIN}. Downloading and setting up..."
+  wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+  mkdir -p "${HOST_TOOLCHAIN}"
+  tar -xf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz -C "${HOST_TOOLCHAIN}" --strip-components=1
+fi
 export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
 
 # Verify clang installation paths exist
