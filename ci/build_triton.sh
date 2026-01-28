@@ -12,6 +12,8 @@ export LLVM_INSTALL_DIR=$LLVM_PROJECT_BUILD_DIR # Override this path to point to
 
 source ${HEXAGON_MLIR_ROOT}/ci/setup_triton_env.sh
 
+pip install --upgrade pip setuptools wheel
+
 # Build Triton using upstream LLVM
 cd $TRITON_ROOT
 echo Building triton
@@ -22,7 +24,7 @@ TRITON_BUILD_WITH_CLANG_LLD=1 \
     LLVM_INCLUDE_DIRS=$LLVM_INSTALL_DIR/include \
     LLVM_LIBRARY_DIR=$LLVM_INSTALL_DIR/lib \
     LLVM_SYSPATH=$LLVM_INSTALL_DIR \
-    pip3 install -e . --no-build-isolation --verbose
+    pip3 install -vvv -e . --no-build-isolation --verbose
 if [ $? -ne 0 ]; then
     echo Building hexagon-mlir failed
 else
