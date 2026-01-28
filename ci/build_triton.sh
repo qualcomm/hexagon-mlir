@@ -10,6 +10,12 @@ export HEXAGON_MLIR_ROOT=$PWD
 export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 export LLVM_INSTALL_DIR=$LLVM_PROJECT_BUILD_DIR # Override this path to point to your local LLVM build
 
+# Set clang and clang++ from HOST_TOOLCHAIN
+export CC="${HOST_TOOLCHAIN}/bin/clang"
+export CXX="${HOST_TOOLCHAIN}/bin/clang++"
+export CMAKE_ASM_COMPILER="${HOST_TOOLCHAIN}/bin/clang"
+
+
 source ${HEXAGON_MLIR_ROOT}/ci/setup_triton_env.sh
 
 pip install --upgrade pip setuptools wheel
@@ -24,7 +30,7 @@ TRITON_BUILD_WITH_CLANG_LLD=1 \
     LLVM_INCLUDE_DIRS=$LLVM_INSTALL_DIR/include \
     LLVM_LIBRARY_DIR=$LLVM_INSTALL_DIR/lib \
     LLVM_SYSPATH=$LLVM_INSTALL_DIR \
-    pip install - -e . --no-build-isolation --verbose
+    pip install  -e . --no-build-isolation --verbose
 if [ $? -ne 0 ]; then
     echo Building hexagon-mlir failed
 else
