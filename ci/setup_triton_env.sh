@@ -1,10 +1,10 @@
+#!/usr/bin/env bash 
 # 
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause.
 # For more license information:
 #   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 #
-#!/usr/bin/env bash 
 set -x
 
 export HEXAGON_MLIR_ROOT=$PWD
