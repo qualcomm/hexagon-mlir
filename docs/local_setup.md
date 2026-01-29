@@ -108,7 +108,7 @@ cmake -G "Ninja" ../llvm \
     -DLLVM_BUILD_EXAMPLES:BOOL=OFF \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
     -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-gnu \
-    -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}/install"
+    -DCMAKE_INSTALL_PREFIX="${LLVM_PROJECT_BUILD_DIR}/install"
 ```
 
 Set:
