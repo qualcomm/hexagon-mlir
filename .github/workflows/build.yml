@@ -113,9 +113,11 @@ jobs:
         run: |
           set -ex
           pwd
-          which conda
           ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/
           ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin
+          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/
+          source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
+          which conda
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin/activate"
           source buildbot/e2e_env.sh
           cd triton/build/cmake.linux-x86_64-cpython-3.11
