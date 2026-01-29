@@ -129,7 +129,7 @@ Then set:
 
 `export CONDA_ENV=/path/to/mlir-env`
 
-(If you prefer conda, the variable name is still CONDA_ENV for consistency.)
+(Letting developers choose between a miniconda or a Python virtual env, the variable name is still CONDA_ENV for consistency.)
 
 ## Verifying your setup
 

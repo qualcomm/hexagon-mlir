@@ -15,8 +15,6 @@ echo "=== Running environment checks ==="
 source "$CHECK_SCRIPT"
 
 echo "=== Activating Python environment ==="
-# CONDA_ENV is validated by check_local_env.sh
-source "$CONDA_ENV/bin/activate"
 
 echo "=== Upgrading pip tooling ==="
 pip install --upgrade pip setuptools wheel
