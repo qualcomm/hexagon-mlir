@@ -108,3 +108,15 @@ jobs:
           echo "Using HEXKL_ROOT=$HEXKL_ROOT"
           echo "Using LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR"
         shell: bash
+
+      - name: lit test - triton
+        working-directory: ${{ env.MLIR_REPO_PATH }}
+        env:
+          TRITON_VENV: ${{ env.TRITON_VENV }} 
+          LD_LIBRARY_PATH: /prj/qct/llvm/devops/build_tools/mlir/Python-3.11.4/lib
+        run: |
+          set -ex
+          source "$TRITON_VENV/bin/activate"
+          source buildbot/e2e_env.sh
+          cd triton/build/cmake.linux-x86_64-cpython-3.11
+          lit test
