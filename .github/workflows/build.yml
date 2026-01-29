@@ -114,7 +114,10 @@ jobs:
           LD_LIBRARY_PATH: /prj/qct/llvm/devops/build_tools/mlir/Python-3.11.4/lib
         run: |
           set -ex
-          source "$CONDA_VENV/bin/activate"
+          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/
+          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin
+          source "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin/activate"
+          pwd
           source buildbot/e2e_env.sh
           cd triton/build/cmake.linux-x86_64-cpython-3.11
           lit test
