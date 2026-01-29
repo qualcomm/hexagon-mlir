@@ -83,6 +83,17 @@ unzip hexkl-1.0.0-beta1-6.4.0.0.zip
 export HEXKL_ROOT=/path/to/hexkl_addon
 ```
 
+## Download the clang toolchain
+
+```bash
+wget https://github.com/llvm/llvm-project/releases/download/llvmorg-13.0.1/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+tar -xf clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04.tar.xz --strip-components=1
+export HOST_TOOLCHAIN=/path/to/clang+llvm-13.0.1-x86_64-linux-gnu-ubuntu-18.04
+export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
+export CC="${HOST_TOOLCHAIN}/bin/clang"
+export CXX="${HOST_TOOLCHAIN}/bin/clang++"
+```
+
 ## Building LLVM for Triton 
 
 Triton requires a specific LLVM revision; and you can find the expected hash in `triton/cmake/llvm-hash.txt`
@@ -97,6 +108,9 @@ git checkout <hash-from-triton>
 mkdir build && cd build
 cmake -G "Ninja" ../llvm \
     -DLLVM_ENABLE_PROJECTS="llvm;mlir;lld" \
+    -DCMAKE_C_COMPILER="${CC}" \
+    -DCMAKE_CXX_COMPILER="${CXX}" \
+    -DCMAKE_ASM_COMPILER="${CC}" \
     -DLLVM_BUILD_EXAMPLES=ON \
     -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_TARGETS_TO_BUILD="AMDGPU;NVPTX;X86;Hexagon" \
