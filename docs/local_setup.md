@@ -28,8 +28,8 @@ These variables are validated by `scripts/check_local_env.sh`
 
 # Installing Required Components
 
-## triton Submodule
-Set up the Triton submodule and apply Qualcomm specific patches. 
+## triton submodule
+Set up the triton submodule and apply Qualcomm specific patches. 
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -41,6 +41,7 @@ git apply "${REPO_ROOT}/third_party_software/patches/triton/third_party_triton.p
 ```
 
 ## triton_shared submodule
+Set up the triton_shared submodule and apply Qualcomm specific patches.
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -130,7 +131,7 @@ Then set:
 
 (If you prefer conda, the variable name is still CONDA_ENV for consistency.)
 
-## Verify your setup
+## Verifying your setup
 
 ```bash
 ./scripts/check_local_env.sh
