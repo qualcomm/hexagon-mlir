@@ -120,5 +120,10 @@ jobs:
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10
           ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin
-          /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin/lit test
+          which python
+          python -V
+          python -m pip -V
+          which pip
+          pip -V
+          /usr/bin/python3.10 -m lit test
         shell: bash
