@@ -8,8 +8,8 @@
 set -euo pipefail
 set -x
 
-ROOT="$(git rev-parse --show-toplevel)"
-CHECK_SCRIPT="$ROOT/scripts/check_local_env.sh"
+HEXAGON_MLIR_ROOT="$(git rev-parse --show-toplevel)"
+CHECK_SCRIPT="$HEXAGON_MLIR_ROOT/scripts/check_local_env.sh"
 
 echo "=== Running environment checks ==="
 source "$CHECK_SCRIPT"
@@ -20,7 +20,22 @@ echo "=== Upgrading pip tooling ==="
 pip install --upgrade pip setuptools wheel
 
 echo "=== Building Triton ==="
-cd "$ROOT/triton"
+cd "$HEXAGON_MLIR_ROOT/triton"
+
+
+export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
+
+# Get the Python version
+PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+
+# Triton shared path
+export TRITON_SHARED_OPT_PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt
+
+export HEXAGON_ARCH_VERSION=75
+export TRITON_HOME=$HEXAGON_MLIR_ROOT
+export TRITON_PLUGIN_DIRS="$HEXAGON_MLIR_ROOT/triton_shared;$HEXAGON_MLIR_ROOT/qcom_hexagon_backend"
+export PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/bin/:$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt:$PATH
+export PYTHONPATH=$TRITON_ROOT/python:${PYTHONPATH:-}
 
 TRITON_BUILD_WITH_CLANG_LLD=1 \
 TRITON_BUILD_WITH_CCACHE=true \
@@ -31,5 +46,6 @@ pip install -e . --no-build-isolation --verbose
 
 echo "🎉 Triton build completed successfully."
 
-cd "$ROOT"
+cd "$HEXAGON_MLIR_ROOT"
+
 set +x
