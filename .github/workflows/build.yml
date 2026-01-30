@@ -113,13 +113,11 @@ jobs:
         run: |
           set -ex
           pwd
-          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/
-          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin
-          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/
+          ls -al triton
+          ls -al triton/build
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
           which conda
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
-          find . -type d -name cmake.linux-x86_64-cpython-3.11
-          cd $TRITON_ROOT/build/cmake.linux-x86_64-cpython-3.11
+          cd triton/build/cmake.linux-x86_64-cpython-3.11
           lit test
         shell: bash
