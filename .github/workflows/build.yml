@@ -36,7 +36,7 @@ jobs:
           conda install -y -c conda-forge libstdcxx-ng=12
 
           # Install Python dependencies
-          pip install -r ci/requirements.txt
+          python -m pip install -r ci/requirements.txt
 
 
           # Persist environment path
@@ -125,5 +125,5 @@ jobs:
           python -m pip -V
           which pip
           pip -V
-          /usr/bin/python3.10 -m lit test
+          lit test
         shell: bash
