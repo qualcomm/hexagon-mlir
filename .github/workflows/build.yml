@@ -36,6 +36,7 @@ jobs:
           conda install -y -c conda-forge libstdcxx-ng=12
 
           # Install Python dependencies
+          python -m pip -V
           python -m pip install --no-user -r ci/requirements.txt
 
 
@@ -125,5 +126,8 @@ jobs:
           python -m pip -V
           which pip
           pip -V
+          #try and force a fresh install of lit
+          export PYTHONNOUSERSITE=1
+          python -m pip install --no-user --ignore-installed --force-reinstall lit
           lit test
         shell: bash
