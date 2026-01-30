@@ -114,22 +114,23 @@ jobs:
         run: |
           set -ex
           pwd
-          ls -al triton
-          ls -al triton/build
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
-          which conda
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10
-          ls -al /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/bin
-          which python
-          python -V
-          python -m pip -V
-          which pip
-          pip -V
-          #try and force a fresh install of lit
-          export PYTHONNOUSERSITE=1
-          python -m pip install --no-user --ignore-installed --force-reinstall lit
+          #see if lit test is already on the path
+          #export PYTHONNOUSERSITE=1
+          #python -m pip install --no-user --ignore-installed --force-reinstall lit
           export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
           lit test
           echo "Complete"
+        shell: bash
+
+      - name: lit test - hexagon-mlir/qcom_hexagon_backend
+        run: |
+          set -ex
+          pwd
+          source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
+          conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
+          cd triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
+          lit test --verbose
         shell: bash
