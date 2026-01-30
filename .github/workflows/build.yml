@@ -36,7 +36,7 @@ jobs:
           conda install -y -c conda-forge libstdcxx-ng=12
 
           # Install Python dependencies
-          python -m pip install -r ci/requirements.txt
+          python -m pip install --no-user -r ci/requirements.txt
 
 
           # Persist environment path
