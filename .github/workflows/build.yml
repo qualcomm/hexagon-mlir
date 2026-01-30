@@ -133,5 +133,6 @@ jobs:
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
           export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
+          printenv
           lit test --verbose
         shell: bash
