@@ -117,9 +117,9 @@ jobs:
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10
-          #see if lit test is already on the path
-          #export PYTHONNOUSERSITE=1
-          #python -m pip install --no-user --ignore-installed --force-reinstall lit
+          #install lit where conda can find it
+          export PYTHONNOUSERSITE=1
+          python -m pip install --no-user --ignore-installed --force-reinstall lit
           export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
           lit test
           echo "Complete"
@@ -132,5 +132,6 @@ jobs:
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
+          export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
           lit test --verbose
         shell: bash
