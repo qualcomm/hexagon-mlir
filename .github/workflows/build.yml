@@ -129,5 +129,7 @@ jobs:
           #try and force a fresh install of lit
           export PYTHONNOUSERSITE=1
           python -m pip install --no-user --ignore-installed --force-reinstall lit
+          export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
           lit test
+          echo "Complete"
         shell: bash
