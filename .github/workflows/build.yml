@@ -118,6 +118,6 @@ jobs:
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
           which conda
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
-          cd triton/build/cmake.linux-x86_64-cpython-3.11
+          cd triton/build/cmake.linux-x86_64-cpython-3.10
           lit test
         shell: bash
