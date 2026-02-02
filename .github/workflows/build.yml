@@ -129,13 +129,10 @@ jobs:
         run: |
           set -ex
           pwd
-          cat /local/mnt/workspace/actions-runner/_work/hexagon-mlir/hexagon-mlir/qcom_hexagon_backend/test/lit.cfg.py
-          cat /local/mnt/workspace/actions-runner/_work/hexagon-mlir/hexagon-mlir/triton/build/cmake.linux-x86_64-cpython-3.10/test/lit.site.cfg.py
-          find "$(pwd)" -type f \( -name "lit.cfg.py" -o -name "lit.site.cfg.py" \) -print
           source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
           conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
           cd triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
+          export HEXAGON_ARCH_VERSION="75"
           export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
-          printenv
           lit test --verbose
         shell: bash
