@@ -148,7 +148,7 @@ Then set:
 ## Verifying your setup
 
 ```bash
-./scripts/check_local_env.sh
+source./scripts/check_local_env.sh
 ```
 
 This script verifies:
@@ -164,7 +164,7 @@ This script verifies:
 Once your environment is valid:
 
 ```bash
-./scripts/build_local_triton.sh
+source ./scripts/build_local_triton.sh
 ```
 
 This script:
