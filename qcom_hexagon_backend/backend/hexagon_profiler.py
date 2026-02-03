@@ -202,40 +202,5 @@ class HexagonProfiler:
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
 
-    # Run tool pypyetm to analyze the etm traces and create report.
-    def run_pyetm(self):
-        commands = [
-            f"rm -rf {self.PYETM_RESULTS}/*",
-            f"/prj/unicore/pyetm/latest/pypyetm {self.ETM_FILES_PATH}/config.json {self.PYETM_RESULTS} {self.ETM_FILES_PATH}/trace.bin > {self.ETM_FILES_PATH}/pypyetm.log 2>&1",
-        ]
-
-        for cmd in commands:
-            self.run_bash_command(cmd, adb=False)
-
-        print(f"==> PyETM analysis ended and reports are saved in {self.PYETM_RESULTS}")
-
-    def check_cdsp_version(self):
-        cmd = "shell \"cd /vendor/firmware_mnt/verinfo; cat ver_info.txt\" | grep cdsp | awk -F ': ' '{print $2}' | tr -d '\",'"
-
-        result = self.run_bash_command(cmd, capture_output=True, text=True)
-        cdsp_version = result.stdout.strip()
-
-        expected = "CDSP.HT.3.0-00724.1-LANAI-1"
-        if cdsp_version == expected:
-            self.CDSP_PATH = f"/prj/qct/llvm/target/ml/{expected}_cdsp-bins"
-            print(f"==> CDSP bins are used from {self.CDSP_PATH}")
-        else:
-            raise RuntimeError(
-                f"==> Error: CDSP bins not available for version '{cdsp_version}'. "
-                "Run pyetm manually using the traces collected from this run."
-            )
-
     def analyze_trace(self):
-        self.dump_etm_trace()
-        self.check_cdsp_version()
-        addresses = self.get_load_addresses()
-        assert (
-            self.Q6_VERSION == "75"
-        ), "Only support profiling using lanai at the moment"
-        self.write_config_lanai(addresses)
-        self.run_pyetm()
+        raise NotImplementedError("analyze_trace is not implemented yet.")
