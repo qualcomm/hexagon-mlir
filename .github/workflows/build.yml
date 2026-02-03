@@ -110,7 +110,6 @@ jobs:
           echo "Using LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR"
         shell: bash
 
-
       - name: lit test - triton
         env:
           MINICONDA_ROOT: /local/mnt/workspace/MLIR_build_artifacts/miniconda
@@ -129,8 +128,6 @@ jobs:
           export PATH="$GRAALPY_BIN:$PATH"
           lit test
         shell: bash
-
-
 
       - name: lit test - hexagon-mlir/qcom_hexagon_backend
         env:
