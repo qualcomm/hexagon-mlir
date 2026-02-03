@@ -119,8 +119,8 @@ LLVM_PROJECT_BUILD_DIR="${LLVM_SRC_DIR}/build"
 LLVM_INSTALL_DIR="${LLVM_PROJECT_BUILD_DIR}/install"
 
 cd ${BASE_DIR}
-# mkdir -p "${LLVM_TOP_DIR}"
-# cd ${LLVM_TOP_DIR}
+mkdir -p "${LLVM_TOP_DIR}"
+cd ${LLVM_TOP_DIR}
 
 # Clone llvm-project if it doesn't exist
 if [[ ! -d "${LLVM_SRC_DIR}/.git" ]]; then
