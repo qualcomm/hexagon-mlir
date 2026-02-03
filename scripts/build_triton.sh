@@ -10,15 +10,14 @@ set -x
 
 HEXAGON_MLIR_ROOT="$(git rev-parse --show-toplevel)"
 
-
 echo "=== Upgrading pip tooling ==="
 pip install --upgrade pip setuptools wheel
+
 echo "=== Installing triton and torch-mlir build requirements ==="
 pip install -r ${REPO_DIR}/ci/requirements.txt
 
 echo "=== Building triton ==="
 cd "$HEXAGON_MLIR_ROOT/triton"
-
 
 export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 
@@ -42,7 +41,6 @@ LLVM_SYSPATH="$LLVM_PROJECT_BUILD_DIR" \
 pip install -e . --no-build-isolation --verbose
 
 echo "🎉 Triton build completed successfully."
-
 cd "$HEXAGON_MLIR_ROOT"
 
 set +x
