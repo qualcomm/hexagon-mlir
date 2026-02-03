@@ -27,7 +27,6 @@ else
     echo "Submodules already initialized. Skipping."
 fi
 
-
 # Get HOST_TOOLCHAIN
 cd ${BASE_DIR}
 echo "extracting HOST_TOOLCHAIN..."
@@ -50,7 +49,6 @@ export HOST_TOOLCHAIN=${BASE_DIR}/HOST_TOOLCHAIN
 export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
 export CC="${HOST_TOOLCHAIN}/bin/clang"
 export CXX="${HOST_TOOLCHAIN}/bin/clang++"
-
 
 # Get HEXAGON_SDK
 cd ${BASE_DIR}
@@ -185,11 +183,9 @@ export CONDA_ENV=${BASE_DIR}/mlir-env
 cd ${REPO_DIR}
 source scripts/build_triton.sh
 
-
 if [[ -d ./triton/build ]]; then
     lit ./triton/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/test/
 else
     echo "Triton build missing; skipping tests."
 fi
-
 echo "Local build script completed successfully."
