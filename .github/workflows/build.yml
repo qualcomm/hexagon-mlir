@@ -110,29 +110,41 @@ jobs:
           echo "Using LLVM_PROJECT_BUILD_DIR=$LLVM_PROJECT_BUILD_DIR"
         shell: bash
 
+
       - name: lit test - triton
+        env:
+          MINICONDA_ROOT: /local/mnt/workspace/MLIR_build_artifacts/miniconda
+          CONDA_ENV_PATH: /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env
+          TRITON_BUILD_DIR: triton/build/cmake.linux-x86_64-cpython-3.10
+          GRAALPY_BIN: /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin
+          PYTHONNOUSERSITE: "1"
         run: |
           set -ex
           pwd
-          source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
-          conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
-          cd triton/build/cmake.linux-x86_64-cpython-3.10
-          #install lit where conda can find it
-          export PYTHONNOUSERSITE=1
+          source "$MINICONDA_ROOT/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV_PATH"
+          cd "$TRITON_BUILD_DIR"
+          # Install lit into the active environment so it can be found consistently
           python -m pip install --no-user --ignore-installed --force-reinstall lit
-          export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
+          export PATH="$GRAALPY_BIN:$PATH"
           lit test
-          echo "Complete"
         shell: bash
 
+
+
       - name: lit test - hexagon-mlir/qcom_hexagon_backend
+        env:
+          MINICONDA_ROOT: /local/mnt/workspace/MLIR_build_artifacts/miniconda
+          CONDA_ENV_PATH: /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env
+          BACKEND_BUILD_DIR: triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
+          HEXAGON_ARCH_VERSION: "75"
+          GRAALPY_BIN: /local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin
         run: |
           set -ex
           pwd
-          source /local/mnt/workspace/MLIR_build_artifacts/miniconda/etc/profile.d/conda.sh
-          conda activate "/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env"
-          cd triton/build/cmake.linux-x86_64-cpython-3.10/third_party/qcom_hexagon_backend
-          export HEXAGON_ARCH_VERSION="75"
-          export PATH="/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env/lib/jvm/languages/python/bin:$PATH"
+          source "$MINICONDA_ROOT/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV_PATH"
+          export PATH="$GRAALPY_BIN:$PATH"
+          cd "$BACKEND_BUILD_DIR"
           lit test --verbose
         shell: bash
