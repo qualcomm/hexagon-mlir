@@ -203,4 +203,5 @@ class HexagonProfiler:
             json.dump(config, f, indent=4)
 
     def analyze_trace(self):
+        # Not implemented yet, will be added in future.
         raise NotImplementedError("analyze_trace is not implemented yet.")
