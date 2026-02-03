@@ -9,12 +9,13 @@ set -euo pipefail
 set -x
 
 HEXAGON_MLIR_ROOT="$(git rev-parse --show-toplevel)"
+export HEXAGON_MLIR_ROOT=$HEXAGON_MLIR_ROOT
 
 echo "=== Upgrading pip tooling ==="
 pip install --upgrade pip setuptools wheel
 
 echo "=== Installing triton and torch-mlir build requirements ==="
-pip install -r ${REPO_DIR}/ci/requirements.txt
+pip install -r ${HEXAGON_MLIR_ROOT}/ci/requirements.txt
 
 echo "=== Building triton ==="
 cd "$HEXAGON_MLIR_ROOT/triton"
@@ -25,7 +26,7 @@ export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 
 # Triton shared path
-export TRITON_SHARED_OPT_PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt
+export TRITON_SHARED_OPT_PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt
 
 export HEXAGON_ARCH_VERSION=75
 export TRITON_HOME=$HEXAGON_MLIR_ROOT
