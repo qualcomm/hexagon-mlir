@@ -111,7 +111,7 @@ bool rewriteForTLP(IRRewriter &rewriter, linalg::GenericOp op,
     tilingOptions = scf::SCFTilingOptions(); // reset the options.
     tilingOptions.setTileSizes(threadSizesOfr)
         .setInterchange(interchangeVector);
-    tilingOptions.setLoopType(scf::SCFTilingOptions::LoopType::ForallOp);
+     tilingOptions.setLoopType(scf::SCFTilingOptions::LoopType::ForOp);
   };
 
   // User-specified blockSize for testing purposes overrides
