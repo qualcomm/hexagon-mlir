@@ -87,6 +87,7 @@ For example, if you are targeting v75,
 ```
 export HEXAGON_ARCH_VERSION=75
 ```
+If you don't have access to a Qualcomm NPU device you can still build and look at the lowering, and see the generated LLVM-IR along with Hexagon assembly.
 
 ## Building Hexagon-MLIR Compiler
 ###  Clone Repository
@@ -100,7 +101,7 @@ export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 
 ### Script-based Build
 
-We provide a script `HEXAGON_MLIR_ROOT/scripts/build_hexagon_mlir.sh` that automates much of the setup process of building a complete `Hexagon-MLIR + Triton` environment locally, including: 
+We provide a script `HEXAGON_MLIR_ROOT/scripts/build_hexagon_mlir.sh` that automates much of the setup process of building a complete `Hexagon-MLIR + Triton + Torch-MLIR` environment locally, including: 
 
 * Submodule setup for `triton` and `triton_shared`.
 * Downloading and extracting Hexagon SDK, Hexagon Tools, and Hexagon Kernel Library (HexKL).
@@ -113,6 +114,7 @@ To run the script, navigate to the root of the `hexagon-mlir` repository and exe
 ```bash
 bash ./scripts/build_hexagon_mlir.sh
 ```
+The script builds hexagon-mlir and runs the LIT tests for you to ensure the build succeeded.
 
 However, if you prefer to set up the environment manually, follow the steps below.
 
@@ -307,7 +309,7 @@ If you do not have access to such a device, you can skip these steps; however, p
 
 ### Step 3: Run Triton Test
 If you have access to a Qualcomm NPU device, please set the variables ANDROID_HOST and ANDROID_SERIAL to the host name and hexagon device number.
- You can then run an end-to-end compilation and execution flow using the following command:
+You can then run an end-to-end compilation and execution flow using the following command:
 ```bash
 # Compile and execute a simple Triton kernel
 pytest -sv test/python/triton/test_vec_add.py
