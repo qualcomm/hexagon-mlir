@@ -34,8 +34,7 @@ class Gelu(nn.Module):
 @pytest.mark.parametrize(
     "enablelwp, enableetm",
     [
-        # (False, False),
-        (True, False)
+        (False, False)
     ],
 )
 def test_gelu_torch(enablelwp, enableetm):

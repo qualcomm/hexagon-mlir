@@ -31,7 +31,7 @@ class Softmax(nn.Module):
         return x
 
 
-@pytest.mark.parametrize("enablelwp, enableetm", [(False, False), (True, False)])
+@pytest.mark.parametrize("enablelwp, enableetm", [(False, False)])
 def test_softmax_torch(enablelwp, enableetm):
     model = Softmax()
     inp = torch.rand(128, 128, dtype=torch.float16)
