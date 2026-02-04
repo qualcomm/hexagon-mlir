@@ -1,0 +1,20 @@
+name: QPSI Security Scan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  qpsi-security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Run QPSI Supply Chain Security Scanner
+        uses: docker://docker-registry-ro.qualcomm.com/qpsi_registry/supply-chain-security-scanner:latest
+        with:
+          args: /scan
+        env:
+          SUDO_USER: github-runner
+          PROJECT: hexagon-mlir
