@@ -23,7 +23,6 @@ from triton.backends.qcom_hexagon_backend.utils import parse_return_types
 # Temporary measure to compile .so for HTP without calling the Triton driver
 from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
 from .hexagon_options import HexagonOptions
-from .qaic_options import QAicOptions
 
 # This file is part of a small subset of python files that uses some type-annotations
 # and it passes type-verification with mypy (a type checker).
@@ -129,7 +128,7 @@ class HexagonBackend(BaseBackend):
     @no_type_check  # Forced to ignore typing since base class uses deprecated annotation
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == "hexagon" or target.backend == "qaic"
+        return target.backend == "hexagon"
 
     # TODO: set version to hexagon version
     #       compute_core_version_key() seems to deprecated, need new approach
@@ -139,19 +138,13 @@ class HexagonBackend(BaseBackend):
         return f"{version}-{self.target}"
 
     def parse_options(self, opts) -> Any:
-        if self.target.backend == "qaic":
-            args = {
-                k: opts[k] for k in QAicOptions.__dataclass_fields__.keys() if k in opts
-            }
-            return QAicOptions(**args)
-        else:
-            assert self.target.backend == "hexagon"
-            args = {
-                k: opts[k]
-                for k in HexagonOptions.__dataclass_fields__.keys()
-                if k in opts
-            }
-            return HexagonOptions(**args)
+      assert self.target.backend == "hexagon"
+      args = {
+        k: opts[k]
+        for k in HexagonOptions.__dataclass_fields__.keys()
+        if k in opts
+      }
+      return HexagonOptions(**args)
 
     @staticmethod
     def make_ttir(mod, metadata, opt):

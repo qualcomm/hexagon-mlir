@@ -14,7 +14,6 @@ from triton.backends.qcom_hexagon_backend.triton_hexagon_launcher import (
     TritonHexagonLauncher,
     HexagonUtils,
 )
-from triton.backends.qcom_hexagon_backend.triton_qaic_launcher import TritonQAicLauncher
 from triton.backends.qcom_hexagon_backend.utils import make_profiled_return
 
 
@@ -29,10 +28,7 @@ def getHexagonLauncherClass(device_type="dsp"):
             self.input_type_list = {
                 cst_key(key): value for key, value in src.signature.items()
             }
-            if device_type == "qaic":
-                self.launcher = TritonQAicLauncher()
-            else:
-                self.launcher = TritonHexagonLauncher()
+            self.launcher = TritonHexagonLauncher()
             pass
 
         def __call__(self, *args, **kwargs):
@@ -124,16 +120,10 @@ class HexagonDriver(DriverBase):
         return do_bench
 
     def get_current_target(self):
-        if self.device_type == "qaic":
-            return GPUTarget("qaic", 0, 0)
-        else:
-            return GPUTarget("hexagon", 0, 0)
+        return GPUTarget("hexagon", 0, 0)
 
     def get_current_device(self):
-        if self.device_type == "qaic":
-            return GPUTarget("qaic", 0, 0)
-        else:
-            return GPUTarget("hexagon", 0, 0)
+        return GPUTarget("hexagon", 0, 0)
 
     def get_active_torch_device(self):
         import torch
