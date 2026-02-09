@@ -1,7 +1,9 @@
 # Hexagon-MLIR
 
-Hexagon-MLIR is a compiler toolchain for compiling and executing AI kernels and models on Qualcomm Hexagon Neural Processing Units (NPUs).
-It provides support for compiling `Triton` and `PyTorch` graphs.
+
+Hexagon‑MLIR is an open‑source AI compiler stack from Qualcomm Technologies, Inc. that lets you easily compile and run Triton kernels and PyTorch models on Hexagon NPUs—dedicated AI accelerators built for high‑performance, efficient AI and genAI workloads.
+
+This initiative complements our commercial toolchains by exploring an open‑source MLIR‑based compilation stack, giving developers a path to advance AI compilation capabilities through a more flexible and transparent approach.
 
 ## Table of Contents
 
