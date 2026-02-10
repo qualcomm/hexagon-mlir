@@ -2,7 +2,8 @@
 
 #map = affine_map<(d0, d1) -> (d0 + d1)>
 module {
-  func.func @add_conv(%arg0: memref<256x256xf16>, %arg1: memref<256x256xf16>, %arg2: memref<5x5xf16>, %arg3: memref<252x252xf16>) {
+  func.func @add_conv(%arg0: memref<256x256xf16>, %arg1: memref<256x256xf16>, %arg2: memref<5x5xf16>,
+                      %arg3: memref<252x252xf16>) {
     %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x256xf16>
     affine.for %arg4 = 0 to 256 {
       affine.for %arg5 = 0 to 256 {
