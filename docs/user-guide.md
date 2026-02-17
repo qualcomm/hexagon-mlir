@@ -226,7 +226,6 @@ cmake -G "Ninja" ../llvm \
     -DCMAKE_C_COMPILER="${CC}" \
     -DCMAKE_CXX_COMPILER="${CXX}" \
     -DCMAKE_ASM_COMPILER="${CC}" \
-    -DLLVM_BUILD_EXAMPLES=ON \
     -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_TARGETS_TO_BUILD="AMDGPU;NVPTX;X86;Hexagon" \
     -DCMAKE_BUILD_TYPE="RelWithDebInfo" \
@@ -238,6 +237,8 @@ cmake -G "Ninja" ../llvm \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=1 \
     -DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-unknown-linux-gnu \
     -DCMAKE_INSTALL_PREFIX="${LLVM_PROJECT_BUILD_DIR}/install"
+
+ninja install
 ```
 
 Set:
