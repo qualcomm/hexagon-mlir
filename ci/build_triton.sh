@@ -8,7 +8,7 @@
 set -x
 export HEXAGON_MLIR_ROOT=$PWD
 export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
-export LLVM_INSTALL_DIR=$LLVM_PROJECT_BUILD_DIR 
+export LLVM_INSTALL_DIR=$LLVM_PROJECT_BUILD_DIR/install
 
 source ${HEXAGON_MLIR_ROOT}/ci/setup_triton_env.sh
 
