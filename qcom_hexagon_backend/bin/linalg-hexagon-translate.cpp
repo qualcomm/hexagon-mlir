@@ -128,6 +128,12 @@ LogicalResult translateMain(int argc, char **argv, llvm::StringRef toolName) {
                      "translation"),
       llvm::cl::init(false));
 
+  static llvm::cl::opt<bool> enableHVXInlining(
+      "enable-hvx-inlining",
+      llvm::cl::desc(
+          "Enable aggressive inlining after linking runtime modules"),
+      llvm::cl::init(false));
+
   llvm::InitLLVM y(argc, argv);
 
   registerAsmPrinterCLOptions();
@@ -162,6 +168,9 @@ LogicalResult translateMain(int argc, char **argv, llvm::StringRef toolName) {
 
   if (!noHexagonRuntime)
     mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmIR);
+
+  // Aggressive inlining to improve performance after linking runtime modules
+  cond_run_inliner(llvmIR, enableHVXInlining);
 
   if (emitKind == EmitKind::Obj) {
     std::vector<char> object_code_as_bytes = llvm_module_to_obj_string(llvmIR);

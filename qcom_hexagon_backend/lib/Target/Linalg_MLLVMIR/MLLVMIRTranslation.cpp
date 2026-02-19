@@ -93,6 +93,8 @@ void setLinalgToLLVMOptions(
   options.disableLWPLoop = !arch_kwargs.at("disableLWPLoop").compare(TRUE);
   options.enableVectorization =
       !arch_kwargs.at("enableVectorization").compare(TRUE);
+  options.enableHVXInlining =
+      !arch_kwargs.at("enableHVXInlining").compare(TRUE);
 }
 
 namespace mlir {

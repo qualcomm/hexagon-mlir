@@ -44,9 +44,19 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/TargetParser/Triple.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
 
 namespace mlir {
 namespace hexagon {
+
+void cond_run_inliner(std::unique_ptr<llvm::Module> &llvmModule,
+                      bool enableInlining) {
+  if (enableInlining) {
+    llvm::legacy::PassManager inlinerPM;
+    inlinerPM.add(llvm::createAlwaysInlinerLegacyPass());
+    inlinerPM.run(*llvmModule);
+  }
+}
 
 static bool linkHexExternLib(llvm::Module &module, llvm::StringRef name,
                              llvm::StringRef path) {

@@ -16,7 +16,7 @@
 
 #ifndef HEXAGON_INTRIN_INLINE
 #define HEXAGON_INTRIN_INLINE                                                  \
-  inline __attribute__((unused, used, always_inline, visibility("hidden")))
+  __attribute__((unused, used, always_inline, visibility("hidden")))
 #endif
 
 #ifndef HEXAGON_INTRIN

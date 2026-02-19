@@ -85,6 +85,7 @@ def test_softmax(dtype):
         enableVTCMTiling=False,
         enableConvertToHexagonmem=False,
         enableHexagonmemCopyToDMA=False,
+        enableHVXInlining=True,
     )
 
     reference = torch.nn.functional.softmax(x, dim=1, dtype=dtype)

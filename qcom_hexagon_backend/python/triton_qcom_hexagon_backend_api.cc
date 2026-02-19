@@ -30,6 +30,7 @@
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/IPO.h"
 
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
@@ -251,6 +252,10 @@ std::vector<std::vector<char>> translateLinalgToObj(
                      << "\n");
       mlir::Hexagon::Translate::linkRuntimeModules(llvmContext,
                                                    current_llvm_mod);
+      // Aggressive inlining to improve performance after linking runtime
+      // modules Check if inlining is enabled via options_map
+      mlir::hexagon::cond_run_inliner(current_llvm_mod,
+                                      optionsLinalgToLLVM.enableHVXInlining);
 
       // Dumping of the principal module if requested
       if (mlir::hexagon::isEnvTrue("LLVM_IR_ENABLE_DUMP")) {
@@ -315,6 +320,13 @@ std::string translateLinalgToLLVMIR(
     fail("Failed to translate TritonHexagon to LLVM IR.");
 
   mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmModule);
+  // Aggressive inlining to improve performance after linking runtime modules
+  // Check if inlining is enabled via options_map
+  mlir::hexagon::LinalgToLLVMOptions optionsLinalgToLLVM;
+  setLinalgToLLVMOptions(optionsLinalgToLLVM, options_map);
+
+  mlir::hexagon::cond_run_inliner(llvmModule,
+                                  optionsLinalgToLLVM.enableHVXInlining);
 
   std::string str;
   llvm::raw_string_ostream os(str);

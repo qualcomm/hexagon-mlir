@@ -64,6 +64,7 @@ class HexagonOptions:
     enableVTCMTiling: bool = (
         True  # tile linalg-generic and introduce vtcm address-space
     )
+    enableHVXInlining: bool = False
 
     # This option enables 'seeding' of layout conversion ops around conv2d ops.
     # This introduces some builtin.unrealized_conversion_cast ops, that are expected

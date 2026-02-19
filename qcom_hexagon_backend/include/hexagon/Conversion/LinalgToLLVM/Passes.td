@@ -131,7 +131,10 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
            "both upper and lower frontier">,
     Option<"enableVectorization", "enable-vectorization", "bool",
           /*default=*/"true",
-          "Enable vectorization for HVX">
+          "Enable vectorization for HVX">,
+    Option<"enableHVXInlining", "enable-hvx-inlining", "bool",
+              /*default=*/"false",
+              "Enable aggressive inlining after linking runtime modules">
    ];
 }
 

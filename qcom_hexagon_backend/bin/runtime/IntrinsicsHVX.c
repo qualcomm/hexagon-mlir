@@ -20,7 +20,7 @@
 
 #ifndef HEXAGON_INTRIN_INLINE
 #define HEXAGON_INTRIN_INLINE                                                  \
-  inline __attribute__((unused, used, always_inline, visibility("hidden")))
+  __attribute__((unused, used, always_inline, visibility("hidden")))
 #endif
 #ifndef HEXAGON_INTRIN
 #define HEXAGON_INTRIN __attribute__((visibility("hidden")))
@@ -28,7 +28,7 @@
 
 #ifndef MAP_MLIR_TO_QHMATH_DOUBLE_ARGS
 #define MAP_MLIR_TO_QHMATH_DOUBLE_ARGS(FNAME, SUFFIX)                          \
-  HEXAGON_INTRIN HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(              \
+  HEXAGON_INTRIN_INLINE HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(       \
       HVX_Vector vin1, HVX_Vector vin2) {                                      \
     return qhmath_hvx_##FNAME##_##SUFFIX(vin1, vin2);                          \
   }
@@ -36,7 +36,7 @@
 
 #ifndef MAP_MLIR_TO_QHMATH_SINGLE_ARG
 #define MAP_MLIR_TO_QHMATH_SINGLE_ARG(FNAME, SUFFIX)                           \
-  HEXAGON_INTRIN HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(              \
+  HEXAGON_INTRIN_INLINE HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(       \
       HVX_Vector vin) {                                                        \
     return qhmath_hvx_##FNAME##_##SUFFIX(vin);                                 \
   }
@@ -48,7 +48,7 @@
 // having the SUFFIX appear twice in the function name.
 #ifndef MAP_MLIR_TO_QHMATH_INTERNAL_SINGLE_ARG
 #define MAP_MLIR_TO_QHMATH_INTERNAL_SINGLE_ARG(FNAME, SUFFIX)                  \
-  HEXAGON_INTRIN HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(              \
+  HEXAGON_INTRIN_INLINE HVX_Vector _hexagon_runtime_##FNAME##__##SUFFIX(       \
       HVX_Vector vin) {                                                        \
     return qhmath_hvx_##SUFFIX##_##FNAME##_##SUFFIX(vin);                      \
   }
