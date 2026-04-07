@@ -32,13 +32,12 @@ jobs:
           conda create -y -n mlir-env python=3.10
           conda activate mlir-env
 
-          # Install glibc-compatible libstdcxx
-          conda install -y -c conda-forge libstdcxx-ng=12
-
           # Install Python dependencies
           python -m pip -V
           python -m pip install --no-user -r ci/requirements.txt
 
+          # Install glibc-compatible libstdcxx
+          conda install -y -c conda-forge libstdcxx-ng=12
 
           # Persist environment path
           echo "CONDA_ENV=/local/mnt/workspace/MLIR_build_artifacts/miniconda/envs/mlir-env" >> $GITHUB_ENV

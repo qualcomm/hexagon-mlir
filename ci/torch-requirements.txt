@@ -3,5 +3,5 @@
 --pre
 torch==2.10.0+cpu
 torchvision==0.25.0+cpu
-torch-mlir==20260123.701
+torch-mlir==20260325.762
 torchao==0.10.0+cpu
