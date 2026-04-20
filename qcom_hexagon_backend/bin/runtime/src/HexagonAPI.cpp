@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include "HexagonAPI.h"
+#include "HexagonBufferAlias.h"
 
 HexagonAPI *HexagonAPI::Global() {
   static auto *inst = new HexagonAPI();
@@ -72,6 +73,18 @@ void *HexagonAPI::Alloc(size_t nallocs, size_t nbytes, uint64_t alignment,
   void *base_ptr = bufferManager->AllocateHexagonBuffer(
       nallocs, nbytes, static_cast<size_t>(alignment), isVtcm);
   return base_ptr;
+}
+
+/// Takes a `ptr` to the base of the memref and returns a pointer to the
+/// crouton table
+void *HexagonAPI::CreateBufferAlias(void *ptr, size_t nbytes) {
+  return bufferManager->CreateBufferAlias(ptr, nbytes);
+}
+
+/// Takes the pointer to crouton table that was created as an alias and returns
+/// the base pointer to the memref
+void *HexagonAPI::GetOrigBufferFromAlias(void *aliasPtr) {
+  return bufferManager->GetOrigBufferFromAlias(aliasPtr);
 }
 
 void HexagonAPI::Free(void *ptr) {

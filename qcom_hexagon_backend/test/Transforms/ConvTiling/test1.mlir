@@ -1,5 +1,9 @@
-// RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(conv-tiling{conv-tile-height-dim=true conv-tile-size=8}),\
-// RUN: canonicalize)' | FileCheck %s
+// RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(conv-tiling\
+// RUN: {conv-tile-sizes="1:8"}),canonicalize)' %s | FileCheck %s --check-prefix=HEIGHT
+// RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(conv-tiling\
+// RUN: {conv-tile-sizes="3:32"}),canonicalize)' %s | FileCheck %s --check-prefix=OC
+// RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(conv-tiling\
+// RUN: {conv-tile-sizes="1:8,3:32"}),canonicalize)' %s | FileCheck %s --check-prefix=MULTI
 
 module {
   func.func @hmx_pipeline_simple(%arg0: memref<1x16x32x128xf16>,
@@ -58,31 +62,108 @@ module {
 // minimized and named to reflect the test intent.
 
 
+// Test the output for command 1: tiling the height dimension
+// HEIGHT-LABEL: func.func @hmx_pipeline_simple(
+// HEIGHT-SAME:   %[[ARG0:.*]]: memref<1x16x32x128xf16>,
+// HEIGHT-SAME:   %[[ARG1:.*]]: memref<224x1x1x128xf16>,
+// HEIGHT-SAME:   %[[ARG2:.*]]: memref<1x16x32x224xf16>) {
+// HEIGHT:            %[[RES:.*]] = scf.for [[IDX_0:.*]] = %c0 to %c16 step %c8
+// HEIGHT-SAME:       iter_args([[KERNEL:.*]] = [[EMPTY_TENSOR:.*]]) -> (tensor<1x16x32x224xf16>) {
 
-// CHECK-LABEL: func.func @hmx_pipeline_simple(
-// CHECK-SAME:   %[[ARG0:.*]]: memref<1x16x32x128xf16>,
-// CHECK-SAME:   %[[ARG1:.*]]: memref<224x1x1x128xf16>,
-// CHECK-SAME:   %[[ARG2:.*]]: memref<1x16x32x224xf16>) {
-// CHECK:            %[[RES:.*]] = scf.for [[IDX_0:.*]] = %c0 to %c16 step %c8
-// CHECK-SAME:       iter_args([[KERNEL:.*]] = %7) -> (tensor<1x16x32x224xf16>) {
+// HEIGHT-NEXT:       %[[EXTRACT_SLICE_0:.*]] = tensor.extract_slice
+// HEIGHT-SAME:       %4[0, [[IDX_0]], 0, 0] [1, 8, 32, 128] [1, 1, 1, 1] :
+// HEIGHT-SAME:       tensor<1x16x32x128xf16> to tensor<1x8x32x128xf16>
 
-// CHECK-NEXT:       %[[EXTRACT_SLICE_0:.*]] = tensor.extract_slice
-// CHECK-SAME:       %4[0, [[IDX_0]], 0, 0] [1, 8, 32, 128] [1, 1, 1, 1] :
-// CHECK-SAME:       tensor<1x16x32x128xf16> to tensor<1x8x32x128xf16>
+// HEIGHT-NEXT:       %[[EXTRACT_SLICE_1:.*]] = tensor.extract_slice
+// HEIGHT-SAME:       [[KERNEL]][0, [[IDX_0]], 0, 0] [1, 8, 32, 224] [1, 1, 1, 1] :
+// HEIGHT-SAME:       tensor<1x16x32x224xf16> to tensor<1x8x32x224xf16>
 
-// CHECK-NEXT:       %[[EXTRACT_SLICE_1:.*]] = tensor.extract_slice
-// CHECK-SAME:       [[KERNEL]][0, [[IDX_0]], 0, 0] [1, 8, 32, 224] [1, 1, 1, 1] :
-// CHECK-SAME:       tensor<1x16x32x224xf16> to tensor<1x8x32x224xf16>
+// HEIGHT-NEXT:       %[[CONV_RES:.*]] = linalg.conv_2d_nhwc_fhwc
+// HEIGHT-SAME:       ins(%[[EXTRACT_SLICE_0]], %[[FILTER:.*]] : tensor<1x8x32x128xf16>,
+// HEIGHT-SAME:       tensor<224x1x1x128xf16>)
+// HEIGHT-SAME:       outs(%[[EXTRACT_SLICE_1]] : tensor<1x8x32x224xf16>) -> tensor<1x8x32x224xf16>
 
-// CHECK-NEXT:       %[[CONV_RES:.*]] = linalg.conv_2d_nhwc_fhwc ins(
-// CHECK-SAME:       %[[EXTRACT_SLICE_0]], %[[FILTER:.*]] : tensor<1x8x32x128xf16>, tensor<224x1x1x128xf16>)
-// CHECK-SAME:       outs(%[[EXTRACT_SLICE_1]] : tensor<1x8x32x224xf16>) -> tensor<1x8x32x224xf16>
+// HEIGHT-NEXT:       %[[INSERT_SLICE:.*]] = tensor.insert_slice %[[CONV_RES]] into
+// HEIGHT-SAME:       [[KERNEL]][0, [[IDX_0]], 0, 0] [1, 8, 32, 224] [1, 1, 1, 1] :
+// HEIGHT-SAME:       tensor<1x8x32x224xf16> into tensor<1x16x32x224xf16>
 
-// CHECK-NEXT:       %[[INSERT_SLICE:.*]] = tensor.insert_slice
-// CHECK-SAME:       %[[CONV_RES]] into [[KERNEL]][0, [[IDX_0]], 0, 0] [1, 8, 32, 224] [1, 1, 1, 1] :
-// CHECK-SAME:       tensor<1x8x32x224xf16> into tensor<1x16x32x224xf16>
+// HEIGHT-NEXT:       scf.yield %[[INSERT_SLICE]] : tensor<1x16x32x224xf16>
+// HEIGHT-NEXT:     }
+// HEIGHT:          return
+// HEIGHT-NEXT:   }
 
-// CHECK-NEXT:       scf.yield %[[INSERT_SLICE]] : tensor<1x16x32x224xf16>
-// CHECK-NEXT:     }
-// CHECK:          return
-// CHECK-NEXT:   }
+
+// Test the output for command 2: Tiling the OC dimension
+// OC-LABEL:   func.func @hmx_pipeline_simple(
+// OC-SAME:      %[[ARG0:.*]]: memref<1x16x32x128xf16>,
+// OC-SAME:      %[[ARG1:.*]]: memref<224x1x1x128xf16>,
+// OC-SAME:      %[[ARG2:.*]]: memref<1x16x32x224xf16>) {
+// OC:           %[[COMP_RES_TENSOR:.*]] = scf.for %[[IDX_0:.*]] = %c0 to %c224
+// OC-SAME:      step %c32 iter_args(%[[RES_TENSOR:.*]] = %[[EMPTY_TENSOR:.*]]) ->
+// OC-SAME:      (tensor<1x16x32x224xf16>) {
+
+// OC-NEXT:        %[[FILTER_SLICE:.*]] = tensor.extract_slice
+// OC-SAME:        %[[FILTER_TENSOR:.*]]{{\[}}%[[IDX_0]], 0, 0, 0] [32, 1, 1, 128] [1, 1, 1, 1] :
+// OC-SAME:        tensor<224x1x1x128xf16> to tensor<32x1x1x128xf16>
+
+// OC-NEXT:        %[[RES_SLICE:.*]] = tensor.extract_slice %[[RES_TENSOR]]
+// OC-SAME:        [0, 0, 0, %[[IDX_0]]] [1, 16, 32, 32] [1, 1, 1, 1] :
+// OC-SAME:        tensor<1x16x32x224xf16> to tensor<1x16x32x32xf16>
+
+// OC-NEXT:        %[[CONV_RES:.*]] = linalg.conv_2d_nhwc_fhwc
+// OC-SAME:        ins(%[[INPUT_TENSOR:.*]], %[[FILTER_SLICE]] :
+// OC-SAME:        tensor<1x16x32x128xf16>, tensor<32x1x1x128xf16>)
+// OC-SAME:        outs(%[[RES_SLICE]] : tensor<1x16x32x32xf16>) -> tensor<1x16x32x32xf16>
+
+// OC-NEXT:        %[[CONV_RES_SLICE:.*]] = tensor.insert_slice %[[CONV_RES]]
+// OC-SAME:        into %[[RES_TENSOR]][0, 0, 0, %[[IDX_0]]] [1, 16, 32, 32] [1, 1, 1, 1] :
+// OC-SAME:        tensor<1x16x32x32xf16> into tensor<1x16x32x224xf16>
+
+// OC-NEXT:        scf.yield %[[CONV_RES_SLICE]] : tensor<1x16x32x224xf16>
+// OC-NEXT:      }
+// OC:           return
+// OC-NEXT:    }
+
+// Test the output for command 3: Multidimensional tiling
+// MULTI-LABEL:   func.func @hmx_pipeline_simple(
+// MULTI-SAME:      %[[ARG0:.*]]: memref<1x16x32x128xf16>,
+// MULTI-SAME:      %[[ARG1:.*]]: memref<224x1x1x128xf16>,
+// MULTI-SAME:      %[[ARG2:.*]]: memref<1x16x32x224xf16>) {
+
+// MULTI:           %[[COMP_RES_TENSOR:.*]] = scf.for %[[IDX_0:.*]] = %c0 to %c16
+// MULTI-SAME:      step %c8 iter_args(%[[RES_TENSOR:.*]] = %[[EMPTY_TENSOR:.*]]) ->
+// MULTI-SAME:      (tensor<1x16x32x224xf16>) {
+
+// MULTI-NEXT:        %[[COMP_RES_TENSOR_TILED:.*]] = scf.for %[[IDX_1:.*]] = %c0 to %c224
+// MULTI-SAME:        step %c32 iter_args(%[[RES_TENSOR_TILED:.*]] = %[[RES_TENSOR]]) ->
+// MULTI-SAME:        (tensor<1x16x32x224xf16>) {
+
+// MULTI-NEXT:          %[[INPUT_SLICE:.*]] = tensor.extract_slice
+// MULTI-SAME:          %[[INPUT_TENSOR:.*]][0, %[[IDX_0]], 0, 0] [1, 8, 32, 128] [1, 1, 1, 1] :
+// MULTI-SAME:          tensor<1x16x32x128xf16> to tensor<1x8x32x128xf16>
+
+// MULTI-NEXT:          %[[FILTER_SLICE:.*]] = tensor.extract_slice
+// MULTI-SAME:          %[[INPUT_TENSOR:.*]]{{\[}}%[[IDX_1]], 0, 0, 0] [32, 1, 1, 128] [1, 1, 1, 1] :
+// MULTI-SAME:          tensor<224x1x1x128xf16> to tensor<32x1x1x128xf16>
+
+// MULTI-NEXT:          %[[RES_SLICE:.*]] = tensor.extract_slice %[[RES_TENSOR_TILED]]
+// MULTI-SAME:          [0, %[[IDX_0]], 0, %[[IDX_1]]] [1, 8, 32, 32] [1, 1, 1, 1] :
+// MULTI-SAME:          tensor<1x16x32x224xf16> to tensor<1x8x32x32xf16>
+
+// MULTI-NEXT:          %[[CONV_RES:.*]] = linalg.conv_2d_nhwc_fhwc
+// MULTI-SAME:          ins(%[[INPUT_SLICE]], %[[FILTER_SLICE]] :
+// MULTI-SAME:          tensor<1x8x32x128xf16>, tensor<32x1x1x128xf16>)
+// MULTI-SAME:          outs(%[[RES_SLICE]] : tensor<1x8x32x32xf16>) -> tensor<1x8x32x32xf16>
+
+// MULTI-NEXT:          %[[CONV_RES_SLICE:.*]] = tensor.insert_slice %[[CONV_RES]] into
+// MULTI-SAME:          %[[RES_TENSOR_TILED]]
+// MULTI-SAME:          [0, %[[IDX_0]], 0, %[[IDX_1]]] [1, 8, 32, 32] [1, 1, 1, 1] :
+// MULTI-SAME:          tensor<1x8x32x32xf16> into tensor<1x16x32x224xf16>
+
+// MULTI-NEXT:          scf.yield %[[CONV_RES_SLICE]] : tensor<1x16x32x224xf16>
+// MULTI-NEXT:        }
+// MULTI-NEXT:        scf.yield %[[COMP_RES_TENSOR_TILED]] : tensor<1x16x32x224xf16>
+// MULTI-NEXT:      }
+
+// MULTI:           return
+// MULTI-NEXT:    }

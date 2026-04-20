@@ -48,6 +48,13 @@ def getHexagonLauncherClass(device_type="dsp"):
                 "_mlir_ciface_" if len(return_profs) > 0 else ""
             ) + pack_metadata[6]
             iterations = pack_metadata[8]
+            compiled_scratch = pack_metadata[9] if len(pack_metadata) > 9 else None
+            compiled_enable_multithreading = (
+                pack_metadata[10] if len(pack_metadata) > 10 else None
+            )
+            compiled_enable_threaded_dispatch = (
+                pack_metadata[11] if len(pack_metadata) > 11 else None
+            )
             num_fixed_args = 9
             inputs_with_constants = list(args[num_fixed_args:])
             inputs = [
@@ -65,7 +72,16 @@ def getHexagonLauncherClass(device_type="dsp"):
                     """
                 )
             self.launcher._exec_kernel(
-                kernel_llir, iterations, func_name, inputs, return_profs, launch_grid
+                kernel_llir,
+                iterations,
+                func_name,
+                inputs,
+                return_profs,
+                launch_grid,
+                compiled_scratch=compiled_scratch,
+                compiled_enable_multithreading=compiled_enable_multithreading,
+                compiled_enable_threaded_dispatch=compiled_enable_threaded_dispatch,
+                runtime_options=kwargs,
             )
             # TODO: There seems to be no way to propogate the call returns upward, because
             #    - The call result is not used by the caller
@@ -132,3 +148,19 @@ class HexagonDriver(DriverBase):
 
     def get_current_stream(self, device):
         return None
+
+    def get_device_interface(self):
+        import torch
+
+        return torch.cpu
+
+    def get_empty_cache_for_benchmark(self):
+        import torch
+
+        device = "cpu"
+        # 256MB cache
+        cache_size = 256 * 1024 * 1024
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device=device)
+
+    def clear_cache(self, cache):
+        cache.zero_()

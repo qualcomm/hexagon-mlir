@@ -1,19 +1,19 @@
 // RUN: linalg-hexagon-opt %s -hexagonmem-to-llvm | FileCheck %s
 
-// CHECK-LABEL:   llvm.func @hexagon_runtime_free_1d(!llvm.ptr)
-// CHECK:         llvm.func @hexagon_runtime_copy(!llvm.ptr, !llvm.ptr, i32, i1, i1)
-// CHECK:         llvm.func @hexagon_runtime_alloc_1d(i32, i64, i1) -> !llvm.ptr
+// CHECK-LABEL:   llvm.func @hexagon_runtime_free_1d_dsp(!llvm.ptr)
+// CHECK:         llvm.func @hexagon_runtime_copy_dsp(!llvm.ptr, !llvm.ptr, i32, i1, i1)
+// CHECK:         llvm.func @hexagon_runtime_alloc_1d_dsp(i32, i64, i1) -> !llvm.ptr
 
-// CHECK: %[[ALLOC1:.*]] = llvm.call @hexagon_runtime_alloc_1d({{.*}}) : (i32, i64, i1) -> !llvm.ptr
-// CHECK: %[[ALLOC2:.*]] = llvm.call @hexagon_runtime_alloc_1d({{.*}}) : (i32, i64, i1) -> !llvm.ptr
-// CHECK: %[[ALLOC3:.*]] = llvm.call @hexagon_runtime_alloc_1d({{.*}}) : (i32, i64, i1) -> !llvm.ptr
-// CHECK: llvm.call @hexagon_runtime_copy(%[[DST1:.*]], %[[SRC1:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
-// CHECK: llvm.call @hexagon_runtime_copy(%[[DST2:.*]], %[[SRC2:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
+// CHECK: %[[ALLOC1:.*]] = llvm.call @hexagon_runtime_alloc_1d_dsp({{.*}}) : (i32, i64, i1) -> !llvm.ptr
+// CHECK: %[[ALLOC2:.*]] = llvm.call @hexagon_runtime_alloc_1d_dsp({{.*}}) : (i32, i64, i1) -> !llvm.ptr
+// CHECK: %[[ALLOC3:.*]] = llvm.call @hexagon_runtime_alloc_1d_dsp({{.*}}) : (i32, i64, i1) -> !llvm.ptr
+// CHECK: llvm.call @hexagon_runtime_copy_dsp(%[[DST1:.*]], %[[SRC1:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
+// CHECK: llvm.call @hexagon_runtime_copy_dsp(%[[DST2:.*]], %[[SRC2:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
 // CHECK: linalg.add
-// CHECK: llvm.call @hexagon_runtime_copy(%[[DST3:.*]], %[[SRC3:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
-// CHECK: llvm.call @hexagon_runtime_free_1d({{.*}}) : (!llvm.ptr) -> ()
-// CHECK: llvm.call @hexagon_runtime_free_1d({{.*}}) : (!llvm.ptr) -> ()
-// CHECK: llvm.call @hexagon_runtime_free_1d({{.*}}) : (!llvm.ptr) -> ()
+// CHECK: llvm.call @hexagon_runtime_copy_dsp(%[[DST3:.*]], %[[SRC3:.*]], {{.*}}) : (!llvm.ptr, !llvm.ptr, i32, i1, i1) -> ()
+// CHECK: llvm.call @hexagon_runtime_free_1d_dsp({{.*}}) : (!llvm.ptr) -> ()
+// CHECK: llvm.call @hexagon_runtime_free_1d_dsp({{.*}}) : (!llvm.ptr) -> ()
+// CHECK: llvm.call @hexagon_runtime_free_1d_dsp({{.*}}) : (!llvm.ptr) -> ()
 
 
 func.func @add(%arg0: memref<?xi8>, %arg1: memref<?xi8>, %arg2: memref<?xi8>, %n: index) {

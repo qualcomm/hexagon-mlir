@@ -472,22 +472,22 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
         MemRefType::get(data.tileDims, elType, AffineMap(), cacheMemorySpace);
     builder.setInsertionPoint(band.front());
     memref::AllocOp alloc =
-        builder.create<memref::AllocOp>(band.front().getLoc(), type);
+        memref::AllocOp::create(builder, band.front().getLoc(), type);
     Value cached = entry.second.cached = alloc.getResult();
     builder.setInsertionPointAfter(band.front());
-    builder.create<memref::DeallocOp>(band.front().getLoc(), cached);
+    memref::DeallocOp::create(builder, band.front().getLoc(), cached);
     if (data.state == MemRefState::Full) {
       // Replace loop body
       assert(succeeded(
           replaceAllMemRefUsesWith(entry.first, cached, band.front())));
       // Generate copies to/from cache
       builder.setInsertionPoint(band.front());
-      builder.create<memref::CopyOp>(band.front().getLoc(), entry.first,
-                                     cached);
+      memref::CopyOp::create(builder, band.front().getLoc(), entry.first,
+                             cached);
       builder.setInsertionPointAfter(band.front());
       if (data.hasWrite) {
-        builder.create<memref::CopyOp>(band.front().getLoc(), cached,
-                                       entry.first);
+        memref::CopyOp::create(builder, band.front().getLoc(), cached,
+                               entry.first);
         Block *block = band.back().getBody();
         auto userFilterFn = genDomFilterFn(block);
         assert(succeeded(replaceAllMemRefUsesWith(entry.first, cached, {}, {},
@@ -617,7 +617,7 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
         }
         AffineMap lbMap = AffineMap::get(band.size(), 0, sumExpr);
         Value offset =
-            builder.create<affine::AffineApplyOp>(loc, lbMap, extraOperands)
+            affine::AffineApplyOp::create(builder, loc, lbMap, extraOperands)
                 .getResult();
         OpFoldResult copySize = builder.getIndexAttr(data.tileDims[i]);
         OpFoldResult cachedOffset = builder.getIndexAttr(0);
@@ -643,18 +643,17 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
           subviewTypeSizes[i] = ShapedType::kDynamic;
           // Need to compute max with 0.
           Value zero =
-              builder.create<arith::ConstantOp>(loc, builder.getIndexAttr(0));
-          offset = builder.create<index::MaxSOp>(loc, zero, offset);
+              arith::ConstantOp::create(builder, loc, builder.getIndexAttr(0));
+          offset = index::MaxSOp::create(builder, loc, zero, offset);
           assert(isa<IntegerAttr>(cast<Attribute>(copySize)) &&
                  "copySize should be a constant here");
-          Value copySizeValue = builder.create<arith::ConstantOp>(
-              loc, cast<IntegerAttr>(cast<Attribute>(copySize)));
+          Value copySizeValue = arith::ConstantOp::create(
+              builder, loc, cast<IntegerAttr>(cast<Attribute>(copySize)));
           cachedOffset =
-              builder.create<index::SubOp>(loc, offset, zero).getResult();
+              index::SubOp::create(builder, loc, offset, zero).getResult();
           // size = size - (max(0, offset) - offset)
-          copySize = builder
-                         .create<index::SubOp>(loc, copySizeValue,
-                                               cast<Value>(cachedOffset))
+          copySize = index::SubOp::create(builder, loc, copySizeValue,
+                                          cast<Value>(cachedOffset))
                          .getResult();
         }
         if (srcType.isDynamicDim(i) || !ub ||
@@ -682,14 +681,13 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
           if (isa<Value>(copySize)) {
             copySizeValue = cast<Value>(copySize);
           } else {
-            copySizeValue = builder.create<arith::ConstantOp>(
-                loc, cast<IntegerAttr>(cast<Attribute>(copySize)));
+            copySizeValue = arith::ConstantOp::create(
+                builder, loc, cast<IntegerAttr>(cast<Attribute>(copySize)));
           }
-          Value dimSize = builder.create<memref::DimOp>(loc, entry.first, i);
-          copySize = builder
-                         .create<index::MinSOp>(
-                             loc, copySizeValue,
-                             builder.create<index::SubOp>(loc, dimSize, offset))
+          Value dimSize = memref::DimOp::create(builder, loc, entry.first, i);
+          copySize = index::MinSOp::create(
+                         builder, loc, copySizeValue,
+                         index::SubOp::create(builder, loc, dimSize, offset))
                          .getResult();
         }
 
@@ -714,8 +712,8 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
                                  ShapedType::kDynamic, subviewTypeStrides));
 
       // Create subview of the original memref
-      Value originalMemRefSubView = builder.create<memref::SubViewOp>(
-          loc, subviewType, entry.first, subviewOffsets, subviewSizes,
+      Value originalMemRefSubView = memref::SubViewOp::create(
+          builder, loc, subviewType, entry.first, subviewOffsets, subviewSizes,
           subviewStrides);
 
       // If any offset or size is dynamic, need to create subview of cached.
@@ -728,17 +726,18 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
             MemRefType::get(subviewTypeSizes, elType,
                             StridedLayoutAttr::get(band.front().getContext(),
                                                    offsetValue, cachedStrides));
-        cachedSubview = builder.create<memref::SubViewOp>(
-            loc, cachedSubviewType, cached, cachedSubviewOffsets, subviewSizes,
-            subviewStrides);
+        cachedSubview = memref::SubViewOp::create(
+            builder, loc, cachedSubviewType, cached, cachedSubviewOffsets,
+            subviewSizes, subviewStrides);
       }
 
       // Copy from original memref subview to cache
-      builder.create<memref::CopyOp>(loc, originalMemRefSubView, cachedSubview);
+      memref::CopyOp::create(builder, loc, originalMemRefSubView,
+                             cachedSubview);
       builder.setInsertionPoint(band.back().getBody()->getTerminator());
       if (data.hasWrite) {
-        builder.create<memref::CopyOp>(loc, cachedSubview,
-                                       originalMemRefSubView);
+        memref::CopyOp::create(builder, loc, cachedSubview,
+                               originalMemRefSubView);
       }
     }
   }

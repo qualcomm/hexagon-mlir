@@ -19,19 +19,19 @@ HexagonBufferAlias::HexagonBufferAlias(HexagonBuffer &buffer, size_t nbytes)
   assert(origBuffer->TotalBytes() == nbytes &&
          "Incorrect buffer size mentioned");
   assert(origBuffer->GetNdim() == 1 &&
-         "Expected buffer to be 1D to create pointer table alias");
-  pointerTable.resize(nbytes / CHUNK_SIZE);
+         "Expected buffer to be 1D to create crouton alias");
+  croutonTable.resize(nbytes / CROUTON_SIZE);
   uint8_t *basePtr = reinterpret_cast<uint8_t *>(origBuffer->GetPointer());
-  for (int i = 0; i < pointerTable.size(); i++) {
-    pointerTable[i] = basePtr;
+  for (int i = 0; i < croutonTable.size(); i++) {
+    croutonTable[i] = basePtr;
     basePtr += 2048;
   }
 }
 
-void *HexagonBufferAlias::GetPointerTableBase() { return pointerTable.data(); }
+void *HexagonBufferAlias::GetCroutonTableBase() { return croutonTable.data(); }
 
-std::vector<void *> HexagonBufferAlias::GetPointerTable() {
-  return pointerTable;
+std::vector<void *> HexagonBufferAlias::GetCroutonTable() {
+  return croutonTable;
 }
 
 } // namespace hexagon

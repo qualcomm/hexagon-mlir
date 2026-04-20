@@ -50,7 +50,7 @@ Value convertToIndex(OpBuilder &builder, Location loc, Value value) {
     return value;
   auto indexType = builder.getIndexType();
   auto indexValue =
-      builder.create<mlir::arith::IndexCastOp>(loc, indexType, value);
+      mlir::arith::IndexCastOp::create(builder, loc, indexType, value);
   return indexValue;
 }
 
@@ -81,8 +81,8 @@ void formSCFThreads(IRRewriter &rewriter, scf::ForOp forOp) {
   SmallVector<OpFoldResult> steps{getAsOpFoldResult(step)};
 
   // create the `scf::forall` and move ops to it.
-  auto forallOp = rewriter.create<scf::ForallOp>(
-      loc, lowerBounds, upperBounds, steps, ValueRange(), std::nullopt);
+  auto forallOp = scf::ForallOp::create(rewriter, loc, lowerBounds, upperBounds,
+                                        steps, ValueRange(), std::nullopt);
 
   Block *forBody = forOp.getBody();
   Block *forallBody = forallOp.getBody();
@@ -95,8 +95,8 @@ void formSCFThreads(IRRewriter &rewriter, scf::ForOp forOp) {
 
   // In case `scf::forOp` was ixy etc type, cast to `index` type.
   if (isa<IntegerType>(forIV.getType())) {
-    Value val = rewriter.create<mlir::arith::IndexCastOp>(loc, forIV.getType(),
-                                                          forallIV);
+    Value val = mlir::arith::IndexCastOp::create(rewriter, loc, forIV.getType(),
+                                                 forallIV);
     mapping.map(forIV, val);
   } else {
     mapping.map(forIV, forallIV);

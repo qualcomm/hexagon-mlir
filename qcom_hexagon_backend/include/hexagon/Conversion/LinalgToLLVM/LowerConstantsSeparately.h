@@ -207,13 +207,13 @@ struct LowerConstantsSeparatelyPass
               builder.getContext(), LLVM::Linkage::External);
 
           // Create a new extern GlobalOp
-          auto externGlobalOp = builder.create<LLVM::GlobalOp>(
-              globalOp.getLoc(), /*resultTypes=*/TypeRange(), typeAttr,
-              /*constant=*/nullptr, symNameAttr, linkageAttrExternGlobalOp,
-              /*dso_local=*/nullptr, /*thread_local=*/nullptr,
-              /*value=*/nullptr, /*alignment=*/nullptr, /*addr_space=*/nullptr,
-              /*unnamed_addr=*/nullptr, /*section=*/nullptr, /*comdat=*/nullptr,
-              /*dbg_expr=*/nullptr, /*visibility=*/nullptr);
+          auto externGlobalOp =
+              LLVM::GlobalOp::create(builder, globalOp.getLoc(),
+                                     /*type=*/globalOp.getType(),
+                                     /*isConstant=*/false,
+                                     /*linkage=*/LLVM::Linkage::External,
+                                     /*name=*/globalOp.getSymName(),
+                                     /*value=*/Attribute{});
 
           // Replace the original GlobalOp that was the constant definition with
           // the new "extern" GlobalOp, which references a constant from the

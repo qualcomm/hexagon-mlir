@@ -73,8 +73,8 @@ void replaceAllocsWithEmpty(FunctionOpInterface funcOp, IRRewriter &rewriter) {
       auto elType = TType.getElementType();
       auto loc = genericOp.getLoc();
       rewriter.setInsertionPointAfterValue(val);
-      auto empty = rewriter.create<tensor::EmptyOp>(
-          loc, tensor::getMixedSizes(rewriter, loc, val), elType);
+      auto empty = tensor::EmptyOp::create(
+          rewriter, loc, tensor::getMixedSizes(rewriter, loc, val), elType);
       genericOp.setDpsInitOperand(i, empty.getResult());
     }
   });
@@ -212,9 +212,9 @@ void replaceReinterpretOp(CandidatesTy &candidates, IRRewriter &rewriter) {
     auto ssizes = castOp.getStaticSizes();
     auto sstrides = castOp.getStaticStrides();
 
-    auto replacement = rewriter.create<ReinterpretOpTy>(
-        castOp.getLoc(), castOp.getType(), castOp.getSource(), offsets, sizes,
-        strides, soffsets, ssizes, sstrides);
+    auto replacement = ReinterpretOpTy::create(
+        rewriter, castOp.getLoc(), castOp.getType(), castOp.getSource(),
+        offsets, sizes, strides, soffsets, ssizes, sstrides);
 
     rewriter.replaceAllUsesWith(castOp.getResult(), replacement.getResult());
     materializeOp.setRestrict(true);

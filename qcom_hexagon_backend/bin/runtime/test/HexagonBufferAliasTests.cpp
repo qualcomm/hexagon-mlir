@@ -21,13 +21,13 @@ public:
 TEST_F(HexagonBufferAliasTest, CreateAlias) {
   HexagonBuffer hb(2 * 2048 /* nbytes */, 2048 /* alignment */, false);
   auto alias = hexagon::HexagonBufferAlias(hb, 2 * 2048);
-  void **pointerTableBasePtr =
-      reinterpret_cast<void **>(alias.GetPointerTableBase());
-  uint8_t *pointerPtr = reinterpret_cast<uint8_t *>(*pointerTableBasePtr);
+  void **croutonTableBasePtr =
+      reinterpret_cast<void **>(alias.GetCroutonTableBase());
+  uint8_t *croutonPtr = reinterpret_cast<uint8_t *>(*croutonTableBasePtr);
   uint8_t *bufferPtr = reinterpret_cast<uint8_t *>(hb.GetPointer());
   for (int i = 0; i < 2; i++) {
-    EXPECT_EQ(pointerPtr, bufferPtr);
-    pointerPtr += 2048;
+    EXPECT_EQ(croutonPtr, bufferPtr);
+    croutonPtr += 2048;
     bufferPtr += 2048;
   }
 }
@@ -35,13 +35,13 @@ TEST_F(HexagonBufferAliasTest, CreateAlias) {
 TEST_F(HexagonBufferAliasTest, CreateAliasVtcm) {
   HexagonBuffer hb(2 * 2048 /* nbytes */, 2048 /* alignment */, true);
   auto alias = hexagon::HexagonBufferAlias(hb, 2 * 2048);
-  void **pointerTableBasePtr =
-      reinterpret_cast<void **>(alias.GetPointerTableBase());
-  uint8_t *pointerPtr = reinterpret_cast<uint8_t *>(*pointerTableBasePtr);
+  void **croutonTableBasePtr =
+      reinterpret_cast<void **>(alias.GetCroutonTableBase());
+  uint8_t *croutonPtr = reinterpret_cast<uint8_t *>(*croutonTableBasePtr);
   uint8_t *bufferPtr = reinterpret_cast<uint8_t *>(hb.GetPointer());
   for (int i = 0; i < 2; i++) {
-    EXPECT_EQ(pointerPtr, bufferPtr);
-    pointerPtr += 2048;
+    EXPECT_EQ(croutonPtr, bufferPtr);
+    croutonPtr += 2048;
     bufferPtr += 2048;
   }
 }

@@ -21,8 +21,8 @@ namespace hexagon {
 inline constexpr unsigned DEFAULT_DDR_ADDRESS_SPACE = 0;
 inline constexpr unsigned VTCM_ADDRESS_SPACE = 1;
 
-inline const SmallVector<unsigned> INT8_TILE_SHAPE = {8, 8, 32};
-inline const SmallVector<unsigned> F16_TILE_SHAPE = {8, 2, 32, 2};
+inline const SmallVector<unsigned> INT8_CROUTON_SHAPE = {8, 8, 32};
+inline const SmallVector<unsigned> F16_CROUTON_SHAPE = {8, 2, 32, 2};
 
 /// Return `true` if memref type either doesn't have any memspace attribute
 /// (in which case it belongs to default DDR memspace 0) or has an integer

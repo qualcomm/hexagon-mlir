@@ -19,13 +19,14 @@
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
+#include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 #include "hexagon/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
@@ -54,6 +55,7 @@ using namespace hexagon;
 
 #define GEN_PASS_DEF_AFFINETOLLVM
 #include "hexagon/Conversion/AffineToLLVM/Passes.h.inc"
+#undef GEN_PASS_DEF_AFFINETOLLVM
 
 namespace {
 
@@ -64,12 +66,13 @@ public:
 
   // Add depdendent dialects
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
-                    linalg::LinalgDialect, affine::AffineDialect,
-                    scf::SCFDialect, tensor::TensorDialect,
-                    cf::ControlFlowDialect, bufferization::BufferizationDialect,
-                    vector::VectorDialect, memref::MemRefDialect,
-                    LLVM::LLVMDialect, hexagonmem::HexagonMemDialect>();
+    registry
+        .insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
+                tensor::TensorDialect, cf::ControlFlowDialect,
+                bufferization::BufferizationDialect, vector::VectorDialect,
+                memref::MemRefDialect, LLVM::LLVMDialect,
+                crouton::CroutonDialect, hexagonmem::HexagonMemDialect>();
   }
 
   void runOnOperation() override {

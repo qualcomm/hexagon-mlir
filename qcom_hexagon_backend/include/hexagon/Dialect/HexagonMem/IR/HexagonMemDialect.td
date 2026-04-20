@@ -19,10 +19,15 @@ def HexagonMem_Dialect : Dialect {
 
   let summary = "HexagonMem operations";
 
-  let description =
-      [{The `hexagonmem` dialect is intended to hold ops and types related to
-            Hexagon VTCM or DDR memory manipulation including allocation,
-        de-allocation and copy ops.}];
+  let description = [{
+    The `hexagonmem` dialect is intended to hold ops and types related to
+    Hexagon VTCM or DDR memory manipulation including allocation, de-allocation
+    and copy ops.
+  }];
+
+  let dependentDialects = [
+    "mlir::crouton::CroutonDialect"
+  ];
 
   let extraClassDeclaration = [{
     void registerTypes();

@@ -186,20 +186,22 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
     // Retrieve an existing LLVM global variable named "handler_name" or
     // create it to store the string "lwp_handler".
     auto getOrCreateHandlerGlobal = [&]() -> LLVM::GlobalOp {
-      auto global = module.lookupSymbol<LLVM::GlobalOp>("handler_name");
-      if (global)
-        return global;
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointToStart(module.getBody());
       auto str = builder.getStringAttr("lwp_handler\0"s);
 
-      return builder.create<LLVM::GlobalOp>(
-          module.getLoc(), TypeAttr::get(strType), UnitAttr::get(ctx),
-          builder.getStringAttr("handler_name"),
-          LLVM::LinkageAttr::get(ctx, LLVM::Linkage::Internal), UnitAttr(),
-          UnitAttr(), UnitAttr(), str, IntegerAttr(),
-          builder.getI32IntegerAttr(0), nullptr, StringAttr(), SymbolRefAttr(),
-          ArrayAttr(), LLVM::VisibilityAttr());
+      auto global = LLVM::GlobalOp::create(builder, module.getLoc(),
+                                           /*type=*/strType,
+                                           /*isConstant=*/true,
+                                           /*linkage=*/LLVM::Linkage::Internal,
+                                           /*name=*/"handler_name",
+                                           /*value=*/str,
+                                           /*alignment=*/0,
+                                           /*addrSpace=*/0,
+                                           /*dsoLocal=*/false,
+                                           /*thread_local=*/false);
+
+      return global;
     };
 
     // Retrieve or create the LLVM function 'llvm.hexagon.instrprof.custom'.
@@ -211,8 +213,8 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
         auto funcTy = LLVM::LLVMFunctionType::get(
             voidTy, ArrayRef<Type>{i8PtrTy, i32Ty}, false);
-        auto func = builder.create<LLVM::LLVMFuncOp>(
-            module.getLoc(), "llvm.hexagon.instrprof.custom", funcTy);
+        auto func = LLVM::LLVMFuncOp::create(
+            builder, module.getLoc(), "llvm.hexagon.instrprof.custom", funcTy);
       }
     };
 
@@ -221,8 +223,8 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
                                        auto gep, Value id) {
       auto symbolRef =
           FlatSymbolRefAttr::get(ctx, "llvm.hexagon.instrprof.custom");
-      auto instr = builder.create<LLVM::CallOp>(loc, TypeRange{}, symbolRef,
-                                                ValueRange{gep, id});
+      auto instr = LLVM::CallOp::create(builder, loc, TypeRange{}, symbolRef,
+                                        ValueRange{gep, id});
     };
 
     // Get or create pointer to the string data "lwp_handler".
@@ -234,11 +236,11 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
 
       // Get the global variable "handler_name".
       auto global = getOrCreateHandlerGlobal();
-      auto addr = builder.create<LLVM::AddressOfOp>(loc, global);
-      auto zero = builder.create<LLVM::ConstantOp>(
-          loc, i32Ty, builder.getI32IntegerAttr(0));
-      globalGEP = builder.create<LLVM::GEPOp>(loc, i8PtrTy, strType, addr,
-                                              ArrayRef<Value>{zero, zero});
+      auto addr = LLVM::AddressOfOp::create(builder, loc, global);
+      auto zero = LLVM::ConstantOp::create(builder, loc, i32Ty,
+                                           builder.getI32IntegerAttr(0));
+      globalGEP = LLVM::GEPOp::create(builder, loc, i8PtrTy, strType, addr,
+                                      ArrayRef<Value>{zero, zero});
       return globalGEP;
     };
 
@@ -256,8 +258,8 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
       builder.setInsertionPointToStart(&func.getBody().front());
 
       auto gep = getOrCreateGlobalGEP(builder, loc);
-      auto id = builder.create<LLVM::ConstantOp>(
-          loc, i32Ty, builder.getI32IntegerAttr(increment_loopId++));
+      auto id = LLVM::ConstantOp::create(
+          builder, loc, i32Ty, builder.getI32IntegerAttr(increment_loopId++));
 
       emitInstrumentationCall(builder, loc, gep, id);
 
@@ -287,8 +289,8 @@ struct HexagonLWPPass : public ::impl::HexagonLWPPassBase<HexagonLWPPass> {
         printLines(lines, increment_loopId, opNames);
 
         auto gep = getOrCreateGlobalGEP(builder, loc);
-        auto id = builder.create<LLVM::ConstantOp>(
-            loc, i32Ty, builder.getI32IntegerAttr(increment_loopId++));
+        auto id = LLVM::ConstantOp::create(
+            builder, loc, i32Ty, builder.getI32IntegerAttr(increment_loopId++));
 
         {
           OpBuilder::InsertionGuard guard(builder);

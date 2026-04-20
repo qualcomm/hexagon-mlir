@@ -107,8 +107,8 @@ struct ConvertLayout final
           padValue = rewriter.getF32FloatAttr(0.0);
         }
       }
-      auto padded = rewriter.create<arith::ConstantOp>(loc, padValue);
-      rewriter.create<linalg::FillOp>(loc, ValueRange{padded}, ValueRange{B});
+      auto padded = arith::ConstantOp::create(rewriter, loc, padValue);
+      linalg::FillOp::create(rewriter, loc, ValueRange{padded}, ValueRange{B});
     }
 
     // Create the linalg.generic operation
@@ -118,7 +118,7 @@ struct ConvertLayout final
         SmallVector<utils::IteratorType>(srcType.getRank(),
                                          utils::IteratorType::parallel),
         [=](OpBuilder &b, Location loc, ValueRange args) {
-          b.create<linalg::YieldOp>(loc, args[0]);
+          linalg::YieldOp::create(b, loc, args[0]);
         });
 
     return success();

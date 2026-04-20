@@ -155,8 +155,8 @@ void CollapseAddressSpacePass::runOnOperation() {
       rewriter.setInsertionPoint(
           funcOp); // Ensure new function is inserted before the old one
 
-      auto newFuncOp = rewriter.create<LLVM::LLVMFuncOp>(
-          funcOp.getLoc(), funcOp.getName(), newFuncType);
+      auto newFuncOp = LLVM::LLVMFuncOp::create(rewriter, funcOp.getLoc(),
+                                                funcOp.getName(), newFuncType);
       newFuncOp.setVisibility(funcOp.getVisibility());
 
       // Copy the passthrough attribute from the old function into the new one

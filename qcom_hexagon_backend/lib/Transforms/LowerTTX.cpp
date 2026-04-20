@@ -63,10 +63,10 @@ static Value getAsDimOpOrConst(OpBuilder &builder, Location loc, Value tensor,
   Value val;
   assert(tensorType && "expected ranked tensor type");
   if (tensorType.isDynamicDim(dim)) {
-    val = builder.create<tensor::DimOp>(loc, tensor, dim);
+    val = tensor::DimOp::create(builder, loc, tensor, dim);
   } else {
-    val =
-        builder.create<arith::ConstantIndexOp>(loc, tensorType.getShape()[dim]);
+    val = arith::ConstantIndexOp::create(builder, loc,
+                                         tensorType.getShape()[dim]);
   }
   return val;
 }
@@ -102,19 +102,19 @@ struct LowerScan : public OpRewritePattern<ttx::ScanOp> {
 
     // 1-D case. This is common and the likely only case.
     if (rank == 1) {
-      Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value oneIdx = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value oneIdx = arith::ConstantIndexOp::create(rewriter, loc, 1);
       Value size = getAsDimOpOrConst(rewriter, loc, input, 0);
 
       // extract accumulator initial value.
       Value accInitVal;
       if (!reverse) {
-        accInitVal =
-            rewriter.create<tensor::ExtractOp>(loc, input, ValueRange{zeroIdx});
+        accInitVal = tensor::ExtractOp::create(rewriter, loc, input,
+                                               ValueRange{zeroIdx});
       } else {
-        auto sub = rewriter.create<arith::SubIOp>(loc, size, oneIdx);
+        auto sub = arith::SubIOp::create(rewriter, loc, size, oneIdx);
         accInitVal =
-            rewriter.create<tensor::ExtractOp>(loc, input, ValueRange{sub});
+            tensor::ExtractOp::create(rewriter, loc, input, ValueRange{sub});
       }
 
       // Create scf-loop.
@@ -138,12 +138,12 @@ struct LowerScan : public OpRewritePattern<ttx::ScanOp> {
       rewriter.setInsertionPoint(forYield);
       Value curr;
       if (!reverse) {
-        curr = rewriter.create<tensor::ExtractOp>(loc, tensor, ValueRange{iv});
+        curr = tensor::ExtractOp::create(rewriter, loc, tensor, ValueRange{iv});
       } else {
-        auto sizeMinusOne = rewriter.create<arith::SubIOp>(loc, size, oneIdx);
-        auto revIdx = rewriter.create<arith::SubIOp>(loc, sizeMinusOne, iv);
-        curr =
-            rewriter.create<tensor::ExtractOp>(loc, tensor, ValueRange{revIdx});
+        auto sizeMinusOne = arith::SubIOp::create(rewriter, loc, size, oneIdx);
+        auto revIdx = arith::SubIOp::create(rewriter, loc, sizeMinusOne, iv);
+        curr = tensor::ExtractOp::create(rewriter, loc, tensor,
+                                         ValueRange{revIdx});
       }
       rewriter.inlineBlockBefore(opBody, forBody, Block::iterator(forYield),
                                  {acc, curr});
@@ -158,16 +158,16 @@ struct LowerScan : public OpRewritePattern<ttx::ScanOp> {
       rewriter.setInsertionPoint(forBody->getTerminator());
       Value nextTensor;
       if (!reverse) {
-        nextTensor = rewriter.create<tensor::InsertOp>(loc, yieldVal, tensor,
-                                                       ValueRange{iv});
+        nextTensor = tensor::InsertOp::create(rewriter, loc, yieldVal, tensor,
+                                              ValueRange{iv});
       } else {
-        auto sizeMinusOne = rewriter.create<arith::SubIOp>(loc, size, oneIdx);
-        auto revIdx = rewriter.create<arith::SubIOp>(loc, sizeMinusOne, iv);
-        nextTensor = rewriter.create<tensor::InsertOp>(loc, yieldVal, tensor,
-                                                       ValueRange{revIdx});
+        auto sizeMinusOne = arith::SubIOp::create(rewriter, loc, size, oneIdx);
+        auto revIdx = arith::SubIOp::create(rewriter, loc, sizeMinusOne, iv);
+        nextTensor = tensor::InsertOp::create(rewriter, loc, yieldVal, tensor,
+                                              ValueRange{revIdx});
       }
       rewriter.setInsertionPoint(forBody->getTerminator());
-      rewriter.create<scf::YieldOp>(loc, ValueRange{yieldVal, nextTensor});
+      scf::YieldOp::create(rewriter, loc, ValueRange{yieldVal, nextTensor});
       forBody->getTerminator()->erase();
       return success();
     }
@@ -197,9 +197,9 @@ struct LowerCumSum : public OpRewritePattern<ttx::CummulativeSumOp> {
     auto buildAccumulator = [](OpBuilder &builder, Location loc, Type elType,
                                Value a, Value b) -> Value {
       if (elType.isFloat()) {
-        return builder.create<arith::AddFOp>(loc, a, b).getResult();
+        return arith::AddFOp::create(builder, loc, a, b).getResult();
       }
-      return builder.create<arith::AddIOp>(loc, a, b).getResult();
+      return arith::AddIOp::create(builder, loc, a, b).getResult();
     };
 
     // build loop body performing the scalar accumulation.
@@ -211,25 +211,25 @@ struct LowerCumSum : public OpRewritePattern<ttx::CummulativeSumOp> {
       Value input = args[1];
       Value idx = ivs[0];
       auto thisVal =
-          builder.create<tensor::ExtractOp>(loc, input, ValueRange{idx});
+          tensor::ExtractOp::create(builder, loc, input, ValueRange{idx});
       Value accNext =
           buildAccumulator(builder, loc, acc.getType(), acc, thisVal);
 
-      auto inputNext = builder.create<tensor::InsertOp>(loc, accNext, input,
-                                                        ValueRange{idx});
+      auto inputNext = tensor::InsertOp::create(builder, loc, accNext, input,
+                                                ValueRange{idx});
       return {accNext, inputNext};
     };
 
     // 1-D cumsum case. This is the common case and so we handle it
     // separately to enable writing it as optimized version.
     if (rank == 1) {
-      Value lbs = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value lbs = arith::ConstantIndexOp::create(rewriter, loc, 1);
       Value ubs = getAsDimOpOrConst(rewriter, loc, input, 0);
-      Value steps = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+      Value steps = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
-      Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
       auto accInitVal =
-          rewriter.create<tensor::ExtractOp>(loc, input, ValueRange{zeroIdx});
+          tensor::ExtractOp::create(rewriter, loc, input, ValueRange{zeroIdx});
 
       SmallVector<Value> iterArgs{accInitVal, input};
       scf::LoopNest loopNest = scf::buildLoopNest(
@@ -260,11 +260,11 @@ struct LowerCumSum : public OpRewritePattern<ttx::CummulativeSumOp> {
     assert(inputType && initType && inputType == initType &&
            "expect input and output to be identical ranked tensors");
 
-    auto accInitVal = rewriter.create<tensor::ExtractSliceOp>(
-        loc, input, zeroOffsets, accSizes, oneStrides);
-    Value lbs = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    auto accInitVal = tensor::ExtractSliceOp::create(
+        rewriter, loc, input, zeroOffsets, accSizes, oneStrides);
+    Value lbs = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value ubs = getAsDimOpOrConst(rewriter, loc, input, axis);
-    Value steps = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value steps = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     auto buildTensorBody = [&](OpBuilder &builder, Location loc, ValueRange ivs,
                                ValueRange args) -> scf::ValueVector {
@@ -275,16 +275,16 @@ struct LowerCumSum : public OpRewritePattern<ttx::CummulativeSumOp> {
       auto thisOffsets = zeroOffsets;
       thisOffsets[axis] = ivs[0];
 
-      auto thisVal = rewriter
-                         .create<tensor::ExtractSliceOp>(
-                             loc, input, thisOffsets, accSizes, oneStrides)
-                         .getResult();
+      auto thisVal =
+          tensor::ExtractSliceOp::create(rewriter, loc, input, thisOffsets,
+                                         accSizes, oneStrides)
+              .getResult();
 
       // extract is at least 1-D tensor.
       auto elType = cast<RankedTensorType>(thisVal.getType()).getElementType();
       Value newAcc = buildAccumulator(builder, loc, elType, acc, thisVal);
-      auto newInput = rewriter.create<tensor::InsertSliceOp>(
-          loc, newAcc, input, thisOffsets, accSizes, oneStrides);
+      auto newInput = tensor::InsertSliceOp::create(
+          rewriter, loc, newAcc, input, thisOffsets, accSizes, oneStrides);
       return {newAcc, newInput};
     };
 

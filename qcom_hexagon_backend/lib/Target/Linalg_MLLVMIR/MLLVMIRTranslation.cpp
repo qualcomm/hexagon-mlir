@@ -70,11 +70,13 @@ void setLinalgToLLVMOptions(
   options.enableMultiThreading =
       !arch_kwargs.at("enableMultiThreading").compare(TRUE);
   options.enableVTCMTiling = !arch_kwargs.at("enableVTCMTiling").compare(TRUE);
+  options.scratch = std::stoll(arch_kwargs.at("scratch"));
   options.enableConvertToHexagonmem =
       !arch_kwargs.at("enableConvertToHexagonmem").compare(TRUE);
   options.enableHexagonmemCopyToDMA =
       !arch_kwargs.at("enableHexagonmemCopyToDMA").compare(TRUE);
   options.enableHexKL = !arch_kwargs.at("enableHexKL").compare(TRUE);
+  options.hexKLMode = arch_kwargs.at("hexKLMode");
   options.enableCollapseAddressSpace =
       !arch_kwargs.at("enableCollapseAddressSpace").compare(TRUE);
   options.tileSizes = arch_kwargs.at("tileSizes");
@@ -82,19 +84,30 @@ void setLinalgToLLVMOptions(
       !arch_kwargs.at("lowerConstantsInSeparateSharedObjects").compare(TRUE);
   options.enableBufferization =
       !arch_kwargs.at("enableBufferization").compare(TRUE);
+  options.enableSeedLayoutConversions =
+      !arch_kwargs.at("enableSeedLayoutConversions").compare(TRUE);
   options.enableSplitReduction =
       !arch_kwargs.at("enableSplitReduction").compare(TRUE);
   options.enableConvTiling = !arch_kwargs.at("enableConvTiling").compare(TRUE);
-  options.convTilingFactor = std::stoi(arch_kwargs.at("convTilingFactor"));
-  options.convTileHeightDim =
-      !arch_kwargs.at("convTileHeightDim").compare(TRUE);
-  options.convTileOCDim = !arch_kwargs.at("convTileOCDim").compare(TRUE);
+  options.convTileSizes = arch_kwargs.at("convTileSizes");
   options.enableLWP = !arch_kwargs.at("enableLWP").compare(TRUE);
   options.disableLWPLoop = !arch_kwargs.at("disableLWPLoop").compare(TRUE);
   options.enableVectorization =
       !arch_kwargs.at("enableVectorization").compare(TRUE);
+  options.enableSplitReduceGeneric =
+      !arch_kwargs.at("enableSplitReduceGeneric").compare(TRUE);
+  auto it = arch_kwargs.find("device_type");
+  if (it != arch_kwargs.end()) {
+    options.device_type = it->second;
+  } else {
+    options.device_type = "hexagon"; // default value
+  }
   options.enableHVXInlining =
       !arch_kwargs.at("enableHVXInlining").compare(TRUE);
+  options.enableSCFLoopUnroll =
+      !arch_kwargs.at("enableSCFLoopUnroll").compare(TRUE);
+  options.enableConversionToFp16 =
+      !arch_kwargs.at("enableConversionToFp16").compare(TRUE);
 }
 
 namespace mlir {

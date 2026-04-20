@@ -26,6 +26,16 @@ std::string getHmxMmF16FnName();
 std::string getHmxAhToRmF16FnName();
 std::string getHmxCopyF16ToF32SubmatrixFnName();
 
+// HexKL macro runtime entry points
+std::string getMacroInitializeFnName();
+std::string getMacroFinalizeFnName();
+std::string getMacroLockHmxFnName();
+std::string getMacroUnlockHmxFnName();
+std::string getMacroRmToAhF16InplaceFnName();
+std::string getMacroAhToRmF16InplaceFnName();
+std::string getMacroMmF16FnName();
+std::string getQurtMemCacheCleanFnName();
+
 } // namespace hexkl
 } // namespace mlir
 

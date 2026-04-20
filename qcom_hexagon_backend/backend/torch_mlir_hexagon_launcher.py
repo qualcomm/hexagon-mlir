@@ -111,13 +111,13 @@ class TorchMlirHexagonWrapperGenerator(HexagonWrapperGenerator):
                 file_name, exec_dir
             ),
             benchmarking_and_reporting=self.generate_benchmarking_and_reporting(
-                self.generate_llvm_function_call()
+                self.generate_llvm_function_call(), exec_dir
             ),
             write_to_file_calls=self.generate_tensor_write_to_file_calls(
                 file_name, exec_dir
             ),
             update_tensor=self.generate_update_tensor_calls(),
-            lwp=self.generate_lwp_call(),
+            lwp=self.generate_lwp_call(exec_dir),
         )
 
         return self.common_strings.code_string.format(
@@ -265,13 +265,23 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
         iterations: int = 1,
         options: dict = None,
         enable_etm=False,
+        cleanup_device_post_exec=True,
     ) -> list[Tensor]:
         if options is None:
             options = HexagonOptions().__dict__
 
+        local_dir_path, kernel_run_id = create_timestamped_folder(
+            func_name, base_dir_for_artifacts
+        )
+
         # Pass lwp related info to HexagonExecutor() for creating shared obj and pulling lwp.json file if enabled.
-        hexec = HexagonExecutor(options["enableLWP"], enable_etm)
-        local_dir_path = create_timestamped_folder(func_name, base_dir_for_artifacts)
+        hexec = HexagonExecutor(
+            kernel_run_id=kernel_run_id,
+            enable_lwp=options["enableLWP"],
+            enable_etm=enable_etm,
+            enable_hexkl=options["enableHexKL"],
+            cleanup_device_post_exec=cleanup_device_post_exec,
+        )
 
         filename = os.path.basename(mlir_bytecode_path)
         destination_path = os.path.join(local_dir_path, filename)
@@ -280,7 +290,7 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
 
         start_time = time.time()
         # Compile the mlir bytecode from file `mlir_bytecode_path`
-        (wrapper_generator, paths_to_shared_libs_generated) = self.compile_torch_mlir(
+        wrapper_generator, paths_to_shared_libs_generated = self.compile_torch_mlir(
             hexec,
             local_dir_path,
             mlir_bytecode_path,

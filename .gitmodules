@@ -1,6 +1,6 @@
 [submodule "triton"]
-	path = triton
-	url = https://github.com/triton-lang/triton.git
+       path = triton
+       url = https://github.com/triton-lang/triton.git
 [submodule "triton_shared"]
-	path = triton_shared
-	url = https://github.com/microsoft/triton-shared
+       path = triton_shared
+       url = https://github.com/facebookincubator/triton-shared.git

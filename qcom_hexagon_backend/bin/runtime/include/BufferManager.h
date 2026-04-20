@@ -14,7 +14,10 @@
 #include <utility>
 
 #include "HexagonBuffer.h"
+#include "HexagonBufferAlias.h"
 #include "HexagonCommon.h"
+
+class HexagonBufferAlias;
 
 class BufferManager {
 public:
@@ -39,6 +42,34 @@ public:
     void *ptr = buf->GetPointer();
     bufferMap_.insert({ptr, std::move(buf)});
     return ptr;
+  }
+
+  /// Returns a pointer to crouton-table that is constructed using `nBytes`
+  /// sized `buffer`. The table size is expected to be `nBytes/CROUTON_SIZE`
+  void *CreateBufferAlias(void *ptr, size_t nbytes) {
+    HexagonBuffer *buffer = FindBuffer<HexagonBuffer>(ptr, bufferMap_);
+    auto bufferAlias =
+        std::make_unique<hexagon::HexagonBufferAlias>(*buffer, nbytes);
+
+    auto *returnPtr = bufferAlias->GetCroutonTableBase();
+    // bufferAliasMap_ would be needed to find aliases given a base pointer when
+    // using HexagonBuffer::Copy calls
+    // TODO: Modify HexagonBuffer::Copy to support aliases
+    bufferAliasMap_.insert({returnPtr, std::move(bufferAlias)});
+    return returnPtr;
+  }
+
+  /// Takes the crouton pointer table and returns the base pointer to the
+  /// contiguous memref underneath
+  void *GetOrigBufferFromAlias(void *croutonTablePtr) {
+    hexagon::HexagonBufferAlias *aliasPtr =
+        FindBuffer<hexagon::HexagonBufferAlias>(croutonTablePtr,
+                                                bufferAliasMap_);
+    assert(aliasPtr != nullptr &&
+           "Expected the ptr to be a valid buffer alias created by "
+           "memref_to_crouton op");
+    auto *buffer = aliasPtr->origBuffer;
+    return buffer->GetPointer();
   }
 
   /// Finds and returns the pointer from the given map if it exists and a
@@ -76,6 +107,10 @@ public:
 private:
   /// Contains the HexagonBuffer objects managed by this class.
   std::unordered_map<void *, std::unique_ptr<HexagonBuffer>> bufferMap_;
+
+  /// Contains the HexagonBufferAlias objects managed by this class.
+  std::unordered_map<void *, std::unique_ptr<hexagon::HexagonBufferAlias>>
+      bufferAliasMap_;
 };
 
 #endif // BUFFERMANAGER_H_

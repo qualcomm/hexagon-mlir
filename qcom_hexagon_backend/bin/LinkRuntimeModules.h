@@ -19,8 +19,9 @@
 
 namespace mlir::Hexagon::Translate {
 
-void linkRuntimeModules(llvm::LLVMContext &ctx,
-                        std::unique_ptr<llvm::Module> &module);
+void linkRuntimeModules(
+    llvm::LLVMContext &ctx, std::unique_ptr<llvm::Module> &module,
+    const std::unordered_map<std::string, std::string> &arch_kwargs);
 
 } // namespace mlir::Hexagon::Translate
 

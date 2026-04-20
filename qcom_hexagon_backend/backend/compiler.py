@@ -11,6 +11,7 @@ import functools
 import os
 import re
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 from typing import Any, Dict, no_type_check
@@ -30,21 +31,36 @@ from .hexagon_options import HexagonOptions
 # mypy compiler.py hexagon_executor.py hexagon_launcher_base.py torch_mlir_hexagon_launcher.py triton_hexagon_launcher.py --follow-untyped-imports --check-untyped-defs
 
 
-def _get_triton_shared_opt_path() -> str:
-    path = os.getenv("TRITON_SHARED_OPT_PATH", "")
+def _get_triton_shared_opt_path(device_type: str) -> str:
+    path = os.getenv(
+        "TRITON_SHARED_OPT_PATH",
+        "",
+    )
     if path == "":
         raise Exception("TRITON_SHARED_OPT_PATH is not set.")
-    return path
+
+    bin_path = Path(path).resolve()
+
+    if not bin_path.exists() or not bin_path.is_file():
+        raise FileNotFoundError(
+            f"Could not find 'triton-shared-opt' at expected location: {bin_path}"
+        )
+    if not os.access(bin_path, os.X_OK):
+        raise PermissionError(
+            f"'triton-shared-opt' exists but is not executable: {bin_path}"
+        )
+
+    return str(bin_path)
 
 
-def ttir_to_ttsharedir(mod):
+def ttir_to_ttsharedir(mod: str, options):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
-        triton_shared_opt_path = _get_triton_shared_opt_path()
+        triton_shared_opt_path = _get_triton_shared_opt_path(options.device_type)
         subprocess.check_call(
             [
                 triton_shared_opt_path,
@@ -90,6 +106,9 @@ def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
     options_map = {k: str(v) for k, v in (options.__dict__).items()}
     # TODO: Move setting benchmarking iterations when additional stage for shared object creation is part of compilation pipeline.
     metadata["iterations"] = options_map["iterations"]
+    metadata["scratch"] = options_map["scratch"]
+    metadata["enableMultiThreading"] = options_map["enableMultiThreading"]
+    metadata["enableThreadedDispatch"] = options_map["enableThreadedDispatch"]
 
     # TODO: The lowering pipeline needs to be refactored similar to other Triton backends to
     # have a dynamic pipeline filtered by options with each pass represented by a pybind function.
@@ -138,13 +157,31 @@ class HexagonBackend(BaseBackend):
         return f"{version}-{self.target}"
 
     def parse_options(self, opts) -> Any:
-      assert self.target.backend == "hexagon"
-      args = {
-        k: opts[k]
-        for k in HexagonOptions.__dataclass_fields__.keys()
-        if k in opts
-      }
-      return HexagonOptions(**args)
+        assert self.target.backend == "hexagon"
+        args = {
+            k: opts[k] for k in HexagonOptions.__dataclass_fields__.keys() if k in opts
+        }
+        hexagon_opts = HexagonOptions(**args)
+
+        # When external VTCM scratch is enabled (scratch > 0), automatically
+        # configure flags for correct SPMD behavior at compile time so that
+        # both the compiled IR and the generated wrapper are consistent:
+        # - Disable enableConvertToHexagonmem to prevent VTCMPool from
+        #   concurrently trying to allocate VTCM alongside the external pool.
+        # - Disable enableHexagonmemCopyToDMA to avoid DMA/thread conflicts.
+        # - Enable enableThreadedDispatch so instances run in parallel on
+        #   real qurt hardware threads (handled at wrapper generation time).
+        # Users do not need to set these flags manually when scratch > 0.
+        if hexagon_opts.scratch > 0:
+            hexagon_opts = replace(
+                hexagon_opts,
+                enableMultiThreading=False,
+                enableConvertToHexagonmem=False,
+                enableVTCMTiling=True,
+                enableThreadedDispatch=True,
+            )
+
+        return hexagon_opts
 
     @staticmethod
     def make_ttir(mod, metadata, opt):
@@ -161,13 +198,13 @@ class HexagonBackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         passes.ttir.add_loop_unroll(pm)
         passes.common.add_cse(pm)
-        pm.run(mod)
+        pm.run(mod, "make_ttir")
         return mod
 
     # May need to add num_warps
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttsharedir"] = lambda src, metadata: ttir_to_ttsharedir(src)
+        stages["ttsharedir"] = lambda src, metadata: ttir_to_ttsharedir(src, options)
         if options.htp_kernel_gen:
             if options.target_artifact == "llir":
                 stages["llir"] = lambda src, metadata: ttsharedir_to_llir(
@@ -190,6 +227,8 @@ class HexagonBackend(BaseBackend):
                     src, options, metadata
                 )
         else:  # Default compilation pipeline
+            assert options.device_type == "hexagon"
+
             stages["o"] = lambda src, metadata: ttsharedir_to_obj(
                 src, options, metadata
             )
@@ -240,6 +279,9 @@ class HexagonBackend(BaseBackend):
             metadata.name,
             metadata.return_types,
             metadata.iterations,
+            metadata.scratch,
+            metadata.enableMultiThreading,
+            metadata.enableThreadedDispatch,
         )
 
     def get_module_map(self) -> Dict[str, ModuleType]:

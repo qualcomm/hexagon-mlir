@@ -150,8 +150,7 @@ static LogicalResult tileLinalgOp(linalg::LinalgOp op,
       }
       DBG(" -> inner loop dimension not compatible for vectorization");
       return failure();
-    } else if (innerLoopRange == dataTileSize &&
-               op.getNumParallelLoops() == 1) {
+    } else if (innerLoopRange == dataTileSize && op.getNumLoops() == 1) {
       DBG(" -> inner dim is already of data tile size, hence tiling for "
           "vectorization is not required");
       return failure();

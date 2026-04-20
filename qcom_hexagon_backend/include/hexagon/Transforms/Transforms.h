@@ -80,27 +80,57 @@ std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>> createLowerTTXPass();
 
 std::unique_ptr<OperationPass<func::FuncOp>> createMatmulToConvPass();
 
-std::unique_ptr<InterfacePass<FunctionOpInterface>> createMatmulToHexKLPass();
+std::unique_ptr<InterfacePass<FunctionOpInterface>> createMatmulToHexKLPass(
+    const MatmulToHexKLOptions &options = MatmulToHexKLOptions());
 
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createDecomposeHexKLMatmulPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>> createInsertScratchArgPass(
+    const InsertScratchArgOptions &options = InsertScratchArgOptions());
 
 std::unique_ptr<OperationPass<func::FuncOp>> createMemoryOffsetsPass();
 
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createScheduleMatmulForHVXPass();
 
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createSeedLayoutConversionsPass();
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>> createForceHVXCroutonPass();
+
 std::unique_ptr<OperationPass<ModuleOp>> createSmallExponentToMultiplyPass(
     const SmallExponentToMultiplyOptions &options =
         SmallExponentToMultiplyOptions());
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createPreprocessTiledConv2DPass();
 
 std::unique_ptr<OperationPass<ModuleOp>> removeMLProgramPass();
 
 std::unique_ptr<Pass> createReduceContractionRankPass();
 
+std::unique_ptr<Pass> createFoldCastsIntoMatmulPass();
+
 std::unique_ptr<Pass> createHoistScalarOpsPass();
 
 std::unique_ptr<Pass> createFoldMulFByZeroPass();
+
+std::unique_ptr<Pass> createFoldResourceTransposePass();
+
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createLowerHexKLMatmulToMacroPass();
+
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createPreprocessWeightsForHMXPass();
+
+std::unique_ptr<Pass> createFoldPackUnpackConstantsPass();
+
+std::unique_ptr<Pass> createEliminateRedundantUnpackPackPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>> createDivToMulOptimizationPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>> createSCFLoopUnrollPass(
+    const SCFLoopUnrollOptions &options = SCFLoopUnrollOptions());
 
 } // namespace hexagon
 } // namespace mlir

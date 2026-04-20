@@ -31,8 +31,9 @@ using namespace mlir;
 using namespace hexagon;
 using namespace mlir::hexagonmem;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_DMATOLLVM
 #include "hexagon/Conversion/DMAToLLVM/Passes.h.inc"
+#undef GEN_PASS_DEF_DMATOLLVM
 
 namespace {
 
@@ -53,7 +54,7 @@ static LLVM::ConstantOp getI32Constant(ConversionPatternRewriter &rewriter,
   MLIRContext *context = rewriter.getContext();
   Type paramTy = rewriter.getI32Type();
   // Create and return an LLVM constant operation with the given value
-  return rewriter.create<LLVM::ConstantOp>(loc, paramTy, val);
+  return LLVM::ConstantOp::create(rewriter, loc, paramTy, val);
 }
 
 // Function to truncate a value to i32 type
@@ -63,7 +64,7 @@ static Value truncToI32(ConversionPatternRewriter &rewriter, Location loc,
   assert(llvm::isa<IntegerType>(val.getType()) && "Expected an integer type");
   MLIRContext *context = rewriter.getContext();
   // Create and return a truncation operation to i32 type
-  return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), val);
+  return LLVM::TruncOp::create(rewriter, loc, rewriter.getI32Type(), val);
 }
 
 //===----------------------------------------------------------------------===//
@@ -114,7 +115,7 @@ Value convertToI32Type(mlir::Location loc, Value value,
   // Get the type of the value
   mlir::Type type = value.getType();
   assert(mlir::LLVM::isCompatibleType(type));
-  return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), value);
+  return LLVM::TruncOp::create(rewriter, loc, rewriter.getI32Type(), value);
 }
 
 // Function to cast a pointer to a different address space
@@ -122,9 +123,9 @@ static Value AddrSpaceCast(mlir::Location loc, Value inputPtr,
                            ConversionPatternRewriter &rewriter,
                            mlir::MLIRContext *context) {
   auto i32Type = rewriter.getI32Type();
-  auto asI32 = rewriter.create<LLVM::PtrToIntOp>(loc, i32Type, inputPtr);
-  return rewriter.create<LLVM::IntToPtrOp>(loc, getPtrTy(context),
-                                           asI32->getResult(0));
+  auto asI32 = LLVM::PtrToIntOp::create(rewriter, loc, i32Type, inputPtr);
+  return LLVM::IntToPtrOp::create(rewriter, loc, getPtrTy(context),
+                                  asI32->getResult(0));
 }
 
 // Function to create DMAStart operation
@@ -198,7 +199,7 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
                                             8);
   // Calculate the transfer size
   auto transferSize =
-      rewriter.create<LLVM::MulOp>(loc, numElements, typeSizeInBytes);
+      LLVM::MulOp::create(rewriter, loc, numElements, typeSizeInBytes);
 
   // Get the source and destination memory spaces
   auto srcMemSpace = getI32Constant(rewriter, loc, isVTCM(srcMemref) ? 1 : 0);
@@ -212,9 +213,9 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
         loc, *(adaptor.getOperands().begin() + srcRank + dstRank + tagRank + 5),
         rewriter, context);
     Value widthInBytes =
-        rewriter.create<LLVM::MulOp>(loc, width, typeSizeInBytes);
+        LLVM::MulOp::create(rewriter, loc, width, typeSizeInBytes);
     Value height =
-        (rewriter.create<LLVM::SDivOp>(loc, transferSize, widthInBytes))
+        (LLVM::SDivOp::create(rewriter, loc, transferSize, widthInBytes))
             ->getResult(0);
     // Stride arg is optional, and if present, it is only slow address space.
     // source stride iff stride is present, and dest is faster.
@@ -227,7 +228,7 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
                                rewriter, context)
             : width;
     auto srcStrideInBytes =
-        rewriter.create<LLVM::MulOp>(loc, srcStride, typeSizeInBytes);
+        LLVM::MulOp::create(rewriter, loc, srcStride, typeSizeInBytes);
     // dest stride iff stride is present, and src is faster.
     auto dstStride =
         (isVTCM(srcMemref) && (!(isVTCM(dstMemref))))
@@ -237,7 +238,7 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
                                rewriter, context)
             : width;
     auto dstStrideInBytes =
-        rewriter.create<LLVM::MulOp>(loc, dstStride, typeSizeInBytes);
+        LLVM::MulOp::create(rewriter, loc, dstStride, typeSizeInBytes);
 
     // Create a vector of operands for the DMA copy operation
     operands = {llvmSrcPtr,
@@ -263,13 +264,14 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
   rewriter.eraseOp(op);
 
   // Create the DMA copy operation
-  auto dmaCopyOp = rewriter.create<LLVM::CallOp>(loc, funcOp.value(), operands);
+  auto dmaCopyOp =
+      LLVM::CallOp::create(rewriter, loc, funcOp.value(), operands);
 
   // Get the token from the DMA copy operation
   auto token = *dmaCopyOp.getODSResults(0).begin();
 
   // Store the token in the tag memory reference
-  rewriter.create<LLVM::StoreOp>(loc, token, llvmTagPtr);
+  LLVM::StoreOp::create(rewriter, loc, token, llvmTagPtr);
 
   return success();
 }
@@ -330,11 +332,12 @@ LowerDMAWait::matchAndRewrite(memref::DmaWaitOp op, OpAdaptor adaptor,
   rewriter.eraseOp(op);
   // Create a load operation to get the token
   auto tokenLoadOp =
-      rewriter.create<LLVM::LoadOp>(loc, rewriter.getI32Type(), llvmTagPtr);
+      LLVM::LoadOp::create(rewriter, loc, rewriter.getI32Type(), llvmTagPtr);
   // Create a vector of operands for the DMA wait operation
   SmallVector<Value, 10> operands = {tokenLoadOp.getResult()};
   // Create the DMA wait operation
-  auto DMAWaitOp = rewriter.create<LLVM::CallOp>(loc, funcOp.value(), operands);
+  auto DMAWaitOp =
+      LLVM::CallOp::create(rewriter, loc, funcOp.value(), operands);
   // Return success
   return success();
 }
@@ -348,7 +351,7 @@ void populateDMAToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<LowerDMAStart, LowerDMAWait>(converter);
 }
 
-struct DMAToLLVMPass : public DMAToLLVMBase<DMAToLLVMPass> {
+struct DMAToLLVMPass : public ::impl::DMAToLLVMBase<DMAToLLVMPass> {
   using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {

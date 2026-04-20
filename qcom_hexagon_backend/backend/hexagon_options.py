@@ -19,6 +19,7 @@ class HexagonOptions:
     allowed_dot_input_precisions: Tuple[str] = ("ieee",)
     arch_triple: str = "hexagon"
     arch_features: str = f'+hvxv{os.getenv("HEXAGON_ARCH_VERSION")},+hvx-length128b'
+    device_type: str = "hexagon"
     vectorize: int = 1
     vector_length: int = 32
     num_threads: int = 4
@@ -38,6 +39,7 @@ class HexagonOptions:
     # TODO: Currently set name here temporarily. Need to set correctly to the name of the compiled kernel
     # when driver code is completed.
     name: str = "Hexagon"
+    instrumentation_mode: str = ""
     htp_kernel_gen: bool = False
     target_artifact: str = "o"
     iterations: int = 10  # Triton specific benchmarking iteration count
@@ -51,20 +53,33 @@ class HexagonOptions:
     enableCollapseAddressSpace: bool = True  # lower llvm.ptr<1> if hexagonmem did not
     enableConvTiling: bool = False
     enableDoubleBuffering: bool = False  # enable double buffering optimization
-    convTilingFactor: int = -1
-    convTileHeightDim: bool = False
-    convTileOCDim: bool = False
+    convTileSizes: str = ""
     enableConvertToHexagonmem: bool = True  # rewrites memref.alloc/copy to hexagonmem.*
     enableHexagonmemCopyToDMA: bool = False  # rewrites hexmem.copy to memref.dma_*
     enableHexKL: bool = False  # use HexKL to lower matmul and convolutions
-    enableMultiThreading: bool = False  # linalg-generic based multi-threading
+    hexKLMode: str = "micro"  # possible options "macro", "micro"
+    enableMultiThreading: bool = (
+        False  # linalg-generic based multi-threading (FormVirtualThreadsPass)
+    )
+    enableThreadedDispatch: bool = (
+        False  # use tm.exec() (real qurt threads) for SPMD grid dispatch; implicitly enabled when enableMultiThreading=True; when False, tm.exec_serial() is used
+    )
     enableSCFThreading: bool = False  # scf based multi-threading
     enableSplitReduction: bool = False  # split-reduction optimization
+    enableSplitReduceGeneric: bool = False  # split-reduce-generic optimization
     enableVectorization: bool = True  # enable HVX vectorization.
     enableVTCMTiling: bool = (
         True  # tile linalg-generic and introduce vtcm address-space
     )
+    # External VTCM scratch buffer size in bytes per program instance.
+    # scratch=0 (default): disabled, each instance allocates VTCM internally.
+    # scratch=N (N>0): enables external VTCM flow. The wrapper allocates
+    # N * prod(grid) bytes total, passes each instance a memref<Nxi8, 1>
+    # {hexagon.scratch} slice. The compiler tiles and plans within N bytes.
+    scratch: int = 0
     enableHVXInlining: bool = False
+    enableSCFLoopUnroll: bool = False
+    enableConversionToFp16: bool = False
 
     # This option enables 'seeding' of layout conversion ops around conv2d ops.
     # This introduces some builtin.unrealized_conversion_cast ops, that are expected
@@ -87,9 +102,13 @@ class HexagonOptions:
     # Increasing LWPloopDepth may cause overhead.
     LWPloopDepth: int = 1
 
+    # By default, delete all artifacts pushed to device for this kernel's execution after it runs.
+    # This solely applies to execution on the standalone launcher.
+    deviceCleanup: bool = True
+
     def __post_init__(self):
         # Validate target_artifact
-        valid_artifacts = {"o", "llir", "so"}
+        valid_artifacts = {"ttir", "ttsharedir", "llir", "o", "so"}
         if self.target_artifact not in valid_artifacts:
             raise ValueError(
                 f"Invalid target_artifact '{self.target_artifact}'. "

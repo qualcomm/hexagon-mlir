@@ -1,0 +1,3511 @@
+diff --git a/include/triton-shared/Analysis/UseAnalysis.h b/include/triton-shared/Analysis/UseAnalysis.h
+index a1c661b..051a002 100644
+--- a/include/triton-shared/Analysis/UseAnalysis.h
++++ b/include/triton-shared/Analysis/UseAnalysis.h
+@@ -91,6 +91,12 @@ public:
+     lattice->type = UseType::Undefined;
+   }
+ 
++  void
++  visitNonControlFlowArguments(RegionSuccessor &successor,
++                               ArrayRef<BlockArgument> arguments) override {
++    return;
++  }
++
+ private:
+   void propagateUse(UseInfo *lattice, const UseType &type) {
+     auto changed = lattice->meetUseType(type);
+diff --git a/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp b/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp
+index 097254c..e33b508 100644
+--- a/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp
++++ b/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp
+@@ -59,14 +59,14 @@ static Value getScalarValue(Value operand, Location loc,
+                   if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                     resType = shapedType.getElementType();
+                   }
+-                  return rewriter.create<arith::SIToFPOp>(loc, resType, src);
++                  return arith::SIToFPOp::create(rewriter, loc, resType, src);
+                 })
+                 .Case<arith::TruncFOp>([&](Operation *op) {
+                   auto resType = op->getResults()[0].getType();
+                   if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                     resType = shapedType.getElementType();
+                   }
+-                  return rewriter.create<arith::TruncFOp>(loc, resType, src);
++                  return arith::TruncFOp::create(rewriter, loc, resType, src);
+                 })
+                 .Default([](Operation *op) {
+                   llvm_unreachable("unsupported op in generating ");
+@@ -134,11 +134,11 @@ static Value getTransposedValue(Value source, const Location loc,
+     }
+   }
+ 
+-  Value transposeInit = rewriter.create<tensor::EmptyOp>(
+-      loc, transposedShape, sourceType.getElementType());
++  Value transposeInit = tensor::EmptyOp::create(rewriter, loc, transposedShape,
++                                                sourceType.getElementType());
+ 
+   Value transpose =
+-      rewriter.create<linalg::TransposeOp>(loc, source, transposeInit, perm)
++      linalg::TransposeOp::create(rewriter, loc, source, transposeInit, perm)
+           .getResults()[0];
+ 
+   return transpose;
+@@ -191,8 +191,8 @@ struct MakeTensorPtrConverter
+                              Location loc) const {
+     for (auto opnd : ops) {
+       if (isa<IntegerType>(opnd.getType())) {
+-        auto castOp = rewriter.create<arith::IndexCastOp>(
+-            loc, rewriter.getIndexType(), opnd);
++        auto castOp = arith::IndexCastOp::create(rewriter, loc,
++                                                 rewriter.getIndexType(), opnd);
+         vec.push_back(castOp.getResult());
+       } else {
+         assert(isa<IndexType>(opnd.getType()));
+@@ -224,8 +224,8 @@ struct MakeTensorPtrConverter
+     SmallVector<Value> newOffsets;
+     for (auto [offset, stride] :
+          llvm::zip(pointerState.offsets, pointerState.strides)) {
+-      auto mulOp = rewriter.create<arith::MulIOp>(loc, cast<Value>(offset),
+-                                                  cast<Value>(stride));
++      auto mulOp = arith::MulIOp::create(rewriter, loc, cast<Value>(offset),
++                                         cast<Value>(stride));
+       newOffsets.push_back(mulOp.getResult());
+     }
+ 
+@@ -278,71 +278,67 @@ private:
+                               ConversionPatternRewriter &rewriter) const {
+ 
+     auto zero =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+ 
+     auto one =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(1));
+ 
+-    Value block1Row = rewriter.create<memref::DimOp>(loc, block1, 0);
+-    Value block1Col = rewriter.create<memref::DimOp>(loc, block1, 1);
++    Value block1Row = memref::DimOp::create(rewriter, loc, block1, 0);
++    Value block1Col = memref::DimOp::create(rewriter, loc, block1, 1);
+ 
+-    Value block2Row = rewriter.create<memref::DimOp>(loc, block2, 0);
+-    Value block2Col = rewriter.create<memref::DimOp>(loc, block2, 1);
++    Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
++    Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
+ 
+-    auto block1Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst, /* offsets */
+-                                           ValueRange{zero, zero},
+-                                           /* sizes */
+-                                           ValueRange{block1Row, block1Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
++    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
++                                               ValueRange{zero, zero},
++                                               /* sizes */
++                                               ValueRange{block1Row, block1Col},
++                                               /* strides */
++                                               ValueRange{one, one});
+ 
+-    auto block2Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst,
+-                                           /* offsets */
+-                                           ValueRange{zero, block1Col},
+-                                           /* sizes */
+-                                           ValueRange{block2Row, block2Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
++    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
++                                               /* offsets */
++                                               ValueRange{zero, block1Col},
++                                               /* sizes */
++                                               ValueRange{block2Row, block2Col},
++                                               /* strides */
++                                               ValueRange{one, one});
+ 
+-    rewriter.create<memref::CopyOp>(loc, block1, block1Dst);
+-    rewriter.create<memref::CopyOp>(loc, block2, block2Dst);
++    memref::CopyOp::create(rewriter, loc, block1, block1Dst);
++    memref::CopyOp::create(rewriter, loc, block2, block2Dst);
+   }
+ 
+   void createStackedCopies(Value block1, Value block2, Value dst, Location loc,
+                            ConversionPatternRewriter &rewriter) const {
+ 
+     auto zero =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+     auto one =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(1));
+ 
+-    Value block1Row = rewriter.create<memref::DimOp>(loc, block1, 0);
+-    Value block1Col = rewriter.create<memref::DimOp>(loc, block1, 1);
++    Value block1Row = memref::DimOp::create(rewriter, loc, block1, 0);
++    Value block1Col = memref::DimOp::create(rewriter, loc, block1, 1);
+ 
+-    Value block2Row = rewriter.create<memref::DimOp>(loc, block2, 0);
+-    Value block2Col = rewriter.create<memref::DimOp>(loc, block2, 1);
++    Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
++    Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
+ 
+-    auto block1Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst, /* offsets */
+-                                           ValueRange{zero, zero},
+-                                           /* sizes */
+-                                           ValueRange{block1Row, block1Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
++    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
++                                               ValueRange{zero, zero},
++                                               /* sizes */
++                                               ValueRange{block1Row, block1Col},
++                                               /* strides */
++                                               ValueRange{one, one});
+ 
+-    auto block2Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst,
+-                                           /* offsets */
+-                                           ValueRange{block1Row, zero},
+-                                           /* sizes */
+-                                           ValueRange{block2Row, block2Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
++    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
++                                               /* offsets */
++                                               ValueRange{block1Row, zero},
++                                               /* sizes */
++                                               ValueRange{block2Row, block2Col},
++                                               /* strides */
++                                               ValueRange{one, one});
+ 
+-    rewriter.create<memref::CopyOp>(loc, block1, block1Dst);
+-    rewriter.create<memref::CopyOp>(loc, block2, block2Dst);
++    memref::CopyOp::create(rewriter, loc, block1, block1Dst);
++    memref::CopyOp::create(rewriter, loc, block2, block2Dst);
+   }
+ 
+ public:
+@@ -359,8 +355,8 @@ public:
+       auto sMemRef = PtrAnalysis::getScalarMemRef(op.getPtr(), adaptor.getPtr(),
+                                                   loc, rewriter);
+       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
+-      auto loadOp = rewriter.create<affine::AffineLoadOp>(
+-          op.getLoc(), sMemRef, zeroMap, ValueRange{});
++      auto loadOp = affine::AffineLoadOp::create(rewriter, op.getLoc(), sMemRef,
++                                                 zeroMap, ValueRange{});
+       rewriter.replaceOp(op, loadOp.getResult());
+       return success();
+     }
+@@ -378,8 +374,8 @@ public:
+ 
+     auto tensorType =
+         RankedTensorType::get(type.getShape(), type.getElementType());
+-    auto alloc = rewriter.create<memref::AllocOp>(
+-        loc, MemRefType::get(type.getShape(), type.getElementType()));
++    auto alloc = memref::AllocOp::create(
++        rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
+ 
+     if (!mask) {
+       assert(!other && "other value used in non-masked load");
+@@ -404,11 +400,12 @@ public:
+         }
+ 
+       } else {
+-        rewriter.create<memref::CopyOp>(loc, ptr, alloc);
++        memref::CopyOp::create(rewriter, loc, ptr, alloc);
+       }
+ 
+-      Value tensor = rewriter.create<bufferization::ToTensorOp>(
+-          loc, tensorType, alloc, true /* restrict */, true /* writable */);
++      Value tensor = bufferization::ToTensorOp::create(
++          rewriter, loc, tensorType, alloc, true /* restrict */,
++          true /* writable */);
+       rewriter.replaceOp(op, tensor);
+ 
+       return success();
+@@ -435,31 +432,33 @@ public:
+       // the result
+       auto shape = type.getShape();
+       auto accBase =
+-          rewriter.create<arith::ConstantOp>(loc, rewriter.getBoolAttr(false))
++          arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(false))
+               .getResult();
+       for (size_t i = 0; i < type.getShape().size(); i++) {
+-        auto shapei = rewriter.create<arith::ConstantOp>(
+-            loc, rewriter.getIndexAttr(shape[i]));
++        auto shapei = arith::ConstantOp::create(
++            rewriter, loc, rewriter.getIndexAttr(shape[i]));
+ 
+         Value dimi = dyn_cast<Value>(mstate.dims[i]);
+         if (!dimi) {
+-          dimi = rewriter.create<arith::ConstantOp>(
+-              loc, cast<IntegerAttr>(cast<Attribute>(mstate.dims[i])));
++          dimi = arith::ConstantOp::create(
++              rewriter, loc,
++              cast<IntegerAttr>(cast<Attribute>(mstate.dims[i])));
+         }
+ 
+-        auto cmpOp = rewriter.create<arith::CmpIOp>(
+-            loc, arith::CmpIPredicate::slt, dimi, shapei);
+-        accBase = rewriter.create<arith::OrIOp>(loc, accBase, cmpOp.getResult())
+-                      .getResult();
++        auto cmpOp = arith::CmpIOp::create(
++            rewriter, loc, arith::CmpIPredicate::slt, dimi, shapei);
++        accBase =
++            arith::OrIOp::create(rewriter, loc, accBase, cmpOp.getResult())
++                .getResult();
+       }
+ 
+       // condition the memset on the or-accumulation
+       // initialize with padding prior to CopyOp
+-      rewriter.create<scf::IfOp>(
+-          loc, accBase, [&](OpBuilder &builder, Location loc) {
+-            builder.create<linalg::FillOp>(loc, ValueRange{scalarOther},
+-                                           ValueRange{alloc});
+-            builder.create<scf::YieldOp>(loc);
++      scf::IfOp::create(
++          rewriter, loc, accBase, [&](OpBuilder &builder, Location loc) {
++            linalg::FillOp::create(builder, loc, ValueRange{scalarOther},
++                                   ValueRange{alloc});
++            scf::YieldOp::create(builder, loc);
+           });
+     }
+ 
+@@ -492,11 +491,12 @@ public:
+     } else {
+       memref::SubViewOp srcSubview = mstate.getSubview(ptr, loc, rewriter);
+       memref::SubViewOp dstSubview = mstate.getSubview(alloc, loc, rewriter);
+-      rewriter.create<memref::CopyOp>(loc, srcSubview, dstSubview);
++      memref::CopyOp::create(rewriter, loc, srcSubview, dstSubview);
+     }
+ 
+-    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+-        loc, tensorType, alloc, true /* restrict */, true /* writable */);
++    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType,
++                                                     alloc, true /* restrict */,
++                                                     true /* writable */);
+     rewriter.replaceOp(op, tensor);
+ 
+     return success();
+@@ -519,16 +519,16 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
+       auto sMemRef =
+           PtrAnalysis::getScalarMemRef(op.getPtr(), ptr, loc, rewriter);
+       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
+-      rewriter.create<affine::AffineStoreOp>(loc, val, sMemRef, zeroMap,
+-                                             ValueRange{});
++      affine::AffineStoreOp::create(rewriter, loc, val, sMemRef, zeroMap,
++                                    ValueRange{});
+       rewriter.eraseOp(op);
+       return success();
+     }
+ 
+     // 1. Simple case where no mask is used.
+     if (!mask) {
+-      auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+-          loc, val, ptr);
++      auto storeOp = bufferization::MaterializeInDestinationOp::create(
++          rewriter, loc, val, ptr);
+       storeOp.setWritable(true);
+       rewriter.eraseOp(op);
+       return success();
+@@ -546,8 +546,8 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
+     auto srcSlice = mstate.getExtractSlice(val, loc, rewriter);
+     auto dstSubview = mstate.getSubview(ptr, loc, rewriter);
+ 
+-    auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+-        loc, srcSlice, dstSubview);
++    auto storeOp = bufferization::MaterializeInDestinationOp::create(
++        rewriter, loc, srcSlice, dstSubview);
+     storeOp.setWritable(true);
+     rewriter.eraseOp(op);
+ 
+@@ -635,13 +635,12 @@ struct SplatConverter : public OpConversionPattern<triton::SplatOp> {
+     auto opType = cast<TensorType>(op.getType());
+     auto loc = op.getLoc();
+ 
+-    auto init = rewriter.create<tensor::EmptyOp>(loc, opType.getShape(),
+-                                                 opType.getElementType());
++    auto init = tensor::EmptyOp::create(rewriter, loc, opType.getShape(),
++                                        opType.getElementType());
+ 
+     auto filledTensor =
+-        rewriter
+-            .create<linalg::FillOp>(loc, ValueRange{adaptor.getSrc()},
+-                                    ValueRange{init})
++        linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
++                               ValueRange{init})
+             .result();
+ 
+     rewriter.replaceOp(op, filledTensor);
+@@ -697,16 +696,16 @@ public:
+                         rewriter.getMultiDimIdentityMap(resultRank));
+ 
+     assert(op->getNumResults() == 1 && "code assumes single result!");
+-    auto init = rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(),
+-                                                 elementType);
++    auto init = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
++                                        elementType);
+ 
+-    auto linalgOp = rewriter.create<linalg::GenericOp>(
+-        loc, op->getResultTypes(), ValueRange{adaptor.getSrc()},
++    auto linalgOp = linalg::GenericOp::create(
++        rewriter, loc, op->getResultTypes(), ValueRange{adaptor.getSrc()},
+         ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(resultRank),
+         [&](OpBuilder &nestedBuilder, Location nestedLoc,
+             ValueRange blockArgs) {
+           Value opResult = blockArgs[0];
+-          nestedBuilder.create<linalg::YieldOp>(loc, opResult);
++          linalg::YieldOp::create(nestedBuilder, loc, opResult);
+         });
+ 
+     linalgOp->setAttr("broadcastDims",
+@@ -740,8 +739,8 @@ struct ExpandDimsConverter : public OpConversionPattern<triton::ExpandDimsOp> {
+       reassoc.push_back(g);
+     }
+ 
+-    auto expandShapeOp = rewriter.create<tensor::ExpandShapeOp>(
+-        op.getLoc(), resType, src, reassoc);
++    auto expandShapeOp = tensor::ExpandShapeOp::create(rewriter, op.getLoc(),
++                                                       resType, src, reassoc);
+ 
+     rewriter.replaceOp(op, expandShapeOp.getResult());
+     return success();
+@@ -781,22 +780,22 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
+         /* dimCount */ 1, /* symbolCount */ 0,
+         SmallVector<AffineExpr>{mlir::getAffineDimExpr(0, context)}, context)};
+ 
+-    auto init = rewriter.create<tensor::EmptyOp>(loc, shape, elementType);
+-    auto linalgOp = rewriter.create<linalg::GenericOp>(
+-        loc, op->getResultTypes(), /* operands */ ValueRange{},
++    auto init = tensor::EmptyOp::create(rewriter, loc, shape, elementType);
++    auto linalgOp = linalg::GenericOp::create(
++        rewriter, loc, op->getResultTypes(), /* operands */ ValueRange{},
+         ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(1),
+         [&](OpBuilder &nestedBuilder, Location nestedLoc,
+             ValueRange blockArgs) {
+-          Value index = nestedBuilder.create<linalg::IndexOp>(loc, 0);
+-          Value res = nestedBuilder.create<arith::IndexCastOp>(
+-              loc, type.getElementType(), index);
++          Value index = linalg::IndexOp::create(nestedBuilder, loc, 0);
++          Value res = arith::IndexCastOp::create(nestedBuilder, loc,
++                                                 type.getElementType(), index);
+           if (op.getStart()) {
+-            auto start = rewriter.create<mlir::arith::ConstantIntOp>(
+-                op.getLoc(), op.getStart(),
++            auto start = mlir::arith::ConstantIntOp::create(
++                rewriter, op.getLoc(), op.getStart(),
+                 type.getElementType().getIntOrFloatBitWidth());
+-            res = nestedBuilder.create<arith::AddIOp>(loc, res, start);
++            res = arith::AddIOp::create(nestedBuilder, loc, res, start);
+           }
+-          nestedBuilder.create<linalg::YieldOp>(loc, res);
++          linalg::YieldOp::create(nestedBuilder, loc, res);
+         });
+ 
+     rewriter.replaceOp(op, linalgOp->getResults());
+@@ -819,8 +818,8 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
+     // TritonOps.td. Tensors will always be RankedTensorType.
+     if (isa<mlir::IntegerType>(condVal.getType())) {
+       // handle scalar case
+-      rewriter.create<mlir::cf::AssertOp>(op.getLoc(), condVal,
+-                                          assertMessage.str());
++      mlir::cf::AssertOp::create(rewriter, op.getLoc(), condVal,
++                                 assertMessage.str());
+     } else if (auto tensorType =
+                    dyn_cast<RankedTensorType>(condVal.getType())) {
+       // handle tensor case
+@@ -834,8 +833,8 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
+       SmallVector<utils::IteratorType, 3> iteratorTypes(
+           rank, utils::IteratorType::parallel);
+ 
+-      rewriter.create<linalg::GenericOp>(
+-          op.getLoc(), TypeRange{}, condVal, ValueRange{},
++      linalg::GenericOp::create(
++          rewriter, op.getLoc(), TypeRange{}, condVal, ValueRange{},
+           ArrayRef<AffineMap>{indexingMaps},
+           ArrayRef<utils::IteratorType>{iteratorTypes},
+           [&](OpBuilder &b, Location loc, ValueRange args) {
+@@ -843,9 +842,9 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
+             Value element = args[0];
+ 
+             // make a cf.assert for the current element
+-            b.create<mlir::cf::AssertOp>(loc, element, assertMessage.str());
++            mlir::cf::AssertOp::create(b, loc, element, assertMessage.str());
+ 
+-            b.create<linalg::YieldOp>(loc);
++            linalg::YieldOp::create(b, loc);
+           });
+     } else {
+       op.emitError("Unexpected type in triton::AssertOp");
+@@ -868,8 +867,8 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
+       return failure();
+     }
+ 
+-    auto arithBitcast = rewriter.create<arith::BitcastOp>(
+-        op.getLoc(), op.getType(), op.getOperand());
++    auto arithBitcast = arith::BitcastOp::create(rewriter, op.getLoc(),
++                                                 op.getType(), op.getOperand());
+ 
+     rewriter.replaceOp(op, arithBitcast.getResult());
+     return success();
+@@ -908,8 +907,8 @@ struct CallConverter : public OpConversionPattern<triton::CallOp> {
+       }
+     }
+ 
+-    auto call = rewriter.create<func::CallOp>(op.getLoc(), op.getCallee(),
+-                                              op.getResultTypes(), args);
++    auto call = func::CallOp::create(rewriter, op.getLoc(), op.getCallee(),
++                                     op.getResultTypes(), args);
+ 
+     if (!call) {
+       op.emitError("Failed to create func::CallOp");
+@@ -946,14 +945,14 @@ struct FpToFpConverter : public OpConversionPattern<triton::FpToFpOp> {
+            "Not a float-like operand or result");
+ 
+     if (operandWidth.value() > resultWidth.value()) {
+-      Value truncatedValue = rewriter.create<arith::TruncFOp>(
+-          op.getLoc(), resultType, op.getOperand());
++      Value truncatedValue = arith::TruncFOp::create(
++          rewriter, op.getLoc(), resultType, op.getOperand());
+       rewriter.replaceOp(op, truncatedValue);
+       return success();
+     }
+ 
+-    Value extendedValue = rewriter.create<arith::ExtFOp>(
+-        op.getLoc(), resultType, op.getOperand());
++    Value extendedValue = arith::ExtFOp::create(rewriter, op.getLoc(),
++                                                resultType, op.getOperand());
+     rewriter.replaceOp(op, extendedValue);
+ 
+     return success();
+@@ -975,11 +974,11 @@ struct ClampConverter : public OpConversionPattern<triton::ClampFOp> {
+ 
+     Value clamp;
+     if (propagateNan) {
+-      Value maxMin = rewriter.create<arith::MaximumFOp>(loc, x, min);
+-      clamp = rewriter.create<arith::MinimumFOp>(loc, maxMin, max);
++      Value maxMin = arith::MaximumFOp::create(rewriter, loc, x, min);
++      clamp = arith::MinimumFOp::create(rewriter, loc, maxMin, max);
+     } else {
+-      Value maxMin = rewriter.create<arith::MaxNumFOp>(loc, x, min);
+-      clamp = rewriter.create<arith::MinNumFOp>(loc, maxMin, max);
++      Value maxMin = arith::MaxNumFOp::create(rewriter, loc, x, min);
++      clamp = arith::MinNumFOp::create(rewriter, loc, maxMin, max);
+     }
+     rewriter.replaceOp(op, clamp);
+ 
+@@ -995,7 +994,7 @@ struct PreciseSqrtConverter
+   matchAndRewrite(triton::PreciseSqrtOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
+     auto replacement =
+-        rewriter.create<math::SqrtOp>(op.getLoc(), adaptor.getOperands());
++        math::SqrtOp::create(rewriter, op.getLoc(), adaptor.getOperands());
+ 
+     rewriter.replaceOp(op, replacement);
+     return success();
+@@ -1009,7 +1008,7 @@ struct PreciseDivConverter : public OpConversionPattern<triton::PreciseDivFOp> {
+   matchAndRewrite(triton::PreciseDivFOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
+     auto replacement =
+-        rewriter.create<arith::DivFOp>(op.getLoc(), adaptor.getOperands());
++        arith::DivFOp::create(rewriter, op.getLoc(), adaptor.getOperands());
+ 
+     rewriter.replaceOp(op, replacement);
+     return success();
+@@ -1022,8 +1021,8 @@ struct CatConverter : public OpConversionPattern<triton::CatOp> {
+   LogicalResult
+   matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
+                   ConversionPatternRewriter &rewriter) const override {
+-    auto replacement = rewriter.create<tensor::ConcatOp>(
+-        op.getLoc(), 0 /* concat dimension */, adaptor.getOperands());
++    auto replacement = tensor::ConcatOp::create(
++        rewriter, op.getLoc(), 0 /* concat dimension */, adaptor.getOperands());
+ 
+     rewriter.replaceOp(op, replacement);
+ 
+@@ -1060,8 +1059,8 @@ struct SplitConverter : public OpConversionPattern<triton::SplitOp> {
+ 
+       offsets.push_back(rewriter.getIndexAttr(i));
+       sizes.push_back(rewriter.getIndexAttr(1));
+-      Value slice = rewriter.create<tensor::ExtractSliceOp>(
+-          loc, resultTensor, input, offsets, sizes, strides);
++      Value slice = tensor::ExtractSliceOp::create(
++          rewriter, loc, resultTensor, input, offsets, sizes, strides);
+       results.push_back(slice);
+     }
+ 
+@@ -1081,8 +1080,8 @@ struct JoinConverter : public OpConversionPattern<triton::JoinOp> {
+     auto resultType = cast<RankedTensorType>(op.getResult().getType());
+ 
+     auto loc = op.getLoc();
+-    Value result = rewriter.create<tensor::EmptyOp>(
+-        loc, resultType.getShape(), resultType.getElementType());
++    Value result = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
++                                           resultType.getElementType());
+ 
+     auto shape = resultType.getShape();
+ 
+@@ -1099,8 +1098,8 @@ struct JoinConverter : public OpConversionPattern<triton::JoinOp> {
+ 
+       offsets.push_back(rewriter.getIndexAttr(i));
+       sizes.push_back(rewriter.getIndexAttr(1));
+-      result = rewriter.create<tensor::InsertSliceOp>(loc, inputs[i], result,
+-                                                      offsets, sizes, strides);
++      result = tensor::InsertSliceOp::create(rewriter, loc, inputs[i], result,
++                                             offsets, sizes, strides);
+     }
+ 
+     rewriter.replaceOp(op, result);
+@@ -1118,7 +1117,7 @@ struct MulHiUIOpConverter : public OpConversionPattern<triton::MulhiUIOp> {
+     Location loc = op.getLoc();
+ 
+     auto mulResult =
+-        rewriter.create<arith::MulUIExtendedOp>(loc, adaptor.getOperands());
++        arith::MulUIExtendedOp::create(rewriter, loc, adaptor.getOperands());
+     rewriter.replaceOp(op, mulResult.getHigh());
+ 
+     return success();
+@@ -1169,29 +1168,28 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
+     bool integers = elementType.isInteger();
+     bool skipC = isZeroTensor(opc, integers);
+     auto init =
+-        rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), elementType);
++        tensor::EmptyOp::create(rewriter, loc, dstType.getShape(), elementType);
+     TypedAttr constantAttr =
+         integers
+             ? static_cast<TypedAttr>(rewriter.getIntegerAttr(elementType, 0))
+             : static_cast<TypedAttr>(rewriter.getFloatAttr(elementType, 0));
+ 
+-    auto zero = rewriter.create<mlir::arith::ConstantOp>(
+-        op.getLoc(), elementType, constantAttr);
++    auto zero = mlir::arith::ConstantOp::create(rewriter, op.getLoc(),
++                                                elementType, constantAttr);
+ 
+-    auto zeroes =
+-        rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init})
+-            .result();
++    auto zeroes = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
++                                         ValueRange{init})
++                      .result();
+ 
+-    auto res = rewriter
+-                   .create<linalg::MatmulOp>(loc, ValueRange{opa, opb},
+-                                             ValueRange{zeroes})
++    auto res = linalg::MatmulOp::create(rewriter, loc, ValueRange{opa, opb},
++                                        ValueRange{zeroes})
+                    .getResult(0);
+ 
+     if (!skipC) {
+       if (integers) {
+-        res = rewriter.create<arith::AddIOp>(loc, opc, res);
++        res = arith::AddIOp::create(rewriter, loc, opc, res);
+       } else {
+-        res = rewriter.create<arith::AddFOp>(loc, opc, res);
++        res = arith::AddFOp::create(rewriter, loc, opc, res);
+       }
+     }
+ 
+@@ -1273,8 +1271,8 @@ private:
+               return nullptr;
+             });
+ 
+-    return rewriter.create<arith::ConstantOp>(redOp->getLoc(), constantType,
+-                                              attr);
++    return arith::ConstantOp::create(rewriter, redOp->getLoc(), constantType,
++                                     attr);
+   }
+ 
+   bool requiresF32Conversion(const Type elemType, Operation *redOp) const {
+@@ -1291,16 +1289,18 @@ private:
+     return llvm::TypeSwitch<Operation *, Value>(redOp)
+         .Case<arith::AddFOp, arith::MulFOp>([&](auto redOp) {
+           if (convertLhsToF32Precision) {
+-            lhs = b.create<arith::ExtFOp>(loc, Float32Type::get(b.getContext()),
+-                                          lhs);
++            lhs = arith::ExtFOp::create(b, loc,
++                                        Float32Type::get(b.getContext()), lhs);
+           }
+-          return b.create<decltype(redOp)>(loc, lhs, rhs);
++          using OpT = std::remove_pointer_t<decltype(redOp)>;
++          return OpT::create(b, loc, lhs, rhs);
+         })
+         .Case<arith::AddIOp, arith::AndIOp, arith::XOrIOp, arith::MaximumFOp,
+               arith::MaxNumFOp, arith::MulIOp, arith::MinimumFOp,
+               arith::MinNumFOp, arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp,
+               arith::MaxUIOp, arith::OrIOp>([&](auto redOp) {
+-          return b.create<decltype(redOp)>(loc, lhs, rhs);
++          using OpT = std::remove_pointer_t<decltype(redOp)>;
++          return OpT::create(b, loc, lhs, rhs);
+         })
+         .Default([](Operation *op) {
+           op->dump();
+@@ -1379,40 +1379,40 @@ private:
+       // directly instead of EmptyOp so that the subsequent pass can recognize
+       // the patterns (EmptyOp is susceptible to being CSE'd away, making it
+       // harder to match the patterns correctly).
+-      initTensor = rewriter.create<bufferization::AllocTensorOp>(
+-          loc, RankedTensorType::get({}, constantType), ValueRange{});
+-      initTensor = rewriter.create<tensor::InsertOp>(loc, accBaseConstOp,
+-                                                     initTensor, ValueRange{});
++      initTensor = bufferization::AllocTensorOp::create(
++          rewriter, loc, RankedTensorType::get({}, constantType), ValueRange{});
++      initTensor = tensor::InsertOp::create(rewriter, loc, accBaseConstOp,
++                                            initTensor, ValueRange{});
+     } else {
+-      Value init = rewriter.create<tensor::EmptyOp>(
+-          loc, cast<RankedTensorType>(resType).getShape(), constantType);
+-      initTensor = rewriter
+-                       .create<linalg::FillOp>(loc, ValueRange{accBaseConstOp},
+-                                               ValueRange{init})
+-                       .result();
++      Value init = tensor::EmptyOp::create(
++          rewriter, loc, cast<RankedTensorType>(resType).getShape(),
++          constantType);
++      initTensor =
++          linalg::FillOp::create(rewriter, loc, ValueRange{accBaseConstOp},
++                                 ValueRange{init})
++              .result();
+     }
+ 
+     Value finalResult =
+-        rewriter
+-            .create<linalg::ReduceOp>(
+-                loc, ValueRange{source}, ValueRange{initTensor},
+-                SmallVector<int64_t>{axis},
+-                [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
+-                  assert(inputs.size() == 2);
+-                  Value result =
+-                      getRedElement(inputs[0], inputs[1], loc, rop, opBuilder,
+-                                    convertToF32Precision);
+-                  opBuilder.create<linalg::YieldOp>(loc, result);
+-                })
++        linalg::ReduceOp::create(
++            rewriter, loc, ValueRange{source}, ValueRange{initTensor},
++            SmallVector<int64_t>{axis},
++            [&](OpBuilder &opBuilder, Location loc, ValueRange inputs) {
++              assert(inputs.size() == 2);
++              Value result = getRedElement(inputs[0], inputs[1], loc, rop,
++                                           opBuilder, convertToF32Precision);
++              linalg::YieldOp::create(opBuilder, loc, result);
++            })
+             .getResult(0);
+ 
+     if (isVectorReduce) {
+       finalResult =
+-          rewriter.create<tensor::ExtractOp>(loc, constantType, finalResult);
++          tensor::ExtractOp::create(rewriter, loc, constantType, finalResult);
+     }
+ 
+     if (convertToF32Precision) {
+-      finalResult = rewriter.create<arith::TruncFOp>(loc, resType, finalResult);
++      finalResult =
++          arith::TruncFOp::create(rewriter, loc, resType, finalResult);
+     }
+ 
+     rewriter.replaceOp(op, finalResult);
+@@ -1570,10 +1570,9 @@ class ArgMinMaxBaseConverter : public OpConversionPattern<triton::ReduceOp> {
+                       ArrayRef<int64_t> shape, Value fillValue,
+                       Location loc) const {
+     Value initTensor =
+-        rewriter.create<tensor::EmptyOp>(loc, shape, fillValue.getType());
+-    return rewriter
+-        .create<linalg::FillOp>(loc, ValueRange{fillValue},
+-                                ValueRange{initTensor})
++        tensor::EmptyOp::create(rewriter, loc, shape, fillValue.getType());
++    return linalg::FillOp::create(rewriter, loc, ValueRange{fillValue},
++                                  ValueRange{initTensor})
+         .result();
+   }
+ 
+@@ -1648,15 +1647,15 @@ public:
+     // the result value to either -inf or +inf depending on
+     // whether we're dealing with argmax or argmin
+     auto valueType = elemTypes[0];
+-    auto valuesAccBaseVal = rewriter.create<arith::ConstantOp>(
+-        loc, valueType,
++    auto valuesAccBaseVal = arith::ConstantOp::create(
++        rewriter, loc, valueType,
+         rewriter.getFloatAttr(valueType, T::getBaseReductionValue()));
+ 
+     // Set the initial value of the rank-0 tensor containing the index of the
+     // min or max value to -1
+     auto indexType = elemTypes[1];
+-    auto indicesAccBaseVal = rewriter.create<arith::ConstantOp>(
+-        loc, indexType, rewriter.getIntegerAttr(indexType, -1));
++    auto indicesAccBaseVal = arith::ConstantOp::create(
++        rewriter, loc, indexType, rewriter.getIntegerAttr(indexType, -1));
+ 
+     // Get the shape of the resulting tensors (both for values and indices). If
+     // we are reducing to a single scalar, then the result's type is a tensor of
+@@ -1671,8 +1670,8 @@ public:
+         getInitTensor(rewriter, reductionResultShape, valuesAccBaseVal, loc),
+         getInitTensor(rewriter, reductionResultShape, indicesAccBaseVal, loc)};
+ 
+-    auto linalgOp = rewriter.create<linalg::ReduceOp>(
+-        loc, adaptor.getOperands(), outputs,
++    auto linalgOp = linalg::ReduceOp::create(
++        rewriter, loc, adaptor.getOperands(), outputs,
+         SmallVector<int64_t>{adaptor.getAxis()},
+         [&](OpBuilder &b, Location loc, ValueRange inputs) {
+           assert(inputs.size() == 4);
+@@ -1690,15 +1689,15 @@ public:
+               llvm::map_to_vector(tritonYield->getOperands(), [&](Value val) {
+                 return mapping.lookup(val);
+               });
+-          b.create<linalg::YieldOp>(loc, results);
++          linalg::YieldOp::create(b, loc, results);
+         });
+ 
+     if (isScalarReduce) {
+       SmallVector<Value> reduceResults{
+-          rewriter.create<tensor::ExtractOp>(
+-              loc, valueType, linalgOp.getResults()[0], ValueRange{}),
+-          rewriter.create<tensor::ExtractOp>(
+-              loc, indexType, linalgOp.getResults()[1], ValueRange{})};
++          tensor::ExtractOp::create(rewriter, loc, valueType,
++                                    linalgOp.getResults()[0], ValueRange{}),
++          tensor::ExtractOp::create(rewriter, loc, indexType,
++                                    linalgOp.getResults()[1], ValueRange{})};
+       rewriter.replaceOp(op, reduceResults);
+     } else {
+       rewriter.replaceOp(op, linalgOp);
+@@ -1927,8 +1926,9 @@ struct DenseConstantConverter : public OpConversionPattern<arith::ConstantOp> {
+     auto splatConst = arith::ConstantOp::materialize(
+         rewriter, attr.getSplatValue<Attribute>(), attr.getElementType(), loc);
+ 
+-    auto init = rewriter.create<tensor::EmptyOp>(
+-        loc, cast<RankedTensorType>(op.getResult().getType()).getShape(),
++    auto init = tensor::EmptyOp::create(
++        rewriter, loc,
++        cast<RankedTensorType>(op.getResult().getType()).getShape(),
+         attr.getElementType());
+ 
+     rewriter.replaceOpWithNewOp<linalg::FillOp>(op, ValueRange{splatConst},
+@@ -1996,8 +1996,8 @@ public:
+               "= {1, 2} and axis = rank - 1");
+     }
+ 
+-    Value init = rewriter.create<tensor::EmptyOp>(op.getLoc(), type.getShape(),
+-                                                  type.getElementType());
++    Value init = tensor::EmptyOp::create(rewriter, op.getLoc(), type.getShape(),
++                                         type.getElementType());
+ 
+     rewriter.replaceOpWithNewOp<ttx::CumSumOp>(
+         op, input, rewriter.getUI32IntegerAttr(axis), init);
+@@ -2032,7 +2032,7 @@ class AddPtrConverter : public OpConversionPattern<triton::AddPtrOp> {
+               builder.create(loc, op->getName().getIdentifier(),
+                              regionArgs.take_front(op->getNumOperands()),
+                              resultTypes, op->getAttrs());
+-          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
++          linalg::YieldOp::create(builder, loc, scalarOp->getResults());
+         });
+     return success();
+   }
+@@ -2063,8 +2063,8 @@ class TensorOpConverter : public OpConversionPattern<OpType> {
+         rewriter.getMultiDimIdentityMap(rank));
+     SmallVector<utils::IteratorType> iteratorTypes(
+         rank, utils::IteratorType::parallel);
+-    SmallVector<Value> outputs = {rewriter.create<tensor::EmptyOp>(
+-        op->getLoc(), resultTensorType.getShape(),
++    SmallVector<Value> outputs = {tensor::EmptyOp::create(
++        rewriter, op->getLoc(), resultTensorType.getShape(),
+         resultTensorType.getElementType())};
+     rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+         op, op->getResultTypes(), op->getOperands(), outputs, indexingMaps,
+@@ -2078,7 +2078,7 @@ class TensorOpConverter : public OpConversionPattern<OpType> {
+               builder.create(loc, op->getName().getIdentifier(),
+                              regionArgs.take_front(op->getNumOperands()),
+                              resultTypes, op->getAttrs());
+-          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
++          linalg::YieldOp::create(builder, loc, scalarOp->getResults());
+         });
+     return success();
+   }
+@@ -2116,7 +2116,7 @@ class StorePtrToLinalgConverter : public OpConversionPattern<triton::StoreOp> {
+               builder.create(loc, op->getName().getIdentifier(),
+                              regionArgs.take_front(op->getNumOperands()),
+                              resultTypes, op->getAttrs());
+-          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
++          linalg::YieldOp::create(builder, loc, scalarOp->getResults());
+         });
+     return success();
+   }
+@@ -2154,8 +2154,8 @@ public:
+ 
+     ArrayRef<int64_t> outputShape = outputType.getShape();
+ 
+-    auto shape = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getI64TensorAttr(outputShape));
++    auto shape = arith::ConstantOp::create(
++        rewriter, loc, rewriter.getI64TensorAttr(outputShape));
+     rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outputType, input,
+                                                    shape);
+ 
+diff --git a/include/triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h b/include/triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h
+index 45867e4..045debf 100644
+--- a/include/triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h
++++ b/include/triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h
+@@ -16,7 +16,7 @@
+ namespace mlir {
+ namespace triton {
+ 
+-#define GEN_PASS_DECL
++#define GEN_PASS_DECL_TRITONARITHTOLINALG
+ #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
+ 
+ void populateTritonArithToLinalgCanonicalizationPatterns(
+diff --git a/include/triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h b/include/triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h
+index f8a5f06..a689332 100644
+--- a/include/triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h
++++ b/include/triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h
+@@ -11,6 +11,10 @@
+ #include "mlir/IR/BuiltinOps.h"
+ #include "mlir/Pass/Pass.h"
+ 
++#define GEN_PASS_DECL_TRITONTOLINALGEXPERIMENTAL
++#include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
++#undef GEN_PASS_DECL_TRITONTOLINALGEXPERIMENTAL
++
+ namespace mlir {
+ namespace triton {
+ 
+diff --git a/include/triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h b/include/triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h
+index a36a343..a810cdf 100644
+--- a/include/triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h
++++ b/include/triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h
+@@ -13,6 +13,10 @@
+ 
+ #include "triton/Dialect/Triton/IR/Dialect.h"
+ 
++#define GEN_PASS_DECL_TRITONTOUNSTRUCTURED
++#include "triton-shared/Conversion/TritonToUnstructured/Passes.h.inc"
++#undef GEN_PASS_DECL_TRITONTOUNSTRUCTURED
++
+ namespace mlir {
+ namespace triton {
+ 
+diff --git a/lib/Analysis/MaskAnalysis.cpp b/lib/Analysis/MaskAnalysis.cpp
+index 10794bb..6850978 100644
+--- a/lib/Analysis/MaskAnalysis.cpp
++++ b/lib/Analysis/MaskAnalysis.cpp
+@@ -65,11 +65,8 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
+   SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
+   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
+ 
+-  auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, offsets,
+-                                                         dims, strides);
+-
+-  return builder.create<tensor::ExtractSliceOp>(loc, dstType, source, offsets,
+-                                                dims, strides);
++  return tensor::ExtractSliceOp::create(builder, loc, source, offsets, dims,
++                                        strides);
+ }
+ 
+ memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
+@@ -80,8 +77,8 @@ memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
+   auto dstType =
+       memref::SubViewOp::inferResultType(sourceType, offsets, dims, strides);
+ 
+-  return builder.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType),
+-                                           source, offsets, dims, strides);
++  return memref::SubViewOp::create(builder, loc, cast<MemRefType>(dstType),
++                                   source, offsets, dims, strides);
+ }
+ 
+ static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
+@@ -91,8 +88,8 @@ static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
+   auto srcType = cast<MemRefType>(src.getType());
+   auto dstType =
+       memref::SubViewOp::inferResultType(srcType, offsets, sizes, strides);
+-  return b.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType), src,
+-                                     offsets, sizes, strides);
++  return memref::SubViewOp::create(b, loc, cast<MemRefType>(dstType), src,
++                                   offsets, sizes, strides);
+ }
+ 
+ // Assume block1 wraps around and the remainder is block2.
+@@ -155,7 +152,8 @@ MaskState::getSideBySideSubviews(Value block1, Value block2, const Location loc,
+                                  OpBuilder &builder) const {
+   OpFoldResult subviewRowFull = dims[0];
+   OpFoldResult subviewColFull = dims[1];
+-  OpFoldResult col1 = builder.create<memref::DimOp>(loc, block1, 1).getResult();
++  OpFoldResult col1 =
++      memref::DimOp::create(builder, loc, block1, 1).getResult();
+   OpFoldResult subviewCol1 = minOFRs(col1, subviewColFull, loc, builder);
+   OpFoldResult subviewCol2 = subOFRs(subviewColFull, subviewCol1, loc, builder);
+ 
+@@ -174,7 +172,8 @@ MaskState::getStackedSubviews(Value block1, Value block2, const Location loc,
+                               OpBuilder &builder) const {
+   OpFoldResult subviewRowFull = dims[0];
+   OpFoldResult subviewColFull = dims[1];
+-  OpFoldResult row1 = builder.create<memref::DimOp>(loc, block1, 0).getResult();
++  OpFoldResult row1 =
++      memref::DimOp::create(builder, loc, block1, 0).getResult();
+   OpFoldResult subviewRow1 = minOFRs(row1, subviewRowFull, loc, builder);
+   OpFoldResult subviewRow2 = subOFRs(subviewRowFull, subviewRow1, loc, builder);
+ 
+@@ -314,8 +313,8 @@ LogicalResult MaskState::parseIntScalar(Value scalar, const Location loc,
+   if (scalar.getType().isInteger(1)) {
+     this->scalar = scalar;
+   } else {
+-    auto castOp =
+-        builder.create<arith::IndexCastOp>(loc, builder.getIndexType(), scalar);
++    auto castOp = arith::IndexCastOp::create(builder, loc,
++                                             builder.getIndexType(), scalar);
+     this->scalar = castOp.getResult();
+   }
+   return success();
+@@ -407,18 +406,17 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
+             }
+             auto targetTensorType =
+                 RankedTensorType::get({size}, builder.getI32Type());
+-            Value range =
+-                builder
+-                    .create<triton::MakeRangeOp>(loc, targetTensorType, 0, size)
+-                    .getResult();
++            Value range = triton::MakeRangeOp::create(builder, loc,
++                                                      targetTensorType, 0, size)
++                              .getResult();
+             Value v = ofrToIndexValue(ofr, loc, builder);
+-            v = builder
+-                    .create<arith::IndexCastUIOp>(loc, builder.getI32Type(), v)
++            v = arith::IndexCastUIOp::create(builder, loc, builder.getI32Type(),
++                                             v)
+                     .getResult();
+-            v = builder.create<triton::SplatOp>(loc, targetTensorType, v)
++            v = triton::SplatOp::create(builder, loc, targetTensorType, v)
+                     .getResult();
+-            return builder
+-                .create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, range, v)
++            return arith::CmpIOp::create(builder, loc,
++                                         arith::CmpIPredicate::ult, range, v)
+                 .getResult();
+           };
+           if (!lhsV) {
+@@ -436,7 +434,7 @@ LogicalResult MaskState::parseAnd(arith::AndIOp andOp, const Location loc,
+             continue;
+           }
+           // And the mask.
+-          masks.push_back(builder.create<arith::AndIOp>(loc, lhsV, rhsV));
++          masks.push_back(arith::AndIOp::create(builder, loc, lhsV, rhsV));
+         }
+       }
+       // Only support one unstructured mask.
+@@ -494,8 +492,8 @@ LogicalResult MaskState::parseCmp(arith::CmpIOp cmpOp, const Location loc,
+         SmallVector<ReassociationIndices> reassociation =
+             *maybeReassociationMap;
+         // Set masks.
+-        unstructuredMask = builder.create<tensor::CollapseShapeOp>(
+-            loc, flatType, cmpOp, reassociation);
++        unstructuredMask = tensor::CollapseShapeOp::create(
++            builder, loc, flatType, cmpOp, reassociation);
+       }
+       masks[cmpOpDim] = unstructuredMask;
+     }
+diff --git a/lib/Analysis/OpFoldResultUtils.cpp b/lib/Analysis/OpFoldResultUtils.cpp
+index 6c1b5ca..d0b58d4 100644
+--- a/lib/Analysis/OpFoldResultUtils.cpp
++++ b/lib/Analysis/OpFoldResultUtils.cpp
+@@ -59,7 +59,7 @@ Value ofrToValue(const OpFoldResult ofr, const Location loc, OpBuilder &b) {
+ 
+   auto attr = dyn_cast<Attribute>(ofr);
+   auto typedAttr = dyn_cast<TypedAttr>(attr);
+-  return b.create<arith::ConstantOp>(loc, typedAttr);
++  return arith::ConstantOp::create(b, loc, typedAttr);
+ }
+ 
+ Value ofrToIndexValue(const OpFoldResult ofr, const Location loc,
+@@ -67,14 +67,14 @@ Value ofrToIndexValue(const OpFoldResult ofr, const Location loc,
+   if (Value val = dyn_cast<Value>(ofr)) {
+     assert(val.getType().isIntOrIndex());
+     if (!val.getType().isIndex()) {
+-      val = b.create<arith::IndexCastOp>(loc, b.getIndexType(), val);
++      val = arith::IndexCastOp::create(b, loc, b.getIndexType(), val);
+     }
+     return val;
+   }
+ 
+   auto intVal = getIntAttr(ofr);
+   if (intVal.has_value()) {
+-    return b.create<arith::ConstantOp>(loc, b.getIndexAttr(intVal.value()));
++    return arith::ConstantOp::create(b, loc, b.getIndexAttr(intVal.value()));
+   }
+   llvm_unreachable("Unexpected OpFoldResult state");
+   return nullptr;
+@@ -93,14 +93,14 @@ Value indexTypeCast(Value v, Type targetTy, const Location loc, OpBuilder &b) {
+   if (isa<IndexType>(targetTy) || isa<IndexType>(ty)) {
+     assert((isa<IntegerType>(targetTy) || isa<IntegerType>(ty)) &&
+            "Only cast between index type and integer type");
+-    return b.create<arith::IndexCastOp>(loc, targetTy, v).getResult();
++    return arith::IndexCastOp::create(b, loc, targetTy, v).getResult();
+   } else {
+     auto targetIntTy = cast<IntegerType>(targetTy);
+     auto intTy = cast<IntegerType>(ty);
+     if (targetIntTy.getWidth() > intTy.getWidth())
+-      return b.create<arith::ExtSIOp>(loc, targetTy, v).getResult();
++      return arith::ExtSIOp::create(b, loc, targetTy, v).getResult();
+     else
+-      return b.create<arith::TruncIOp>(loc, targetTy, v).getResult();
++      return arith::TruncIOp::create(b, loc, targetTy, v).getResult();
+   }
+ }
+ 
+@@ -114,8 +114,8 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
+ 
+   Value v = dyn_cast<Value>(ofr);
+   if (!v)
+-    v = b.create<arith::ConstantOp>(loc,
+-                                    cast<IntegerAttr>(cast<Attribute>(ofr)));
++    v = arith::ConstantOp::create(b, loc,
++                                  cast<IntegerAttr>(cast<Attribute>(ofr)));
+ 
+   Type ty = v.getType();
+   if (targetTy == ty)
+@@ -127,7 +127,7 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
+     // cast to target element type first.
+     if (targetEltTy != ty)
+       v = indexTypeCast(v, targetEltTy, loc, b);
+-    return b.create<triton::SplatOp>(loc, targetTy, v).getResult();
++    return triton::SplatOp::create(b, loc, targetTy, v).getResult();
+   } else if (targetShapedTy && shapedTy) {
+     Type targetEltTy = targetShapedTy.getElementType();
+     Type eltTy = shapedTy.getElementType();
+@@ -148,26 +148,26 @@ OpFoldResult expandOFRIndex(OpFoldResult ofr, OpFoldResult targetForTy,
+       SmallVector<Value> shapeValues;
+       for (auto dim : targetShapedTy.getShape()) {
+         shapeValues.push_back(
+-            b.create<arith::ConstantOp>(loc, b.getIndexAttr(dim)));
++            arith::ConstantOp::create(b, loc, b.getIndexAttr(dim)));
+       }
+       RankedTensorType targetShapeTensorTy = RankedTensorType::get(
+           targetShapedTy.getShape().size(), b.getIndexType());
+-      auto shapeTensor = b.create<tensor::FromElementsOp>(
+-          loc, targetShapeTensorTy, shapeValues);
+-      return b.create<triton::ReshapeOp>(loc, targetTy, v, shapeTensor)
++      auto shapeTensor = tensor::FromElementsOp::create(
++          b, loc, targetShapeTensorTy, shapeValues);
++      return triton::ReshapeOp::create(b, loc, targetTy, v, shapeTensor)
+           .getResult();
+     }
+     if (isa<IndexType>(targetEltTy) || isa<IndexType>(eltTy)) {
+       assert((isa<IntegerType>(targetEltTy) || isa<IntegerType>(eltTy)) &&
+              "Only cast between index type and integer type");
+-      return b.create<arith::IndexCastOp>(loc, targetTy, v).getResult();
++      return arith::IndexCastOp::create(b, loc, targetTy, v).getResult();
+     } else {
+       auto targetIntTy = cast<IntegerType>(targetEltTy);
+       auto intTy = cast<IntegerType>(eltTy);
+       if (targetIntTy.getWidth() > intTy.getWidth())
+-        return b.create<arith::ExtSIOp>(loc, targetTy, v).getResult();
++        return arith::ExtSIOp::create(b, loc, targetTy, v).getResult();
+       else
+-        return b.create<arith::TruncIOp>(loc, targetTy, v).getResult();
++        return arith::TruncIOp::create(b, loc, targetTy, v).getResult();
+     }
+   } else {
+     assert(!shapedTy && "src type rank should be >= target type rank");
+@@ -194,18 +194,18 @@ OpFoldResult addOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   auto lhsValue = dyn_cast<Value>(lhs);
+   if (lhsIntAttr) {
+     auto lhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(lhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(lhsIntAttr.value()));
+     lhsValue = lhsOp.getResult();
+   }
+ 
+   auto rhsValue = dyn_cast<Value>(rhs);
+   if (rhsIntAttr) {
+     auto rhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(rhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(rhsIntAttr.value()));
+     rhsValue = rhsOp.getResult();
+   }
+ 
+-  return b.create<arith::AddIOp>(loc, lhsValue, rhsValue).getResult();
++  return arith::AddIOp::create(b, loc, lhsValue, rhsValue).getResult();
+ }
+ 
+ OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+@@ -225,18 +225,18 @@ OpFoldResult subOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   auto lhsValue = dyn_cast<Value>(lhs);
+   if (lhsIntAttr) {
+     auto lhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(lhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(lhsIntAttr.value()));
+     lhsValue = lhsOp.getResult();
+   }
+ 
+   auto rhsValue = dyn_cast<Value>(rhs);
+   if (rhsIntAttr) {
+     auto rhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(rhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(rhsIntAttr.value()));
+     rhsValue = rhsOp.getResult();
+   }
+ 
+-  auto sumOp = b.create<arith::SubIOp>(loc, lhsValue, rhsValue);
++  auto sumOp = arith::SubIOp::create(b, loc, lhsValue, rhsValue);
+   return sumOp.getResult();
+ }
+ 
+@@ -280,17 +280,17 @@ OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   // otherwise, need to create instructions to calculate new attribute value
+   if (lhsIntAttr) {
+     auto lhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(lhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(lhsIntAttr.value()));
+     lhsValue = lhsOp.getResult();
+   }
+ 
+   if (rhsIntAttr) {
+     auto rhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(rhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(rhsIntAttr.value()));
+     rhsValue = rhsOp.getResult();
+   }
+ 
+-  return b.create<arith::MulIOp>(loc, lhsValue, rhsValue).getResult();
++  return arith::MulIOp::create(b, loc, lhsValue, rhsValue).getResult();
+ }
+ 
+ OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+@@ -306,18 +306,18 @@ OpFoldResult minOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   auto lhsValue = dyn_cast<Value>(lhs);
+   if (lhsIntAttr) {
+     auto lhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(lhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(lhsIntAttr.value()));
+     lhsValue = lhsOp.getResult();
+   }
+ 
+   auto rhsValue = dyn_cast<Value>(rhs);
+   if (rhsIntAttr) {
+     auto rhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(rhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(rhsIntAttr.value()));
+     rhsValue = rhsOp.getResult();
+   }
+ 
+-  auto minOp = b.create<arith::MinSIOp>(loc, lhsValue, rhsValue);
++  auto minOp = arith::MinSIOp::create(b, loc, lhsValue, rhsValue);
+   return minOp.getResult();
+ }
+ 
+@@ -334,18 +334,18 @@ OpFoldResult maxOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   auto lhsValue = dyn_cast<Value>(lhs);
+   if (lhsIntAttr) {
+     auto lhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(lhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(lhsIntAttr.value()));
+     lhsValue = lhsOp.getResult();
+   }
+ 
+   auto rhsValue = dyn_cast<Value>(rhs);
+   if (rhsIntAttr) {
+     auto rhsOp =
+-        b.create<arith::ConstantOp>(loc, b.getIndexAttr(rhsIntAttr.value()));
++        arith::ConstantOp::create(b, loc, b.getIndexAttr(rhsIntAttr.value()));
+     rhsValue = rhsOp.getResult();
+   }
+ 
+-  auto maxOp = b.create<arith::MaxSIOp>(loc, lhsValue, rhsValue);
++  auto maxOp = arith::MaxSIOp::create(b, loc, lhsValue, rhsValue);
+   return maxOp.getResult();
+ }
+ 
+@@ -359,7 +359,7 @@ OpFoldResult selectOFRs(const OpFoldResult condOFR, const OpFoldResult trueOFR,
+          "Condition for selectOp must be a bool type");
+ 
+   auto selectOp =
+-      b.create<arith::SelectOp>(loc, condValue, trueValue, falseValue);
++      arith::SelectOp::create(b, loc, condValue, trueValue, falseValue);
+   return selectOp.getResult();
+ }
+ 
+@@ -398,7 +398,7 @@ OpFoldResult compareOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
+   auto lhsValue = ofrToIndexValue(lhs, loc, b);
+   auto rhsValue = ofrToIndexValue(rhs, loc, b);
+ 
+-  auto cmpOp = b.create<arith::CmpIOp>(loc, pred, lhsValue, rhsValue);
++  auto cmpOp = arith::CmpIOp::create(b, loc, pred, lhsValue, rhsValue);
+   return selectOFRs(cmpOp.getResult(), trueOFR, falseOFR, loc, b);
+ }
+ 
+diff --git a/lib/Analysis/PtrAnalysis.cpp b/lib/Analysis/PtrAnalysis.cpp
+index 9ebd54d..0fe5f84 100644
+--- a/lib/Analysis/PtrAnalysis.cpp
++++ b/lib/Analysis/PtrAnalysis.cpp
+@@ -82,7 +82,7 @@ void PtrState::addState(const PtrState &lhsState, const PtrState &rhsState,
+ 
+   if (lhsState.scalar && rhsState.scalar) {
+     auto addOp =
+-        rewriter.create<arith::AddIOp>(loc, lhsState.scalar, rhsState.scalar);
++        arith::AddIOp::create(rewriter, loc, lhsState.scalar, rhsState.scalar);
+     scalar = addOp.getResult();
+   } else if (lhsState.getRank() == 0) { // both lhs and rhs are scalars
+     scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+@@ -210,28 +210,28 @@ PtrState::createStackedCastOps(ArrayRef<int64_t> resultShape,
+   Value strideRow = ofrToIndexValue(strides[0], loc, rewriter);
+   Value strideCol = ofrToIndexValue(strides[1], loc, rewriter);
+ 
+-  Value modRow = rewriter.create<arith::IndexCastOp>(
+-      loc, rewriter.getIndexType(), modulos[0]->size);
++  Value modRow = arith::IndexCastOp::create(
++      rewriter, loc, rewriter.getIndexType(), modulos[0]->size);
+ 
+   // First chunk
+   Value wrappedAroundOff =
+-      rewriter.create<arith::RemSIOp>(loc, targetOffset, strideRow);
+-  Value clampedOff = rewriter.create<arith::MulIOp>(loc, modRow, strideRow);
++      arith::RemSIOp::create(rewriter, loc, targetOffset, strideRow);
++  Value clampedOff = arith::MulIOp::create(rewriter, loc, modRow, strideRow);
+   clampedOff =
+-      rewriter.create<arith::AddIOp>(loc, clampedOff, wrappedAroundOff);
+-  Value d1 = rewriter.create<arith::SubIOp>(loc, clampedOff, targetOffset);
+-  d1 = rewriter.create<arith::DivSIOp>(loc, d1, strideRow);
++      arith::AddIOp::create(rewriter, loc, clampedOff, wrappedAroundOff);
++  Value d1 = arith::SubIOp::create(rewriter, loc, clampedOff, targetOffset);
++  d1 = arith::DivSIOp::create(rewriter, loc, d1, strideRow);
+ 
+   SmallVector<Value> sizes1{d1, colSize};
+-  memref::ReinterpretCastOp cast1 = rewriter.create<memref::ReinterpretCastOp>(
+-      loc, resultType, source, targetOffset, sizes1,
++  memref::ReinterpretCastOp cast1 = memref::ReinterpretCastOp::create(
++      rewriter, loc, resultType, source, targetOffset, sizes1,
+       ValueRange{strideRow, strideCol});
+ 
+   // Second chunk
+-  Value d2 = rewriter.create<arith::SubIOp>(loc, rowSize, d1);
++  Value d2 = arith::SubIOp::create(rewriter, loc, rowSize, d1);
+   SmallVector<Value> sizes2{d2, colSize};
+-  memref::ReinterpretCastOp cast2 = rewriter.create<memref::ReinterpretCastOp>(
+-      loc, resultType, source, wrappedAroundOff, sizes2,
++  memref::ReinterpretCastOp cast2 = memref::ReinterpretCastOp::create(
++      rewriter, loc, resultType, source, wrappedAroundOff, sizes2,
+       ValueRange{strideRow, strideCol});
+ 
+   return {cast1, cast2};
+@@ -299,29 +299,29 @@ PtrState::createSideBySideCastOps(ArrayRef<int64_t> resultShape,
+   Value rowSize = ofrToIndexValue(sizes[0], loc, rewriter);
+   Value colSize = ofrToIndexValue(sizes[1], loc, rewriter);
+ 
+-  Value modN = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
+-                                                   modulos[1]->size);
++  Value modN = arith::IndexCastOp::create(
++      rewriter, loc, rewriter.getIndexType(), modulos[1]->size);
+ 
+-  Value x = rewriter.create<arith::RemSIOp>(loc, targetOffset, modN);
+-  Value y = rewriter.create<arith::SubIOp>(loc, targetOffset, x);
++  Value x = arith::RemSIOp::create(rewriter, loc, targetOffset, modN);
++  Value y = arith::SubIOp::create(rewriter, loc, targetOffset, x);
+ 
+   SmallVector<Value> strideVals = ofrsToIndexValues(strides, loc, rewriter);
+ 
+   // First chunk
+-  Value nextOffset = rewriter.create<arith::AddIOp>(loc, x, colSize);
+-  Value clampedOffset = rewriter.create<arith::MinSIOp>(loc, nextOffset, modN);
+-  Value d1 = rewriter.create<arith::SubIOp>(loc, clampedOffset, x);
++  Value nextOffset = arith::AddIOp::create(rewriter, loc, x, colSize);
++  Value clampedOffset = arith::MinSIOp::create(rewriter, loc, nextOffset, modN);
++  Value d1 = arith::SubIOp::create(rewriter, loc, clampedOffset, x);
+   SmallVector<Value> sizes1{rowSize, d1};
+ 
+-  auto cast1 = rewriter.create<memref::ReinterpretCastOp>(
+-      loc, resultType, source, targetOffset, sizes1, strideVals);
++  auto cast1 = memref::ReinterpretCastOp::create(
++      rewriter, loc, resultType, source, targetOffset, sizes1, strideVals);
+ 
+   // Second chunk
+-  Value d2 = rewriter.create<arith::SubIOp>(loc, colSize, d1);
++  Value d2 = arith::SubIOp::create(rewriter, loc, colSize, d1);
+   SmallVector<Value> sizes2{rowSize, d2};
+ 
+-  auto cast2 = rewriter.create<memref::ReinterpretCastOp>(
+-      loc, resultType, source, y, sizes2, strideVals);
++  auto cast2 = memref::ReinterpretCastOp::create(rewriter, loc, resultType,
++                                                 source, y, sizes2, strideVals);
+ 
+   return {cast1, cast2};
+ }
+@@ -341,8 +341,8 @@ PtrState::createCastOp(ArrayRef<int64_t> resultShape, const Location loc,
+       getResultMemrefType(rewriter.getContext(), staticOffset[0], resultShape);
+ 
+   // Create reinterpret cast
+-  return rewriter.create<memref::ReinterpretCastOp>(
+-      loc, resultType, source, targetOffset, sizes, strides);
++  return memref::ReinterpretCastOp::create(rewriter, loc, resultType, source,
++                                           targetOffset, sizes, strides);
+ }
+ 
+ void PtrAnalysis::visitOperandAdd(
+@@ -648,8 +648,8 @@ void PtrAnalysis::visitOperand(
+   }
+ 
+   if (isa<IntegerType>(operand.getType())) {
+-    auto castOp = rewriter.create<arith::IndexCastOp>(
+-        loc, rewriter.getIndexType(), operand);
++    auto castOp = arith::IndexCastOp::create(rewriter, loc,
++                                             rewriter.getIndexType(), operand);
+     state.scalar = castOp.getResult();
+     return;
+   }
+@@ -805,10 +805,10 @@ void PtrAnalysis::rewriteAddptrOp(
+         rewriter.getContext(), ShapedType::kDynamic, resultShape);
+ 
+     UnrealizedConversionCastOp combinedCast =
+-        rewriter.create<UnrealizedConversionCastOp>(
+-            op.getLoc(), resultType,
+-            ValueRange{casts[0].getResult(), casts[1].getResult(),
+-                       op.getResult()});
++        UnrealizedConversionCastOp::create(rewriter, op.getLoc(), resultType,
++                                           ValueRange{casts[0].getResult(),
++                                                      casts[1].getResult(),
++                                                      op.getResult()});
+ 
+     combinedCast->setAttr(ModuloState::WraparoundAttr,
+                           rewriter.getStringAttr(type));
+@@ -858,18 +858,18 @@ void PtrAnalysis::rewriteAdvanceOp(
+        llvm::zip(incrementOffsets, ptrState.offsets, ptrState.strides)) {
+     Value offsetValue;
+     if (auto offsetIntAttr = getIntAttr(offset)) {
+-      auto constOp = rewriter.create<arith::ConstantOp>(
+-          op.getLoc(), rewriter.getIndexAttr(0));
++      auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(),
++                                               rewriter.getIndexAttr(0));
+       offsetValue = constOp.getResult();
+     } else {
+       offsetValue = cast<Value>(offset);
+     }
+-    auto castOp = rewriter.create<arith::IndexCastOp>(
+-        loc, rewriter.getIndexType(), increment);
+-    auto mulOp = rewriter.create<arith::MulIOp>(loc, castOp.getResult(),
+-                                                cast<Value>(stride));
++    auto castOp = arith::IndexCastOp::create(
++        rewriter, loc, rewriter.getIndexType(), increment);
++    auto mulOp = arith::MulIOp::create(rewriter, loc, castOp.getResult(),
++                                       cast<Value>(stride));
+     auto addOp =
+-        rewriter.create<arith::AddIOp>(loc, mulOp.getResult(), offsetValue);
++        arith::AddIOp::create(rewriter, loc, mulOp.getResult(), offsetValue);
+     newOffsets.push_back(addOp.getResult());
+   }
+ 
+@@ -995,8 +995,8 @@ void PtrAnalysis::rewriteYieldOp(
+       // zeroes.
+       if (auto sIntAttr = getIntAttr(s)) {
+         assert(sIntAttr.value() == 0 && "attribute offsets should be zeroes");
+-        auto constOp = rewriter.create<arith::ConstantOp>(
+-            op.getLoc(), rewriter.getIndexAttr(0));
++        auto constOp = arith::ConstantOp::create(rewriter, op.getLoc(),
++                                                 rewriter.getIndexAttr(0));
+         operands.push_back(constOp.getResult());
+       } else {
+         operands.push_back(cast<Value>(s));
+@@ -1166,8 +1166,8 @@ void PtrAnalysis::rewriteForOp(
+     for (auto [j, s] : llvm::enumerate(state.offsets)) {
+       auto sIntAttr = getIntAttr(s);
+       if (sIntAttr) {
+-        auto constOp = rewriter.create<arith::ConstantOp>(
+-            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
++        auto constOp = arith::ConstantOp::create(
++            rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+         newInitArgs.push_back(constOp.getResult());
+         state.offsets[j] = constOp.getResult();
+       } else {
+@@ -1178,8 +1178,8 @@ void PtrAnalysis::rewriteForOp(
+     for (auto [j, s] : llvm::enumerate(state.strides)) {
+       auto sIntAttr = getIntAttr(s);
+       if (sIntAttr) {
+-        auto constOp = rewriter.create<arith::ConstantOp>(
+-            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
++        auto constOp = arith::ConstantOp::create(
++            rewriter, op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+         newInitArgs.push_back(constOp.getResult());
+         state.strides[j] = constOp.getResult();
+       } else {
+@@ -1240,9 +1240,10 @@ void PtrAnalysis::rewriteForOp(
+   rewriter.restoreInsertionPoint(origIp);
+ 
+   // Create a new scf::ForOp that uses updated init args and same loop body
+-  auto newOp = rewriter.create<scf::ForOp>(
+-      op.getLoc(), op.getLowerBound(), op.getUpperBound(), op.getStep(),
+-      newInitArgs, [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
++  auto newOp = scf::ForOp::create(
++      rewriter, op.getLoc(), op.getLowerBound(), op.getUpperBound(),
++      op.getStep(), newInitArgs,
++      [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
+         IRMapping mapping;
+         mapping.map(op.getInductionVar(), iv);
+         mapping.map(op.getInitArgs(), newInitArgs);
+@@ -1266,7 +1267,7 @@ void PtrAnalysis::rewriteForOp(
+         b.setInsertionPointToStart(b.getBlock());
+ 
+         Value zero =
+-            rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
++            arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+ 
+         for (auto &[unrealizedCastOp, chunkData, state] : moduloStates) {
+           SmallVector<Value> newReinterpretCasts;
+@@ -1274,9 +1275,9 @@ void PtrAnalysis::rewriteForOp(
+             newReinterpretCasts.push_back(args[chunk.initArgIndex]);
+           }
+ 
+-          auto combinedCast = b.create<UnrealizedConversionCastOp>(
+-              loc, unrealizedCastOp.getResult(0).getType(), newReinterpretCasts,
+-              unrealizedCastOp->getAttrs());
++          auto combinedCast = UnrealizedConversionCastOp::create(
++              b, loc, unrealizedCastOp.getResult(0).getType(),
++              newReinterpretCasts, unrealizedCastOp->getAttrs());
+ 
+           args[chunkData[0].initArgIndex].replaceUsesWithIf(
+               combinedCast.getResult(0), [](OpOperand &operand) {
+diff --git a/lib/AnalysisStructured/PtrAnalysis.cpp b/lib/AnalysisStructured/PtrAnalysis.cpp
+index befcfbd..09a152d 100644
+--- a/lib/AnalysisStructured/PtrAnalysis.cpp
++++ b/lib/AnalysisStructured/PtrAnalysis.cpp
+@@ -63,29 +63,26 @@ static Value applyUnstructuredMask(Operation *op, Value ptr,
+       return nullptr;
+     }
+ 
+-    ptr =
+-        builder
+-            .create<tts::MakeGatherScatterTensorPtrOp>(
+-                loc, gatherScatterPtr.getBase(),
+-                gatherScatterPtr.getGatherScatterOffset(), unstructuredMask,
+-                gatherScatterPtr.getGatherScatterDim(),
+-                gatherScatterPtr.getSizes(), gatherScatterPtr.getMixedStrides(),
+-                gatherScatterPtr.getMixedOffsets())
+-            .getResult();
++    ptr = tts::MakeGatherScatterTensorPtrOp::create(
++              builder, loc, gatherScatterPtr.getBase(),
++              gatherScatterPtr.getGatherScatterOffset(), unstructuredMask,
++              gatherScatterPtr.getGatherScatterDim(),
++              gatherScatterPtr.getSizes(), gatherScatterPtr.getMixedStrides(),
++              gatherScatterPtr.getMixedOffsets())
++              .getResult();
+   } else if (auto structuredPtr = ptr.getDefiningOp<tts::MakeTensorPtrOp>()) {
+     auto ofrToI32Value = [&](OpFoldResult ofr) {
+       Value v = dyn_cast<Value>(ofr);
+       if (!v) {
+-        v = builder
+-                .create<arith::ConstantOp>(
+-                    loc, cast<TypedAttr>(cast<Attribute>(ofr)))
++        v = arith::ConstantOp::create(builder, loc,
++                                      cast<TypedAttr>(cast<Attribute>(ofr)))
+                 .getResult();
+       }
+       if (isa<IndexType>(v.getType())) {
+-        v = builder.create<arith::IndexCastOp>(loc, builder.getI32Type(), v)
++        v = arith::IndexCastOp::create(builder, loc, builder.getI32Type(), v)
+                 .getResult();
+       } else if (v.getType().isInteger(64)) {
+-        v = builder.create<arith::TruncIOp>(loc, builder.getI32Type(), v)
++        v = arith::TruncIOp::create(builder, loc, builder.getI32Type(), v)
+                 .getResult();
+       }
+ 
+@@ -100,22 +97,20 @@ static Value applyUnstructuredMask(Operation *op, Value ptr,
+     // Divide stride since offset of tts::MakeTensorPtrOp already include the
+     // stride, but gatherScatterOffset of tts::MakeGatherScatterTensorPtrOp
+     // should not include stride.
+-    offset = builder.create<arith::DivUIOp>(loc, offset, stride);
++    offset = arith::DivUIOp::create(builder, loc, offset, stride);
+ 
+     Value gatherScatterOffset =
+-        builder.create<tensor::SplatOp>(loc, offsetRowType, offset).getResult();
+-    Value range = builder
+-                      .create<triton::MakeRangeOp>(
+-                          loc, offsetRowType, 0, structuredPtr.getSizes()[dim])
++        tensor::SplatOp::create(builder, loc, offsetRowType, offset)
++            .getResult();
++    Value range = triton::MakeRangeOp::create(builder, loc, offsetRowType, 0,
++                                              structuredPtr.getSizes()[dim])
+                       .getResult();
+     gatherScatterOffset =
+-        builder.create<arith::AddIOp>(loc, gatherScatterOffset, range);
+-    ptr = builder
+-              .create<tts::MakeGatherScatterTensorPtrOp>(
+-                  loc, structuredPtr.getBase(), gatherScatterOffset,
+-                  unstructuredMask, dim, structuredPtr.getSizes(),
+-                  structuredPtr.getMixedStrides(),
+-                  structuredPtr.getMixedOffsets())
++        arith::AddIOp::create(builder, loc, gatherScatterOffset, range);
++    ptr = tts::MakeGatherScatterTensorPtrOp::create(
++              builder, loc, structuredPtr.getBase(), gatherScatterOffset,
++              unstructuredMask, dim, structuredPtr.getSizes(),
++              structuredPtr.getMixedStrides(), structuredPtr.getMixedOffsets())
+               .getResult();
+   } else {
+     return nullptr;
+@@ -291,7 +286,7 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
+ 
+   if (lhsState.scalar && rhsState.scalar) {
+     auto addOp =
+-        builder.create<arith::AddIOp>(loc, lhsState.scalar, rhsState.scalar);
++        arith::AddIOp::create(builder, loc, lhsState.scalar, rhsState.scalar);
+     scalar = addOp.getResult();
+   } else if (lhsState.getRank() == 0) { // both lhs and rhs are scalars
+     scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
+@@ -569,7 +564,7 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
+ 
+   if (lhsState.scalar && rhsState.scalar) {
+     scalar =
+-        builder.create<arith::MulIOp>(loc, lhsState.scalar, rhsState.scalar);
++        arith::MulIOp::create(builder, loc, lhsState.scalar, rhsState.scalar);
+   }
+ 
+   auto indexTy = IndexType::get(op->getContext());
+@@ -662,8 +657,8 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
+     staticSizes.push_back(s.value());
+   }
+ 
+-  auto op = builder.create<mlir::tts::MakeTensorPtrOp>(
+-      loc, source, staticSizes, strides, offsets, shape, order);
++  auto op = mlir::tts::MakeTensorPtrOp::create(
++      builder, loc, source, staticSizes, strides, offsets, shape, order);
+   LLVM_DEBUG({
+     llvm::dbgs() << "creating tts::make_tensor_ptr:\n";
+     op->dump();
+@@ -700,16 +695,15 @@ PtrState::createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder,
+     auto collapseTy =
+         RankedTensorType::get({offsetSize}, offsetTy.getElementType());
+     nonContinuousOffset =
+-        builder
+-            .create<tensor::CollapseShapeOp>(
+-                loc, collapseTy, nonContinuousOffset, reassociationMap)
++        tensor::CollapseShapeOp::create(builder, loc, collapseTy,
++                                        nonContinuousOffset, reassociationMap)
+             .getResult();
+     offsets[nonContinuousDim] = nonContinuousOffset;
+   }
+   // Generate tts::make_gather_scatter_tensor_ptr.
+-  auto op = builder.create<mlir::tts::MakeGatherScatterTensorPtrOp>(
+-      loc, source, nonContinuousOffset, nonContinuousDim, staticSizes, strides,
+-      offsets);
++  auto op = mlir::tts::MakeGatherScatterTensorPtrOp::create(
++      builder, loc, source, nonContinuousOffset, nonContinuousDim, staticSizes,
++      strides, offsets);
+   LLVM_DEBUG({
+     llvm::dbgs() << "creating tts::make_gather_scatter_tensor_ptr:\n";
+     op->dump();
+@@ -1135,19 +1129,19 @@ PtrAnalysis::visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
+   for (int64_t i = 0; i < pointeeType.getRank(); i++) {
+     state.sizes.push_back(builder.getIndexAttr(shape[i]));
+ 
+-    auto strideCst = builder.create<arith::IndexCastOp>(
+-        loc, builder.getIndexType(), makeTPtrOp.getStrides()[i]);
++    auto strideCst = arith::IndexCastOp::create(
++        builder, loc, builder.getIndexType(), makeTPtrOp.getStrides()[i]);
+     state.strides.push_back(strideCst.getResult());
+ 
+-    auto offsetCst = builder.create<arith::IndexCastOp>(
+-        loc, builder.getIndexType(), makeTPtrOp.getOffsets()[i]);
++    auto offsetCst = arith::IndexCastOp::create(
++        builder, loc, builder.getIndexType(), makeTPtrOp.getOffsets()[i]);
+ 
+-    auto scaledOffset = builder.create<arith::MulIOp>(
+-        loc, offsetCst.getResult(), strideCst.getResult());
++    auto scaledOffset = arith::MulIOp::create(
++        builder, loc, offsetCst.getResult(), strideCst.getResult());
+     state.offsets.push_back(scaledOffset.getResult());
+ 
+-    auto shapeCst = builder.create<arith::IndexCastOp>(
+-        loc, builder.getIndexType(), makeTPtrOp.getShape()[i]);
++    auto shapeCst = arith::IndexCastOp::create(
++        builder, loc, builder.getIndexType(), makeTPtrOp.getShape()[i]);
+     state.shape.push_back(shapeCst.getResult());
+   }
+   state.order = SmallVector<int32_t>(makeTPtrOp.getOrder());
+@@ -1219,8 +1213,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
+     if (!isa<BlockArgument>(operand) && operand.getDefiningOp()) {
+       builder.setInsertionPointAfter(operand.getDefiningOp());
+     }
+-    auto castOp = builder.create<arith::IndexCastOp>(
+-        loc, builder.getIndexType(), operand);
++    auto castOp = arith::IndexCastOp::create(builder, loc,
++                                             builder.getIndexType(), operand);
+     state.scalar = castOp.getResult();
+     return success();
+   } else if (isa<IndexType>(operand.getType())) {
+@@ -1390,18 +1384,18 @@ LogicalResult PtrAnalysis::rewriteAdvanceOp(triton::AdvanceOp op) {
+        llvm::zip(incrementOffsets, state.offsets, state.strides)) {
+     Value offsetValue;
+     if (auto offsetIntAttr = getIntAttr(offset)) {
+-      auto constOp = builder.create<arith::ConstantOp>(
+-          loc, builder.getIndexAttr(offsetIntAttr.value()));
++      auto constOp = arith::ConstantOp::create(
++          builder, loc, builder.getIndexAttr(offsetIntAttr.value()));
+       offsetValue = constOp.getResult();
+     } else {
+       offsetValue = cast<Value>(offset);
+     }
+-    auto castOp = builder.create<arith::IndexCastOp>(
+-        loc, builder.getIndexType(), increment);
+-    auto mulOp = builder.create<arith::MulIOp>(loc, castOp.getResult(),
+-                                               cast<Value>(stride));
++    auto castOp = arith::IndexCastOp::create(builder, loc,
++                                             builder.getIndexType(), increment);
++    auto mulOp = arith::MulIOp::create(builder, loc, castOp.getResult(),
++                                       cast<Value>(stride));
+     auto addOp =
+-        builder.create<arith::AddIOp>(loc, mulOp.getResult(), offsetValue);
++        arith::AddIOp::create(builder, loc, mulOp.getResult(), offsetValue);
+     newOffsets.push_back(addOp.getResult());
+   }
+ 
+@@ -1637,15 +1631,15 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
+       // This operand is a pointer directly from the kernel arguments.
+       // Use offset 0.
+       assert(!tritonValue.getDefiningOp());
+-      replacements.push_back(builder.create<arith::ConstantOp>(
+-          op.getLoc(), builder.getIndexAttr(0)));
++      replacements.push_back(arith::ConstantOp::create(
++          builder, op.getLoc(), builder.getIndexAttr(0)));
+     }
+   } else {
+     for (auto [j, s] : llvm::enumerate(state.offsets)) {
+       auto sIntAttr = getIntAttr(s);
+       if (sIntAttr) {
+-        auto constOp = builder.create<arith::ConstantOp>(
+-            op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
++        auto constOp = arith::ConstantOp::create(
++            builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+         replacements.push_back(constOp.getResult());
+       } else {
+         replacements.push_back(cast<Value>(s));
+@@ -1655,8 +1649,8 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
+     for (auto [j, s] : llvm::enumerate(state.strides)) {
+       auto sIntAttr = getIntAttr(s);
+       if (sIntAttr) {
+-        auto constOp = builder.create<arith::ConstantOp>(
+-            op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
++        auto constOp = arith::ConstantOp::create(
++            builder, op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+         replacements.push_back(constOp.getResult());
+       } else {
+         replacements.push_back(cast<Value>(s));
+@@ -1720,7 +1714,7 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
+     }
+   }
+ 
+-  auto loadOp = builder.create<tts::LoadOp>(loc, ptr, dims, scalarOther);
++  auto loadOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther);
+ 
+   LLVM_DEBUG({
+     llvm::dbgs() << "creating tts::load:\n";
+@@ -1850,7 +1844,7 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
+     dims = mstate.dims;
+   }
+ 
+-  auto storeOp = builder.create<tts::StoreOp>(loc, ptr, val, dims);
++  auto storeOp = tts::StoreOp::create(builder, loc, ptr, val, dims);
+ 
+   LLVM_DEBUG({
+     llvm::dbgs() << "creating tts::store:\n";
+diff --git a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+index 7619d82..8c1e9e7 100644
+--- a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
++++ b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+@@ -42,8 +42,9 @@
+ 
+ using namespace mlir;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_STRUCTUREDTOMEMREF
+ #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
++#undef GEN_PASS_STRUCTUREDTOMEMREF
+ 
+ static const std::string WRAP_SIDE_BY_SIDE = "wrap_side_by_side";
+ static const std::string WRAP_STACKED = "wrap_stacked";
+@@ -56,8 +57,8 @@ static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
+   auto dstType =
+       memref::SubViewOp::inferResultType(sourceType, offsets, dims, strides);
+ 
+-  return b.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType), source,
+-                                     offsets, dims, strides);
++  return memref::SubViewOp::create(b, loc, cast<MemRefType>(dstType), source,
++                                   offsets, dims, strides);
+ }
+ 
+ static Type getElementTypeStructuredPtr(tts::MakeTensorPtrOp op) {
+@@ -182,8 +183,9 @@ static Value rewriteGatherScatterPtrElement(
+   SmallVector<Value> dynSizes; // sizes are always static
+   auto sizes = mlir::getMixedValues(staticSizes, dynSizes, rewriter);
+ 
+-  auto castOp = rewriter.create<memref::ReinterpretCastOp>(
+-      op.getLoc(), resultType, basePtr, targetOffset, sizes, mixedStrides);
++  auto castOp = memref::ReinterpretCastOp::create(
++      rewriter, op.getLoc(), resultType, basePtr, targetOffset, sizes,
++      mixedStrides);
+ 
+   return castOp.getResult();
+ }
+@@ -198,28 +200,28 @@ static void fillWithValue(Location loc, Value alloc, Value other,
+   // For each dimension check if dims[i] < shape[i], or-accumulate
+   // the result
+   auto accBase =
+-      rewriter.create<arith::ConstantOp>(loc, rewriter.getBoolAttr(false))
++      arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(false))
+           .getResult();
+   for (size_t i = 0; i < shape.size(); i++) {
+-    auto shapei = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getIndexAttr(shape[i]));
++    auto shapei = arith::ConstantOp::create(rewriter, loc,
++                                            rewriter.getIndexAttr(shape[i]));
+ 
+     Value dimi = dyn_cast<Value>(mixedDims[i]);
+     if (!dimi) {
+-      dimi = rewriter.create<arith::ConstantOp>(
+-          loc, rewriter.getIndexAttr(staticMaskDims[i]));
++      dimi = arith::ConstantOp::create(
++          rewriter, loc, rewriter.getIndexAttr(staticMaskDims[i]));
+     }
+ 
+-    Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+-                                               dimi, shapei);
+-    accBase = rewriter.create<arith::OrIOp>(loc, accBase, cmp);
++    Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::slt,
++                                      dimi, shapei);
++    accBase = arith::OrIOp::create(rewriter, loc, accBase, cmp);
+   }
+ 
+   // condition the memset on the or-accumulation
+   // initialize with padding prior to CopyOp
+-  rewriter.create<scf::IfOp>(loc, accBase, [&](OpBuilder &b, Location loc) {
+-    b.create<linalg::FillOp>(loc, ValueRange{other}, ValueRange{alloc});
+-    b.create<scf::YieldOp>(loc);
++  scf::IfOp::create(rewriter, loc, accBase, [&](OpBuilder &b, Location loc) {
++    linalg::FillOp::create(b, loc, ValueRange{other}, ValueRange{alloc});
++    scf::YieldOp::create(b, loc);
+   });
+ }
+ 
+@@ -321,35 +323,36 @@ private:
+             // wrapping around.
+             ShapedType::kDynamic});
+ 
+-    Value rowSize = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getIndexAttr(op.getSizes()[0]));
+-    Value colSize = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getIndexAttr(op.getSizes()[1]));
++    Value rowSize = arith::ConstantOp::create(
++        rewriter, loc, rewriter.getIndexAttr(op.getSizes()[0]));
++    Value colSize = arith::ConstantOp::create(
++        rewriter, loc, rewriter.getIndexAttr(op.getSizes()[1]));
+ 
+     Value modN = ofrToIndexValue(op.getMixedShape()[1], loc, rewriter);
+ 
+-    Value x = rewriter.create<arith::RemSIOp>(loc, targetOffset, modN);
+-    Value y = rewriter.create<arith::SubIOp>(loc, targetOffset, x);
++    Value x = arith::RemSIOp::create(rewriter, loc, targetOffset, modN);
++    Value y = arith::SubIOp::create(rewriter, loc, targetOffset, x);
+ 
+     SmallVector<Value> strideVals =
+         ofrsToIndexValues(op.getMixedStrides(), loc, rewriter);
+ 
+     // First chunk
+-    Value nextOffset = rewriter.create<arith::AddIOp>(loc, x, colSize);
++    Value nextOffset = arith::AddIOp::create(rewriter, loc, x, colSize);
+     Value clampedOffset =
+-        rewriter.create<arith::MinSIOp>(loc, nextOffset, modN);
+-    Value d1 = rewriter.create<arith::SubIOp>(loc, clampedOffset, x);
++        arith::MinSIOp::create(rewriter, loc, nextOffset, modN);
++    Value d1 = arith::SubIOp::create(rewriter, loc, clampedOffset, x);
+     SmallVector<Value> sizes1{rowSize, d1};
+ 
+-    auto cast1 = rewriter.create<memref::ReinterpretCastOp>(
+-        loc, resultType, adaptor.getBase(), targetOffset, sizes1, strideVals);
++    auto cast1 = memref::ReinterpretCastOp::create(
++        rewriter, loc, resultType, adaptor.getBase(), targetOffset, sizes1,
++        strideVals);
+ 
+     // Second chunk
+-    Value d2 = rewriter.create<arith::SubIOp>(loc, colSize, d1);
++    Value d2 = arith::SubIOp::create(rewriter, loc, colSize, d1);
+     SmallVector<Value> sizes2{rowSize, d2};
+ 
+-    auto cast2 = rewriter.create<memref::ReinterpretCastOp>(
+-        loc, resultType, adaptor.getBase(), y, sizes2, strideVals);
++    auto cast2 = memref::ReinterpretCastOp::create(
++        rewriter, loc, resultType, adaptor.getBase(), y, sizes2, strideVals);
+ 
+     return {cast1, cast2};
+   }
+@@ -450,10 +453,10 @@ private:
+             // allow this anymore. So we put dynamic instead.
+             ShapedType::kDynamic});
+ 
+-    Value rowSize = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getIndexAttr(op.getSizes()[0]));
+-    Value colSize = rewriter.create<arith::ConstantOp>(
+-        loc, rewriter.getIndexAttr(op.getSizes()[1]));
++    Value rowSize = arith::ConstantOp::create(
++        rewriter, loc, rewriter.getIndexAttr(op.getSizes()[0]));
++    Value colSize = arith::ConstantOp::create(
++        rewriter, loc, rewriter.getIndexAttr(op.getSizes()[1]));
+ 
+     Value strideRow = ofrToIndexValue(op.getMixedStrides()[0], loc, rewriter);
+     Value strideCol = ofrToIndexValue(op.getMixedStrides()[1], loc, rewriter);
+@@ -462,26 +465,24 @@ private:
+ 
+     // First chunk
+     Value wrappedAroundOff =
+-        rewriter.create<arith::RemSIOp>(loc, targetOffset, strideRow);
++        arith::RemSIOp::create(rewriter, loc, targetOffset, strideRow);
+     Value clampedOff =
+-        rewriter.create<arith::AddIOp>(loc, modRow, wrappedAroundOff);
+-    Value d1 = rewriter.create<arith::SubIOp>(loc, clampedOff, targetOffset);
+-    d1 = rewriter.create<arith::DivSIOp>(loc, d1, strideRow);
+-    d1 = rewriter.create<arith::MinSIOp>(loc, d1, rowSize);
++        arith::AddIOp::create(rewriter, loc, modRow, wrappedAroundOff);
++    Value d1 = arith::SubIOp::create(rewriter, loc, clampedOff, targetOffset);
++    d1 = arith::DivSIOp::create(rewriter, loc, d1, strideRow);
++    d1 = arith::MinSIOp::create(rewriter, loc, d1, rowSize);
+ 
+     SmallVector<Value> sizes1{d1, colSize};
+-    memref::ReinterpretCastOp cast1 =
+-        rewriter.create<memref::ReinterpretCastOp>(
+-            loc, resultType, adaptor.getBase(), targetOffset, sizes1,
+-            ValueRange{strideRow, strideCol});
++    memref::ReinterpretCastOp cast1 = memref::ReinterpretCastOp::create(
++        rewriter, loc, resultType, adaptor.getBase(), targetOffset, sizes1,
++        ValueRange{strideRow, strideCol});
+ 
+     // Second chunk
+-    Value d2 = rewriter.create<arith::SubIOp>(loc, rowSize, d1);
++    Value d2 = arith::SubIOp::create(rewriter, loc, rowSize, d1);
+     SmallVector<Value> sizes2{d2, colSize};
+-    memref::ReinterpretCastOp cast2 =
+-        rewriter.create<memref::ReinterpretCastOp>(
+-            loc, resultType, adaptor.getBase(), wrappedAroundOff, sizes2,
+-            ValueRange{strideRow, strideCol});
++    memref::ReinterpretCastOp cast2 = memref::ReinterpretCastOp::create(
++        rewriter, loc, resultType, adaptor.getBase(), wrappedAroundOff, sizes2,
++        ValueRange{strideRow, strideCol});
+ 
+     return {cast1, cast2};
+   }
+@@ -515,8 +516,8 @@ private:
+       llvm_unreachable("Unexpected split pointer shape");
+     }
+ 
+-    auto combinedCast = rewriter.create<UnrealizedConversionCastOp>(
+-        op.getLoc(), op.getType(), casts);
++    auto combinedCast = UnrealizedConversionCastOp::create(
++        rewriter, op.getLoc(), op.getType(), casts);
+ 
+     combinedCast->setAttr(wrapType, rewriter.getUnitAttr());
+ 
+@@ -541,8 +542,8 @@ private:
+         op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+         resultShape);
+ 
+-    auto castOp = rewriter.create<memref::ReinterpretCastOp>(
+-        op.getLoc(), resultType, adaptor.getBase(), targetOffset,
++    auto castOp = memref::ReinterpretCastOp::create(
++        rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
+         op.getMixedSizes(), mixedStrides);
+ 
+     rewriter.replaceOp(op, castOp);
+@@ -626,71 +627,67 @@ private:
+                               ConversionPatternRewriter &rewriter) const {
+ 
+     auto zero =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+ 
+     auto one =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
+-
+-    Value block1Row = rewriter.create<memref::DimOp>(loc, block1, 0);
+-    Value block1Col = rewriter.create<memref::DimOp>(loc, block1, 1);
+-
+-    Value block2Row = rewriter.create<memref::DimOp>(loc, block2, 0);
+-    Value block2Col = rewriter.create<memref::DimOp>(loc, block2, 1);
+-
+-    auto block1Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst, /* offsets */
+-                                           ValueRange{zero, zero},
+-                                           /* sizes */
+-                                           ValueRange{block1Row, block1Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
+-
+-    auto block2Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst,
+-                                           /* offsets */
+-                                           ValueRange{zero, block1Col},
+-                                           /* sizes */
+-                                           ValueRange{block2Row, block2Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
+-
+-    rewriter.create<memref::CopyOp>(loc, block1, block1Dst);
+-    rewriter.create<memref::CopyOp>(loc, block2, block2Dst);
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(1));
++
++    Value block1Row = memref::DimOp::create(rewriter, loc, block1, 0);
++    Value block1Col = memref::DimOp::create(rewriter, loc, block1, 1);
++
++    Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
++    Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
++
++    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
++                                               ValueRange{zero, zero},
++                                               /* sizes */
++                                               ValueRange{block1Row, block1Col},
++                                               /* strides */
++                                               ValueRange{one, one});
++
++    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
++                                               /* offsets */
++                                               ValueRange{zero, block1Col},
++                                               /* sizes */
++                                               ValueRange{block2Row, block2Col},
++                                               /* strides */
++                                               ValueRange{one, one});
++
++    memref::CopyOp::create(rewriter, loc, block1, block1Dst);
++    memref::CopyOp::create(rewriter, loc, block2, block2Dst);
+   }
+ 
+   void createStackedCopies(Value block1, Value block2, Value dst, Location loc,
+                            ConversionPatternRewriter &rewriter) const {
+ 
+     auto zero =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(0));
+     auto one =
+-        rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
+-
+-    Value block1Row = rewriter.create<memref::DimOp>(loc, block1, 0);
+-    Value block1Col = rewriter.create<memref::DimOp>(loc, block1, 1);
+-
+-    Value block2Row = rewriter.create<memref::DimOp>(loc, block2, 0);
+-    Value block2Col = rewriter.create<memref::DimOp>(loc, block2, 1);
+-
+-    auto block1Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst, /* offsets */
+-                                           ValueRange{zero, zero},
+-                                           /* sizes */
+-                                           ValueRange{block1Row, block1Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
+-
+-    auto block2Dst =
+-        rewriter.create<memref::SubViewOp>(loc, dst,
+-                                           /* offsets */
+-                                           ValueRange{block1Row, zero},
+-                                           /* sizes */
+-                                           ValueRange{block2Row, block2Col},
+-                                           /* strides */
+-                                           ValueRange{one, one});
+-
+-    rewriter.create<memref::CopyOp>(loc, block1, block1Dst);
+-    rewriter.create<memref::CopyOp>(loc, block2, block2Dst);
++        arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(1));
++
++    Value block1Row = memref::DimOp::create(rewriter, loc, block1, 0);
++    Value block1Col = memref::DimOp::create(rewriter, loc, block1, 1);
++
++    Value block2Row = memref::DimOp::create(rewriter, loc, block2, 0);
++    Value block2Col = memref::DimOp::create(rewriter, loc, block2, 1);
++
++    auto block1Dst = memref::SubViewOp::create(rewriter, loc, dst, /* offsets */
++                                               ValueRange{zero, zero},
++                                               /* sizes */
++                                               ValueRange{block1Row, block1Col},
++                                               /* strides */
++                                               ValueRange{one, one});
++
++    auto block2Dst = memref::SubViewOp::create(rewriter, loc, dst,
++                                               /* offsets */
++                                               ValueRange{block1Row, zero},
++                                               /* sizes */
++                                               ValueRange{block2Row, block2Col},
++                                               /* strides */
++                                               ValueRange{one, one});
++
++    memref::CopyOp::create(rewriter, loc, block1, block1Dst);
++    memref::CopyOp::create(rewriter, loc, block2, block2Dst);
+   }
+ 
+   memref::SubViewOp createSubview(Value src, ArrayRef<OpFoldResult> offsets,
+@@ -700,8 +697,8 @@ private:
+     auto srcType = cast<MemRefType>(src.getType());
+     auto dstType =
+         memref::SubViewOp::inferResultType(srcType, offsets, sizes, strides);
+-    return rewriter.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType),
+-                                              src, offsets, sizes, strides);
++    return memref::SubViewOp::create(rewriter, loc, cast<MemRefType>(dstType),
++                                     src, offsets, sizes, strides);
+   }
+ 
+   std::pair<memref::SubViewOp, memref::SubViewOp>
+@@ -711,9 +708,9 @@ private:
+     OpFoldResult subviewRowFull = dims[0];
+     OpFoldResult subviewColFull = dims[1];
+     OpFoldResult subviewCol1 =
+-        rewriter.create<memref::DimOp>(loc, block1, 1).getResult();
++        memref::DimOp::create(rewriter, loc, block1, 1).getResult();
+     OpFoldResult subviewCol2 =
+-        rewriter.create<memref::DimOp>(loc, block2, 1).getResult();
++        memref::DimOp::create(rewriter, loc, block2, 1).getResult();
+ 
+     SmallVector<OpFoldResult> offsets(dims.size(), rewriter.getIndexAttr(0));
+     SmallVector<OpFoldResult> strides(dims.size(), rewriter.getIndexAttr(1));
+@@ -732,9 +729,9 @@ private:
+     OpFoldResult subviewRowFull = dims[0];
+     OpFoldResult subviewColFull = dims[1];
+     OpFoldResult subviewRow1 =
+-        rewriter.create<memref::DimOp>(loc, block1, 0).getResult();
++        memref::DimOp::create(rewriter, loc, block1, 0).getResult();
+     OpFoldResult subviewRow2 =
+-        rewriter.create<memref::DimOp>(loc, block2, 0).getResult();
++        memref::DimOp::create(rewriter, loc, block2, 0).getResult();
+ 
+     SmallVector<OpFoldResult> offsets(dims.size(), rewriter.getIndexAttr(0));
+     SmallVector<OpFoldResult> strides(dims.size(), rewriter.getIndexAttr(1));
+@@ -757,8 +754,8 @@ private:
+     auto tensorType = cast<RankedTensorType>(op.getType());
+     auto elemType = tensorType.getElementType();
+ 
+-    auto alloc = rewriter.create<memref::AllocOp>(
+-        loc, MemRefType::get(tensorType.getShape(), elemType));
++    auto alloc = memref::AllocOp::create(
++        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+ 
+     // No mask
+     assert(!other && "other value used in non-masked load");
+@@ -781,11 +778,12 @@ private:
+         llvm_unreachable("unexpected wraparound type");
+       }
+     } else {
+-      rewriter.create<memref::CopyOp>(loc, ptr, alloc);
++      memref::CopyOp::create(rewriter, loc, ptr, alloc);
+     }
+ 
+-    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+-        loc, tensorType, alloc, true /* restrict */, true /* writable */);
++    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType,
++                                                     alloc, true /* restrict */,
++                                                     true /* writable */);
+     rewriter.replaceOp(op, tensor);
+ 
+     return success();
+@@ -801,8 +799,8 @@ private:
+     auto tensorType = cast<RankedTensorType>(op.getType());
+     auto elemType = tensorType.getElementType();
+ 
+-    auto alloc = rewriter.create<memref::AllocOp>(
+-        loc, MemRefType::get(tensorType.getShape(), elemType));
++    auto alloc = memref::AllocOp::create(
++        rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
+ 
+     SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+ 
+@@ -842,11 +840,12 @@ private:
+           getSubview(tensorType.getRank(), mixedDims, ptr, loc, rewriter);
+       memref::SubViewOp dstSubview =
+           getSubview(tensorType.getRank(), mixedDims, alloc, loc, rewriter);
+-      rewriter.create<memref::CopyOp>(loc, srcSubview, dstSubview);
++      memref::CopyOp::create(rewriter, loc, srcSubview, dstSubview);
+     }
+ 
+-    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+-        loc, tensorType, alloc, true /* restrict */, true /* writable */);
++    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType,
++                                                     alloc, true /* restrict */,
++                                                     true /* writable */);
+     rewriter.replaceOp(op, tensor);
+ 
+     return success();
+@@ -864,7 +863,7 @@ private:
+     auto indexOffsetTy = RankedTensorType::get(offsetShapedType.getShape(),
+                                                rewriter.getIndexType());
+     gatherOffset =
+-        rewriter.create<arith::IndexCastOp>(loc, indexOffsetTy, gatherOffset)
++        arith::IndexCastOp::create(rewriter, loc, indexOffsetTy, gatherOffset)
+             .getResult();
+ 
+     int gatherDim = ptr.getGatherScatterDim();
+@@ -881,7 +880,7 @@ private:
+     auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
+     auto allocType =
+         MemRefType::get(resultType.getShape(), resultType.getElementType());
+-    auto alloc = rewriter.create<memref::AllocOp>(loc, allocType);
++    auto alloc = memref::AllocOp::create(rewriter, loc, allocType);
+ 
+     auto allocStrides = mlir::getMixedValues(
+         allocType.getStridesAndOffset().first, dynSizes, rewriter);
+@@ -892,9 +891,9 @@ private:
+     }
+ 
+     // Create loop to iterate every offset in gatherOffset.
+-    auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
++    auto lowerBound = arith::ConstantIndexOp::create(rewriter, loc, 0);
+     Value upperBound =
+-        rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
++        arith::ConstantIndexOp::create(rewriter, loc, offsetSize).getResult();
+     if (op.hasMask()) {
+       SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+       OpFoldResult gatherMaskDim = mixedDims[gatherDim];
+@@ -911,26 +910,26 @@ private:
+           gatherMaskDimValue = offsetSize;
+         }
+         offsetSize = std::min(offsetSize, gatherMaskDimValue);
+-        upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize)
++        upperBound = arith::ConstantIndexOp::create(rewriter, loc, offsetSize)
+                          .getResult();
+       } else {
+         // Use arith::MinSIOp to get the minimum value of gatherMaskDim
+         // and offsetSize.
+         auto gatherMaskDimVal = cast<Value>(gatherMaskDim);
+         auto offsetSizeVal =
+-            rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+-        upperBound =
+-            rewriter
+-                .create<arith::MinSIOp>(loc, gatherMaskDimVal, offsetSizeVal)
+-                .getResult();
++            arith::ConstantIndexOp::create(rewriter, loc, offsetSize);
++        upperBound = arith::MinSIOp::create(rewriter, loc, gatherMaskDimVal,
++                                            offsetSizeVal)
++                         .getResult();
+       }
+     }
+-    auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+-    auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
++    auto step = arith::ConstantIndexOp::create(rewriter, loc, 1);
++    auto loop = scf::ForOp::create(rewriter, loc, lowerBound, upperBound, step);
+ 
+     // Create tensor from alloc and use it as the result to replace op.
+-    Value tensor = rewriter.create<bufferization::ToTensorOp>(
+-        loc, op.getType(), alloc, true /* restrict */, true /* writable */);
++    Value tensor = bufferization::ToTensorOp::create(
++        rewriter, loc, op.getType(), alloc, true /* restrict */,
++        true /* writable */);
+     rewriter.replaceOp(op, tensor);
+ 
+     // Build loop body.
+@@ -941,15 +940,15 @@ private:
+     if (Value unstructuredMask = ptr.getGatherScatterMask()) {
+       // If the gather scatter mask is present, we need to use it to guard the
+       // load.
+-      auto maskValue = rewriter.create<tensor::ExtractOp>(
+-          loc, unstructuredMask, ValueRange{inductionVar});
+-      auto ifOp = rewriter.create<scf::IfOp>(loc, maskValue);
++      auto maskValue = tensor::ExtractOp::create(
++          rewriter, loc, unstructuredMask, ValueRange{inductionVar});
++      auto ifOp = scf::IfOp::create(rewriter, loc, maskValue);
+       rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+     }
+ 
+     // Load the offsetElt first.
+-    auto gatherOffsetElt = rewriter.create<tensor::ExtractOp>(
+-        loc, gatherOffset, ValueRange{inductionVar});
++    auto gatherOffsetElt = tensor::ExtractOp::create(
++        rewriter, loc, gatherOffset, ValueRange{inductionVar});
+ 
+     // reinterpret_cast to current row as memRefPtr[gatherOffsetElt].
+     Value srcPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
+@@ -971,11 +970,10 @@ private:
+       // Use oneStrides for subview.
+       auto dstSubViewType = memref::SubViewOp::inferResultType(
+           cast<MemRefType>(srcPtr.getType()), maskOffsets, sizes, oneStrides);
+-      srcPtr =
+-          rewriter
+-              .create<memref::SubViewOp>(loc, cast<MemRefType>(dstSubViewType),
++      srcPtr = memref::SubViewOp::create(rewriter, loc,
++                                         cast<MemRefType>(dstSubViewType),
+                                          srcPtr, maskOffsets, sizes, oneStrides)
+-              .getResult();
++                   .getResult();
+     }
+ 
+     // alloc[inductionVar]
+@@ -983,11 +981,11 @@ private:
+     allocOffsets[gatherDim] = inductionVar;
+     auto dstAllocType = memref::SubViewOp::inferResultType(
+         allocType, allocOffsets, sizes, oneStrides);
+-    auto dstSubview = rewriter.create<memref::SubViewOp>(
+-        loc, cast<MemRefType>(dstAllocType), alloc, allocOffsets, sizes,
+-        oneStrides);
++    auto dstSubview =
++        memref::SubViewOp::create(rewriter, loc, cast<MemRefType>(dstAllocType),
++                                  alloc, allocOffsets, sizes, oneStrides);
+     // Copy srcPtr to alloc[inductionVar].
+-    rewriter.create<memref::CopyOp>(loc, srcPtr, dstSubview);
++    memref::CopyOp::create(rewriter, loc, srcPtr, dstSubview);
+ 
+     return success();
+   }
+@@ -1024,11 +1022,8 @@ private:
+     SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
+     SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
+ 
+-    auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, offsets,
+-                                                           dims, strides);
+-
+-    return b.create<tensor::ExtractSliceOp>(loc, dstType, source, offsets, dims,
+-                                            strides);
++    return tensor::ExtractSliceOp::create(b, loc, source, offsets, dims,
++                                          strides);
+   }
+ 
+   LogicalResult rewriteScatter(tts::MakeGatherScatterTensorPtrOp ptr,
+@@ -1043,7 +1038,7 @@ private:
+     auto indexOffsetTy = RankedTensorType::get(offsetShapedType.getShape(),
+                                                rewriter.getIndexType());
+     gatherOffset =
+-        rewriter.create<arith::IndexCastOp>(loc, indexOffsetTy, gatherOffset)
++        arith::IndexCastOp::create(rewriter, loc, indexOffsetTy, gatherOffset)
+             .getResult();
+ 
+     int gatherDim = ptr.getGatherScatterDim();
+@@ -1057,9 +1052,9 @@ private:
+     auto sizes = mlir::getMixedValues(staticSizes, dynSizes, rewriter);
+ 
+     // Create loop to iterate every offset in gatherOffset.
+-    auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
++    auto lowerBound = arith::ConstantIndexOp::create(rewriter, loc, 0);
+     Value upperBound =
+-        rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
++        arith::ConstantIndexOp::create(rewriter, loc, offsetSize).getResult();
+     if (op.hasMask()) {
+       SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+       OpFoldResult gatherMaskDim = mixedDims[gatherDim];
+@@ -1076,22 +1071,21 @@ private:
+           gatherMaskDimValue = offsetSize;
+         }
+         offsetSize = std::min(offsetSize, gatherMaskDimValue);
+-        upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize)
++        upperBound = arith::ConstantIndexOp::create(rewriter, loc, offsetSize)
+                          .getResult();
+       } else {
+         // Use arith::MinSIOp to get the minimum value of gatherMaskDim
+         // and offsetSize.
+         auto gatherMaskDimVal = cast<Value>(gatherMaskDim);
+         auto offsetSizeVal =
+-            rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+-        upperBound =
+-            rewriter
+-                .create<arith::MinSIOp>(loc, gatherMaskDimVal, offsetSizeVal)
+-                .getResult();
++            arith::ConstantIndexOp::create(rewriter, loc, offsetSize);
++        upperBound = arith::MinSIOp::create(rewriter, loc, gatherMaskDimVal,
++                                            offsetSizeVal)
++                         .getResult();
+       }
+     }
+-    auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+-    auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
++    auto step = arith::ConstantIndexOp::create(rewriter, loc, 1);
++    auto loop = scf::ForOp::create(rewriter, loc, lowerBound, upperBound, step);
+ 
+     // Build loop body.
+     rewriter.setInsertionPointToStart(loop.getBody());
+@@ -1101,15 +1095,15 @@ private:
+     if (Value unstructuredMask = ptr.getGatherScatterMask()) {
+       // If the gather scatter mask is present, we need to use it to guard the
+       // store.
+-      auto maskValue = rewriter.create<tensor::ExtractOp>(
+-          loc, unstructuredMask, ValueRange{inductionVar});
+-      auto ifOp = rewriter.create<scf::IfOp>(loc, maskValue);
++      auto maskValue = tensor::ExtractOp::create(
++          rewriter, loc, unstructuredMask, ValueRange{inductionVar});
++      auto ifOp = scf::IfOp::create(rewriter, loc, maskValue);
+       rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+     }
+ 
+     // Load the offsetElt first.
+-    auto gatherOffsetElt = rewriter.create<tensor::ExtractOp>(
+-        loc, gatherOffset, ValueRange{inductionVar});
++    auto gatherOffsetElt = tensor::ExtractOp::create(
++        rewriter, loc, gatherOffset, ValueRange{inductionVar});
+ 
+     // Create extract_slice stVal[inductionVar].
+     unsigned rank = ptr.getSizes().size();
+@@ -1125,8 +1119,8 @@ private:
+     }
+     // The subview should not apply an additional stride to the source.
+     SmallVector<OpFoldResult> oneStrides(rank, OpFoldResult(step));
+-    auto slice = rewriter.create<tensor::ExtractSliceOp>(
+-        loc, stVal, stValOffsets, sizes, oneStrides);
++    auto slice = tensor::ExtractSliceOp::create(
++        rewriter, loc, stVal, stValOffsets, sizes, oneStrides);
+ 
+     // reinterpret_cast to current row as memRefPtr[gatherOffsetElt].
+     Value dstPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
+@@ -1141,14 +1135,13 @@ private:
+           cast<MemRefType>(dstPtr.getType()), maskOffsets, sizes, oneStrides);
+ 
+       dstPtr =
+-          rewriter
+-              .create<memref::SubViewOp>(loc, cast<MemRefType>(dstType), dstPtr,
+-                                         maskOffsets, sizes, oneStrides)
++          memref::SubViewOp::create(rewriter, loc, cast<MemRefType>(dstType),
++                                    dstPtr, maskOffsets, sizes, oneStrides)
+               .getResult();
+     }
+     // store slice to dstPtr.
+-    auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+-        loc, slice, dstPtr);
++    auto storeOp = bufferization::MaterializeInDestinationOp::create(
++        rewriter, loc, slice, dstPtr);
+     storeOp.setWritable(true);
+ 
+     rewriter.eraseOp(op);
+@@ -1182,12 +1175,12 @@ public:
+           getExtractSlice(rank, mixedDims, storeValue, loc, rewriter);
+       auto dstSubview = getSubview(rank, mixedDims, ptr, loc, rewriter);
+ 
+-      auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+-          loc, srcSlice, dstSubview);
++      auto storeOp = bufferization::MaterializeInDestinationOp::create(
++          rewriter, loc, srcSlice, dstSubview);
+       storeOp.setWritable(true);
+     } else {
+-      auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+-          loc, storeValue, ptr);
++      auto storeOp = bufferization::MaterializeInDestinationOp::create(
++          rewriter, loc, storeValue, ptr);
+       storeOp.setWritable(true);
+     }
+ 
+diff --git a/lib/Conversion/StructuredToMemref/StructuredToMemrefPass.cpp b/lib/Conversion/StructuredToMemref/StructuredToMemrefPass.cpp
+index 049b3f6..2fc7d52 100644
+--- a/lib/Conversion/StructuredToMemref/StructuredToMemrefPass.cpp
++++ b/lib/Conversion/StructuredToMemref/StructuredToMemrefPass.cpp
+@@ -51,21 +51,25 @@ public:
+     addTargetMaterialization([&](OpBuilder &builder,
+                                  UnrankedMemRefType resultType,
+                                  ValueRange inputs, Location loc) -> Value {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     });
+ 
+     addSourceMaterialization([&](OpBuilder &builder, Type resultType,
+                                  ValueRange inputs, Location loc) -> Value {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     });
+   }
+ };
+ 
+ class StructuredToMemrefPass
+-    : public triton::impl::StructuredToMemrefBase<StructuredToMemrefPass> {
+-  using StructuredToMemrefBase<StructuredToMemrefPass>::StructuredToMemrefBase;
++    : public mlir::triton::impl::StructuredToMemrefBase<
++          StructuredToMemrefPass> {
++  using mlir::triton::impl::StructuredToMemrefBase<
++      StructuredToMemrefPass>::StructuredToMemrefBase;
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Conversion/TritonArithToLinalg/TritonArithToLinalg.cpp b/lib/Conversion/TritonArithToLinalg/TritonArithToLinalg.cpp
+index 22142c0..2359a27 100644
+--- a/lib/Conversion/TritonArithToLinalg/TritonArithToLinalg.cpp
++++ b/lib/Conversion/TritonArithToLinalg/TritonArithToLinalg.cpp
+@@ -31,9 +31,6 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
+-#include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
+-
+ void mlir::triton::populateTritonArithToLinalgCanonicalizationPatterns(
+     RewritePatternSet &patterns) {
+   patterns.add<MinMaxConverter<arith::CmpFOp>, MinMaxConverter<arith::CmpIOp>>(
+diff --git a/lib/Conversion/TritonArithToLinalg/TritonArithToLinalgPass.cpp b/lib/Conversion/TritonArithToLinalg/TritonArithToLinalgPass.cpp
+index 42661af..168bd0e 100644
+--- a/lib/Conversion/TritonArithToLinalg/TritonArithToLinalgPass.cpp
++++ b/lib/Conversion/TritonArithToLinalg/TritonArithToLinalgPass.cpp
+@@ -37,7 +37,8 @@ namespace triton {
+ namespace {
+ 
+ class TritonArithToLinalgPass
+-    : public triton::impl::TritonArithToLinalgBase<TritonArithToLinalgPass> {
++    : public mlir::triton::impl::TritonArithToLinalgBase<
++          TritonArithToLinalgPass> {
+   using TritonArithToLinalgBase<
+       TritonArithToLinalgPass>::TritonArithToLinalgBase;
+ 
+@@ -215,7 +216,8 @@ public:
+         func.getAllArgAttrs(argAttrs);
+         func.getAllResultAttrs(resAttrs);
+ 
+-        auto funcFunc = builder.create<func::FuncOp>(func.getLoc(), name, type);
++        auto funcFunc =
++            func::FuncOp::create(builder, func.getLoc(), name, type);
+         // Preserve the visibility attribute
+         funcFunc.setVisibility(func.getVisibility());
+         funcFunc.setAllArgAttrs(argAttrs);
+@@ -234,7 +236,7 @@ public:
+           // considered terminators.
+           if (isa<triton::ReturnOp>(term)) {
+             builder.setInsertionPoint(term);
+-            builder.create<func::ReturnOp>(func.getLoc(), term->getOperands());
++            func::ReturnOp::create(builder, func.getLoc(), term->getOperands());
+             term->erase();
+           }
+         }
+diff --git a/lib/Conversion/TritonPtrToMemref/TritonPtrToMemrefPass.cpp b/lib/Conversion/TritonPtrToMemref/TritonPtrToMemrefPass.cpp
+index 689cf1b..26c1c40 100644
+--- a/lib/Conversion/TritonPtrToMemref/TritonPtrToMemrefPass.cpp
++++ b/lib/Conversion/TritonPtrToMemref/TritonPtrToMemrefPass.cpp
+@@ -37,8 +37,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_TRITONPTRTOMEMREF
+ #include "triton-shared/Conversion/TritonPtrToMemref/Passes.h.inc"
++#undef GEN_PASS_DEF_TRITONPTRTOMEMREF
+ 
+ namespace {
+ 
+@@ -61,7 +62,8 @@ public:
+ 
+     auto createUnrealizedCast = [&](OpBuilder &builder, Type resultType,
+                                     ValueRange inputs, Location loc) -> Value {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     };
+     addSourceMaterialization(createUnrealizedCast);
+@@ -69,7 +71,7 @@ public:
+ };
+ 
+ class TritonPtrToMemrefPass
+-    : public TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
++    : public ::impl::TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Conversion/TritonToLinalg/TritonToLinalg.cpp b/lib/Conversion/TritonToLinalg/TritonToLinalg.cpp
+index d47a325..0bc0c85 100644
+--- a/lib/Conversion/TritonToLinalg/TritonToLinalg.cpp
++++ b/lib/Conversion/TritonToLinalg/TritonToLinalg.cpp
+@@ -19,8 +19,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_TRITONTOLINALG
+ #include "triton-shared/Conversion/TritonToLinalg/Passes.h.inc"
++#undef GEN_PASS_DEF_TRITONTOLINALG
+ 
+ void mlir::triton::populateTritonToLinalgCanonicalizationPatterns(
+     RewritePatternSet &patterns) {
+diff --git a/lib/Conversion/TritonToLinalg/TritonToLinalgPass.cpp b/lib/Conversion/TritonToLinalg/TritonToLinalgPass.cpp
+index e0696f2..780ad0f 100644
+--- a/lib/Conversion/TritonToLinalg/TritonToLinalgPass.cpp
++++ b/lib/Conversion/TritonToLinalg/TritonToLinalgPass.cpp
+@@ -26,8 +26,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_TRITONTOLINALG
+ #include "triton-shared/Conversion/TritonToLinalg/Passes.h.inc"
++#undef GEN_PASS_DEF_TRITONTOLINALG
+ 
+ namespace {
+ 
+@@ -49,7 +50,8 @@ public:
+   }
+ };
+ 
+-class TritonToLinalgPass : public TritonToLinalgBase<TritonToLinalgPass> {
++class TritonToLinalgPass
++    : public ::impl::TritonToLinalgBase<TritonToLinalgPass> {
+ 
+   static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
+   static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
+@@ -195,7 +197,7 @@ public:
+       func.getAllArgAttrs(argAttrs);
+       func.getAllResultAttrs(resAttrs);
+ 
+-      auto funcFunc = builder.create<func::FuncOp>(func.getLoc(), name, type);
++      auto funcFunc = func::FuncOp::create(builder, func.getLoc(), name, type);
+       funcFunc.setAllArgAttrs(argAttrs);
+       funcFunc.setAllResultAttrs(resAttrs);
+ 
+@@ -208,7 +210,7 @@ public:
+       for (Block &block : funcFuncBody.getBlocks()) {
+         auto term = block.getTerminator();
+         builder.setInsertionPoint(term);
+-        builder.create<func::ReturnOp>(func.getLoc(), term->getOperands());
++        func::ReturnOp::create(builder, func.getLoc(), term->getOperands());
+         term->erase();
+       }
+       func.erase();
+diff --git a/lib/Conversion/TritonToLinalgExperimental/CollapseShape.cpp b/lib/Conversion/TritonToLinalgExperimental/CollapseShape.cpp
+index 495518e..66b2f8b 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/CollapseShape.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/CollapseShape.cpp
+@@ -34,8 +34,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_COLLAPSESHAPE
+ #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
++#undef GEN_PASS_DEF_COLLAPSESHAPE
+ 
+ namespace {
+ 
+@@ -83,8 +84,8 @@ struct CollapseFill : public OpRewritePattern<linalg::FillOp> {
+     }
+     auto elementType = resultType.getElementType();
+ 
+-    auto output = rewriter.create<memref::CollapseShapeOp>(
+-        loc,
++    auto output = memref::CollapseShapeOp::create(
++        rewriter, loc,
+         MemRefType::get(llvm::ArrayRef<int64_t>{resultType.getNumElements()},
+                         elementType),
+         result, reassociationMap);
+@@ -112,14 +113,15 @@ struct CollapseFill : public OpRewritePattern<linalg::FillOp> {
+       reassociationMap[0].push_back(rewriter.getAffineDimExpr(i));
+     }
+ 
+-    auto init = rewriter.create<tensor::CollapseShapeOp>(
+-        loc, RankedTensorType::get({resultType.getNumElements()}, elementType),
++    auto init = tensor::CollapseShapeOp::create(
++        rewriter, loc,
++        RankedTensorType::get({resultType.getNumElements()}, elementType),
+         op.getOutputs()[0], reassociationMap);
+     auto fillOp =
+-        rewriter.create<linalg::FillOp>(loc, op.getInputs(), ValueRange{init});
++        linalg::FillOp::create(rewriter, loc, op.getInputs(), ValueRange{init});
+ 
+-    auto expandOp = rewriter.create<tensor::ExpandShapeOp>(
+-        loc, result.getType(), fillOp.getResult(0), reassociationMap);
++    auto expandOp = tensor::ExpandShapeOp::create(
++        rewriter, loc, result.getType(), fillOp.getResult(0), reassociationMap);
+ 
+     rewriter.replaceOp(op, expandOp.getResult());
+     return success();
+@@ -224,8 +226,8 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
+ 
+     auto loc = op.getLoc();
+     sourceType = RankedTensorType::get(collapseShapeInput, elementType);
+-    source = rewriter.create<tensor::CollapseShapeOp>(loc, sourceType, source,
+-                                                      reassociationMap);
++    source = tensor::CollapseShapeOp::create(rewriter, loc, sourceType, source,
++                                             reassociationMap);
+ 
+     SmallVector<ReassociationExprs> reassociationMapRe(reassociationMap.size());
+     int idx = 0;
+@@ -235,12 +237,12 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
+       }
+     }
+ 
+-    Value transposeInit = rewriter.create<tensor::CollapseShapeOp>(
+-        loc, RankedTensorType::get(transposedShape, elementType), op.getInit(),
+-        reassociationMapRe);
++    Value transposeInit = tensor::CollapseShapeOp::create(
++        rewriter, loc, RankedTensorType::get(transposedShape, elementType),
++        op.getInit(), reassociationMapRe);
+ 
+     Value transpose =
+-        rewriter.create<linalg::TransposeOp>(loc, source, transposeInit, perm)
++        linalg::TransposeOp::create(rewriter, loc, source, transposeInit, perm)
+             .getResults()[0];
+ 
+     rewriter.replaceOpWithNewOp<tensor::ExpandShapeOp>(
+@@ -337,8 +339,8 @@ struct CollapseBroadCast : public OpRewritePattern<linalg::GenericOp> {
+ 
+     auto loc = op.getLoc();
+     sourceType = RankedTensorType::get(collapseShapeInput, elementType);
+-    input = rewriter.create<tensor::CollapseShapeOp>(loc, sourceType, input,
+-                                                     reassociationMap);
++    input = tensor::CollapseShapeOp::create(rewriter, loc, sourceType, input,
++                                            reassociationMap);
+     resultType = RankedTensorType::get(collapseShapeOutput, elementType);
+     size_t resultRank = resultType.getRank();
+ 
+@@ -351,13 +353,14 @@ struct CollapseBroadCast : public OpRewritePattern<linalg::GenericOp> {
+ 
+     assert(op->getNumResults() == 1 && "code assumes single result!");
+ 
+-    auto init = rewriter.create<tensor::CollapseShapeOp>(
+-        loc, RankedTensorType::get(resultType.getShape(), elementType),
++    auto init = tensor::CollapseShapeOp::create(
++        rewriter, loc,
++        RankedTensorType::get(resultType.getShape(), elementType),
+         op.getOutputs()[0], reassociationMap);
+ 
+-    auto linalgOp = rewriter.create<linalg::GenericOp>(
+-        loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
+-        indexingMaps, getNParallelLoopsAttrs(resultRank));
++    auto linalgOp = linalg::GenericOp::create(
++        rewriter, loc, init->getResultTypes(), ValueRange{input},
++        ValueRange{init}, indexingMaps, getNParallelLoopsAttrs(resultRank));
+     rewriter.cloneRegionBefore(op.getRegion(), linalgOp.getRegion(),
+                                linalgOp.getRegion().begin());
+     linalgOp->setAttr("broadcastDims",
+@@ -453,8 +456,8 @@ struct CollapseReduce : public OpRewritePattern<linalg::ReduceOp> {
+     auto elementType = inputType.getElementType();
+     auto loc = op.getLoc();
+     auto newInputType = RankedTensorType::get(collapseShapeInput, elementType);
+-    input = rewriter.create<tensor::CollapseShapeOp>(loc, newInputType, input,
+-                                                     reassociationMap);
++    input = tensor::CollapseShapeOp::create(rewriter, loc, newInputType, input,
++                                            reassociationMap);
+ 
+     SmallVector<ReassociationExprs> reassociationMapOutput;
+     int idx = 0;
+@@ -469,12 +472,12 @@ struct CollapseReduce : public OpRewritePattern<linalg::ReduceOp> {
+             rewriter.getAffineDimExpr(idx++));
+       }
+     }
+-    auto init = rewriter.create<tensor::CollapseShapeOp>(
+-        loc, RankedTensorType::get(collapseShapeOutput, elementType),
++    auto init = tensor::CollapseShapeOp::create(
++        rewriter, loc, RankedTensorType::get(collapseShapeOutput, elementType),
+         op.getInits()[0], reassociationMapOutput);
+-    auto newReduce = rewriter.create<linalg::ReduceOp>(
+-        loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
+-        newDims);
++    auto newReduce =
++        linalg::ReduceOp::create(rewriter, loc, init->getResultTypes(),
++                                 ValueRange{input}, ValueRange{init}, newDims);
+     rewriter.cloneRegionBefore(op.getRegion(), newReduce.getRegion(),
+                                newReduce.getRegion().begin());
+ 
+@@ -485,7 +488,8 @@ struct CollapseReduce : public OpRewritePattern<linalg::ReduceOp> {
+   }
+ };
+ 
+-class CollapseShapePasss : public CollapseShapeBase<CollapseShapePasss> {
++class CollapseShapePasss
++    : public ::impl::CollapseShapeBase<CollapseShapePasss> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Conversion/TritonToLinalgExperimental/ReconcilePtrCastsPass.cpp b/lib/Conversion/TritonToLinalgExperimental/ReconcilePtrCastsPass.cpp
+index 02caff0..2e8632a 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/ReconcilePtrCastsPass.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/ReconcilePtrCastsPass.cpp
+@@ -34,8 +34,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_RECONCILEPTRCASTS
+ #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
++#undef GEN_PASS_DEF_RECONCILEPTRCASTS
+ 
+ namespace {
+ 
+@@ -61,8 +62,8 @@ struct SimplifyUnrealizedCast
+       }
+ 
+       auto prevInput = unrealizedCast.getInputs().front();
+-      auto newCast = rewriter.create<UnrealizedConversionCastOp>(
+-          op->getLoc(), op->getResultTypes(), ValueRange{prevInput});
++      auto newCast = UnrealizedConversionCastOp::create(
++          rewriter, op->getLoc(), op->getResultTypes(), ValueRange{prevInput});
+ 
+       rewriter.replaceOp(op, newCast);
+       return success();
+@@ -90,11 +91,11 @@ struct FromMemrefConverter
+     if (unrankedInput && isa<triton::PointerType, ptr::PtrType>(outType)) {
+       // from_memref only takes ranked memref, cast the unranked memref to
+       // ranked memref first.
+-      auto rankedMemref = rewriter.create<memref::CastOp>(
+-          op.getLoc(), MemRefType::get({1}, unrankedInput.getElementType()),
+-          input);
+-      auto memrefToPtr = rewriter.create<tptr::FromMemrefOp>(
+-          op->getLoc(),
++      auto rankedMemref = memref::CastOp::create(
++          rewriter, op.getLoc(),
++          MemRefType::get({1}, unrankedInput.getElementType()), input);
++      auto memrefToPtr = tptr::FromMemrefOp::create(
++          rewriter, op->getLoc(),
+           ptr::PtrType::get(
+               rewriter.getContext(),
+               tptr::DefaultMemorySpaceAttr::get(rewriter.getContext())),
+@@ -128,14 +129,15 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
+       // to_memref can only cast to ranked static shape memref, we have to cast
+       // the resulting memref back to unranked
+       auto elemType = outUnrankedMemrefType.getElementType();
+-      auto ptrToMemref = rewriter.create<tptr::ToMemrefOp>(
+-          op->getLoc(), MemRefType::get({1}, elemType), input);
++      auto ptrToMemref = tptr::ToMemrefOp::create(
++          rewriter, op->getLoc(), MemRefType::get({1}, elemType), input);
+ 
+       SmallVector<OpFoldResult> sizes = {rewriter.getIndexAttr(1)};
+       SmallVector<OpFoldResult> newStrides = {rewriter.getIndexAttr(1)};
+-      auto newUnrankedMemref = rewriter.create<memref::ReinterpretCastOp>(
+-          op->getLoc(), MemRefType::get({ShapedType::kDynamic}, elemType),
+-          ptrToMemref, rewriter.getIndexAttr(0), sizes, newStrides);
++      auto newUnrankedMemref = memref::ReinterpretCastOp::create(
++          rewriter, op->getLoc(),
++          MemRefType::get({ShapedType::kDynamic}, elemType), ptrToMemref,
++          rewriter.getIndexAttr(0), sizes, newStrides);
+ 
+       rewriter.replaceAllUsesWith(output, newUnrankedMemref);
+       rewriter.eraseOp(op);
+@@ -147,7 +149,7 @@ struct ToMemrefConverter : public OpRewritePattern<UnrealizedConversionCastOp> {
+ };
+ 
+ class ReconcilePtrCastsPass
+-    : public ReconcilePtrCastsBase<ReconcilePtrCastsPass> {
++    : public ::impl::ReconcilePtrCastsBase<ReconcilePtrCastsPass> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+index eafc5a0..5402f68 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+@@ -31,13 +31,15 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_TRITONTOLINALGEXPERIMENTAL
+ #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
++#undef GEN_PASS_DEF_TRITONTOLINALGEXPERIMENTAL
+ 
+ namespace {
+ 
+ class TritonToLinalgExperimentalPass
+-    : public TritonToLinalgExperimentalBase<TritonToLinalgExperimentalPass> {
++    : public ::impl::TritonToLinalgExperimentalBase<
++          TritonToLinalgExperimentalPass> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Conversion/TritonToLinalgExperimental/TritonToPtrPass.cpp b/lib/Conversion/TritonToLinalgExperimental/TritonToPtrPass.cpp
+index 60dd0d5..d78fded 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/TritonToPtrPass.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/TritonToPtrPass.cpp
+@@ -182,9 +182,9 @@ struct AddPtrConverter : public OpConversionPattern<triton::AddPtrOp> {
+     auto pointeeType = cast<triton::PointerType>(op.getType()).getPointeeType();
+     auto offsetType = op.getOffset().getType();
+     auto pointeeSizeInBytes =
+-        rewriter.create<tptr::TypeOffsetOp>(loc, offsetType, pointeeType);
+-    auto scaledOffset =
+-        rewriter.create<arith::MulIOp>(loc, op.getOffset(), pointeeSizeInBytes);
++        tptr::TypeOffsetOp::create(rewriter, loc, offsetType, pointeeType);
++    auto scaledOffset = arith::MulIOp::create(rewriter, loc, op.getOffset(),
++                                              pointeeSizeInBytes);
+     rewriter.replaceOpWithNewOp<tptr::PtrAddOp>(
+         op,
+         ptr::PtrType::get(
+@@ -214,36 +214,37 @@ struct LoadConverter : public OpConversionPattern<triton::LoadOp> {
+     auto pointeeType =
+         cast<triton::PointerType>(ptr.getType()).getPointeeType();
+ 
+-    auto memref = rewriter.create<tptr::ToMemrefOp>(
+-        op->getLoc(), MemRefType::get({1}, pointeeType), adaptor.getPtr());
++    auto memref = tptr::ToMemrefOp::create(rewriter, op->getLoc(),
++                                           MemRefType::get({1}, pointeeType),
++                                           adaptor.getPtr());
+ 
+-    auto zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
++    auto zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+ 
+     if (op.getMask()) {
+-      auto ifOp = rewriter.create<scf::IfOp>(
+-          op->getLoc(), op.getMask(),
++      auto ifOp = scf::IfOp::create(
++          rewriter, op->getLoc(), op.getMask(),
+           [&](OpBuilder &b, Location loc) {
+             // Truthy case, load from the index.
+-            Value memrefLoad = rewriter.create<memref::LoadOp>(
+-                op->getLoc(), memref, ValueRange{zero});
+-            b.create<scf::YieldOp>(loc, memrefLoad);
++            Value memrefLoad = memref::LoadOp::create(rewriter, op->getLoc(),
++                                                      memref, ValueRange{zero});
++            scf::YieldOp::create(b, loc, memrefLoad);
+           },
+           [&](OpBuilder &b, Location loc) {
+             // Falsy case, yield `other` or 0 as the default value.
+             if (op.getOther()) {
+-              b.create<scf::YieldOp>(loc, op.getOther());
++              scf::YieldOp::create(b, loc, op.getOther());
+             } else {
+               auto elemType = op.getType();
+               auto zeroAttr = b.getZeroAttr(elemType);
+               assert(zeroAttr && "unexpected element type");
+-              Value val = b.create<arith::ConstantOp>(loc, zeroAttr);
+-              b.create<scf::YieldOp>(loc, val);
++              Value val = arith::ConstantOp::create(b, loc, zeroAttr);
++              scf::YieldOp::create(b, loc, val);
+             }
+           });
+       rewriter.replaceOp(op, ifOp);
+     } else {
+-      auto memrefLoad = rewriter.create<memref::LoadOp>(op->getLoc(), memref,
+-                                                        ValueRange{zero});
++      auto memrefLoad = memref::LoadOp::create(rewriter, op->getLoc(), memref,
++                                               ValueRange{zero});
+ 
+       rewriter.replaceOp(op, memrefLoad);
+     }
+@@ -272,18 +273,19 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
+ 
+     IRRewriter::InsertionGuard g(rewriter);
+     if (op.getMask()) {
+-      auto ifOp = rewriter.create<scf::IfOp>(op->getLoc(), op.getMask(),
+-                                             /*withElseRegion*/ false);
++      auto ifOp = scf::IfOp::create(rewriter, op->getLoc(), op.getMask(),
++                                    /*withElseRegion*/ false);
+       rewriter.setInsertionPointToStart(
+           &ifOp.getThenRegion().getBlocks().front());
+     }
+ 
+-    auto memref = rewriter.create<tptr::ToMemrefOp>(
+-        op->getLoc(), MemRefType::get({1}, pointeeType), adaptor.getPtr());
+-    auto zero = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), 0);
++    auto memref = tptr::ToMemrefOp::create(rewriter, op->getLoc(),
++                                           MemRefType::get({1}, pointeeType),
++                                           adaptor.getPtr());
++    auto zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+ 
+-    rewriter.create<memref::StoreOp>(op->getLoc(), op.getValue(), memref,
+-                                     ValueRange{zero});
++    memref::StoreOp::create(rewriter, op->getLoc(), op.getValue(), memref,
++                            ValueRange{zero});
+ 
+     rewriter.eraseOp(op);
+ 
+@@ -353,9 +355,10 @@ struct LinalgPtrConverter : public OpConversionPattern<linalg::GenericOp> {
+       return failure();
+     }
+ 
+-    auto replacement = rewriter.create<linalg::GenericOp>(
+-        op.getLoc(), convertedTypes, adaptor.getInputs(), adaptor.getOutputs(),
+-        op.getIndexingMapsArray(), op.getIteratorTypesArray());
++    auto replacement = linalg::GenericOp::create(
++        rewriter, op.getLoc(), convertedTypes, adaptor.getInputs(),
++        adaptor.getOutputs(), op.getIndexingMapsArray(),
++        op.getIteratorTypesArray());
+ 
+     Region &region = op.getRegion();
+     Block &block = region.front();
+@@ -431,7 +434,8 @@ public:
+     });
+     auto createCast = [&](OpBuilder &builder, Type resultType,
+                           ValueRange inputs, Location loc) -> Value {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     };
+     addTargetMaterialization(createCast);
+diff --git a/lib/Conversion/TritonToStructured/TritonToStructuredPass.cpp b/lib/Conversion/TritonToStructured/TritonToStructuredPass.cpp
+index 1de70e9..4aae833 100644
+--- a/lib/Conversion/TritonToStructured/TritonToStructuredPass.cpp
++++ b/lib/Conversion/TritonToStructured/TritonToStructuredPass.cpp
+@@ -37,21 +37,16 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
+-#include "triton-shared/Conversion/TritonToStructured/Passes.h.inc"
+-
+-namespace mlir {
+-namespace triton {
+ #define GEN_PASS_DEF_TRITONTOSTRUCTURED
+ #include "triton-shared/Conversion/TritonToStructured/Passes.h.inc"
+-} // namespace triton
+-} // namespace mlir
++#undef GEN_PASS_DEF_TRITONTOSTRUCTURED
+ 
+ namespace {
+ 
+ class TritonToStructuredPass
+-    : public triton::impl::TritonToStructuredBase<TritonToStructuredPass> {
+-  using TritonToStructuredBase<TritonToStructuredPass>::TritonToStructuredBase;
++    : public ::impl::TritonToStructuredBase<TritonToStructuredPass> {
++  using ::impl::TritonToStructuredBase<
++      TritonToStructuredPass>::TritonToStructuredBase;
+   static TupleType getStructuredStateTupleType(MLIRContext *context, Type t) {
+     SmallVector<Type> tupleTypes{t};
+     auto [offsetTypes, strideTypes] =
+@@ -137,20 +132,20 @@ public:
+     // result is still being used by another tt.load or tt.store.
+     converter.addSourceMaterialization([](OpBuilder &builder, Type resultType,
+                                           ValueRange inputs, Location loc) {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     });
+ 
+     // Compute the target materialization, given a value with the pointer type,
+     // convert that value to a tuple type.
+-    converter.addTargetMaterialization([](OpBuilder &builder,
+-                                          TypeRange resultTypes,
+-                                          ValueRange inputs,
+-                                          Location loc) -> SmallVector<Value> {
+-      return builder
+-          .create<UnrealizedConversionCastOp>(loc, resultTypes, inputs.front())
+-          ->getResults();
+-    });
++    converter.addTargetMaterialization(
++        [](OpBuilder &builder, TypeRange resultTypes, ValueRange inputs,
++           Location loc) -> SmallVector<Value> {
++          return UnrealizedConversionCastOp::create(builder, loc, resultTypes,
++                                                    inputs.front())
++              ->getResults();
++        });
+ 
+     ConversionTarget target(getContext());
+     scf::populateSCFStructuralTypeConversionsAndLegality(converter, patterns,
+@@ -200,8 +195,8 @@ public:
+     // during reconcile-unrealized-conversion-casts.
+     converter.addSourceMaterialization([](OpBuilder &builder, Type resultType,
+                                           ValueRange inputs, Location loc) {
+-      return builder
+-          .create<UnrealizedConversionCastOp>(loc, resultType, inputs[0])
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs[0])
+           ->getResult(0);
+     });
+ 
+@@ -214,8 +209,8 @@ public:
+     converter.addTargetMaterialization([](OpBuilder &builder,
+                                           TypeRange resultTypes,
+                                           ValueRange inputs, Location loc) {
+-      auto placeholder = builder.create<tts::GetStructuredStateOp>(
+-          loc, inputs.front().getDefiningOp()->getOperand(0));
++      auto placeholder = tts::GetStructuredStateOp::create(
++          builder, loc, inputs.front().getDefiningOp()->getOperand(0));
+       assert(llvm::equal(placeholder.getResultTypes(), resultTypes));
+       return placeholder.getResults();
+     });
+diff --git a/lib/Conversion/TritonToUnstructured/TritonToUnstructuredPass.cpp b/lib/Conversion/TritonToUnstructured/TritonToUnstructuredPass.cpp
+index 377f082..a142c2a 100644
+--- a/lib/Conversion/TritonToUnstructured/TritonToUnstructuredPass.cpp
++++ b/lib/Conversion/TritonToUnstructured/TritonToUnstructuredPass.cpp
+@@ -177,8 +177,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_TRITONTOUNSTRUCTURED
+ #include "triton-shared/Conversion/TritonToUnstructured/Passes.h.inc"
++#undef GEN_PASS_DEF_TRITONTOUNSTRUCTURED
+ 
+ namespace {
+ 
+@@ -217,7 +218,7 @@ static unsigned int getBitWidth(Type type) {
+ }
+ 
+ class TritonToUnstructuredPass
+-    : public TritonToUnstructuredBase<TritonToUnstructuredPass> {
++    : public ::impl::TritonToUnstructuredBase<TritonToUnstructuredPass> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+@@ -252,8 +253,8 @@ public:
+         }
+ 
+         OpBuilder b(func->getRegion(0));
+-        Value zero = b.create<arith::ConstantOp>(
+-            arg.getLoc(),
++        Value zero = arith::ConstantOp::create(
++            b, arg.getLoc(),
+             b.getIntegerAttr(IntegerType::get(&getContext(), defaultBitWidth),
+                              0));
+ 
+@@ -271,8 +272,8 @@ public:
+       }
+       auto res = op.getResult();
+       OpBuilder b(op);
+-      Value zero = b.create<arith::ConstantOp>(
+-          op.getLoc(),
++      Value zero = arith::ConstantOp::create(
++          b, op.getLoc(),
+           b.getIntegerAttr(IntegerType::get(&getContext(), defaultBitWidth),
+                            0));
+ 
+@@ -304,8 +305,8 @@ public:
+                   // We are converting a pointer to an integer here,
+                   // materialized the pointer using the accumulated offset
+                   // that we have stored so far.
+-                  auto materializedAddPtr = b.create<triton::AddPtrOp>(
+-                      op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
++                  auto materializedAddPtr = triton::AddPtrOp::create(
++                      b, op->getLoc(), offsetInfo.ptrType, offsetInfo.ptr,
+                       offsetInfo.offset);
+ 
+                   // Change the op to use the "simplified" pointer above.
+@@ -337,19 +338,19 @@ public:
+                   auto resWidth = std::max(lhsWidth, rhsWidth);
+ 
+                   if (lhsWidth < resWidth) {
+-                    prevOff = b.create<arith::ExtSIOp>(
+-                        loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
++                    prevOff = arith::ExtSIOp::create(
++                        b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
+                         prevOff);
+                   }
+ 
+                   if (rhsWidth < resWidth) {
+-                    off = b.create<arith::ExtSIOp>(
+-                        loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
++                    off = arith::ExtSIOp::create(
++                        b, loc, getPtrOffsetType(offsetInfo.ptrType, resWidth),
+                         off);
+                   }
+ 
+-                  auto accumulatedOff = b.create<arith::AddIOp>(
+-                      loc, getPtrOffsetType(addptr.getType(), resWidth),
++                  auto accumulatedOff = arith::AddIOp::create(
++                      b, loc, getPtrOffsetType(addptr.getType(), resWidth),
+                       prevOff, off);
+ 
+                   PtrOffset newOffsetInfo{offsetInfo.ptr, addptr.getType(),
+@@ -491,8 +492,8 @@ public:
+                   }
+                 }
+ 
+-                auto gather = b.create<tts::GatherOp>(
+-                    loc, load.getType(), offsetInfo.ptr, offsetInfo.offset,
++                auto gather = tts::GatherOp::create(
++                    b, loc, load.getType(), offsetInfo.ptr, offsetInfo.offset,
+                     load.getMask(), other);
+ 
+                 load->replaceAllUsesWith(gather->getResults());
+@@ -501,8 +502,9 @@ public:
+               })
+               .Case<triton::StoreOp>([&](triton::StoreOp store) {
+                 auto offsetInfo = offsetMap.at(store.getPtr());
+-                b.create<tts::ScatterOp>(loc, offsetInfo.ptr, offsetInfo.offset,
+-                                         store.getValue(), store.getMask());
++                tts::ScatterOp::create(b, loc, offsetInfo.ptr,
++                                       offsetInfo.offset, store.getValue(),
++                                       store.getMask());
+                 store->erase();
+                 return success();
+               })
+@@ -526,26 +528,26 @@ public:
+ 
+                 if (baseOffType != currOffType) {
+                   if (currOffType.isIndex()) {
+-                    baseOffset = b.create<arith::IndexCastOp>(
+-                        loc, b.getIndexType(), baseOffset);
++                    baseOffset = arith::IndexCastOp::create(
++                        b, loc, b.getIndexType(), baseOffset);
+                   } else if (currOffType.isInteger()) {
+                     if (baseOffType.getIntOrFloatBitWidth() <
+                         currOffType.getIntOrFloatBitWidth()) {
+-                      baseOffset = b.create<arith::ExtSIOp>(loc, currOffType,
+-                                                            baseOffset);
++                      baseOffset = arith::ExtSIOp::create(b, loc, currOffType,
++                                                          baseOffset);
+                     } else {
+                       // MakeTensorPtrOp only takes i32 offsets, so we need
+                       // to truncate if the offsets were already in i64
+                       makeTensorPtr.emitWarning(
+                           "truncating offsets which may result in data loss");
+-                      baseOffset = b.create<arith::TruncIOp>(loc, currOffType,
+-                                                             baseOffset);
++                      baseOffset = arith::TruncIOp::create(b, loc, currOffType,
++                                                           baseOffset);
+                     }
+                   }
+                 }
+ 
+-                auto accumulatedOffset = b.create<arith::AddIOp>(
+-                    loc, currOffset.getType(), baseOffset, currOffset);
++                auto accumulatedOffset = arith::AddIOp::create(
++                    b, loc, currOffset.getType(), baseOffset, currOffset);
+ 
+                 offsetOpnd.set(accumulatedOffset);
+ 
+diff --git a/lib/Conversion/UnstructuredToMemref/UnstructuredToMemrefPass.cpp b/lib/Conversion/UnstructuredToMemref/UnstructuredToMemrefPass.cpp
+index 68cb18a..2e178d1 100644
+--- a/lib/Conversion/UnstructuredToMemref/UnstructuredToMemrefPass.cpp
++++ b/lib/Conversion/UnstructuredToMemref/UnstructuredToMemrefPass.cpp
+@@ -38,8 +38,9 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_UNSTRUCTUREDTOMEMREF
+ #include "triton-shared/Conversion/UnstructuredToMemref/Passes.h.inc"
++#undef GEN_PASS_DEF_UNSTRUCTUREDTOMEMREF
+ 
+ namespace {
+ 
+@@ -53,7 +54,8 @@ public:
+     addTargetMaterialization([&](OpBuilder &builder,
+                                  UnrankedMemRefType resultType,
+                                  ValueRange inputs, Location loc) -> Value {
+-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
++      return UnrealizedConversionCastOp::create(builder, loc, resultType,
++                                                inputs)
+           .getResult(0);
+     });
+   }
+@@ -89,11 +91,11 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
+     auto basePtr = adaptor.getPtr();
+     auto offset = adaptor.getOffset();
+ 
+-    Value loadIndex = rewriter.create<arith::IndexCastOp>(
+-        loc, rewriter.getIndexType(), offset);
++    Value loadIndex = arith::IndexCastOp::create(
++        rewriter, loc, rewriter.getIndexType(), offset);
+ 
+-    auto memref = rewriter.create<memref::ReinterpretCastOp>(
+-        loc,
++    auto memref = memref::ReinterpretCastOp::create(
++        rewriter, loc,
+         getMemrefTypeForScalarPtr(
+             cast<triton::PointerType>(gatherOp.getPtr().getType()),
+             rewriter.getContext()),
+@@ -103,8 +105,8 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
+ 
+     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
+ 
+-    auto scalarLoadOp = rewriter.create<affine::AffineLoadOp>(
+-        loc, memref, zeroMap, ValueRange{});
++    auto scalarLoadOp = affine::AffineLoadOp::create(rewriter, loc, memref,
++                                                     zeroMap, ValueRange{});
+ 
+     rewriter.replaceOp(gatherOp, scalarLoadOp.getResult());
+ 
+@@ -134,11 +136,11 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
+     auto basePtr = adaptor.getPtr();
+     auto offset = adaptor.getOffset();
+ 
+-    Value storeIndex = rewriter.create<arith::IndexCastOp>(
+-        loc, rewriter.getIndexType(), offset);
++    Value storeIndex = arith::IndexCastOp::create(
++        rewriter, loc, rewriter.getIndexType(), offset);
+ 
+-    auto memref = rewriter.create<memref::ReinterpretCastOp>(
+-        loc,
++    auto memref = memref::ReinterpretCastOp::create(
++        rewriter, loc,
+         getMemrefTypeForScalarPtr(
+             cast<triton::PointerType>(scatterOp.getPtr().getType()),
+             rewriter.getContext()),
+@@ -149,8 +151,8 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
+     auto storeVal = scatterOp.getValue();
+     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
+ 
+-    rewriter.create<affine::AffineStoreOp>(loc, storeVal, memref, zeroMap,
+-                                           ValueRange{});
++    affine::AffineStoreOp::create(rewriter, loc, storeVal, memref, zeroMap,
++                                  ValueRange{});
+     rewriter.eraseOp(scatterOp);
+ 
+     return success();
+@@ -186,22 +188,19 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
+ 
+     // Treat the base pointer (memref) as 1D because the offsets are all
+     // relative to a single base pointer (already collapsed).
+-    auto baseMemref = rewriter
+-                          .create<memref::CastOp>(
+-                              loc,
+-                              MemRefType::get({ShapedType::kDynamic},
+-                                              resultType.getElementType()),
+-                              ptr)
+-                          .getResult();
++    auto baseMemref =
++        memref::CastOp::create(rewriter, loc,
++                               MemRefType::get({ShapedType::kDynamic},
++                                               resultType.getElementType()),
++                               ptr)
++            .getResult();
+ 
+     auto baseTensor =
+-        rewriter
+-            .create<bufferization::ToTensorOp>(
+-                loc,
+-                RankedTensorType::get(
+-                    SmallVector<int64_t>(1, ShapedType::kDynamic),
+-                    resultType.getElementType()),
+-                baseMemref, true /* restrict */, false /* writable */)
++        bufferization::ToTensorOp::create(
++            rewriter, loc,
++            RankedTensorType::get(SmallVector<int64_t>(1, ShapedType::kDynamic),
++                                  resultType.getElementType()),
++            baseMemref, true /* restrict */, false /* writable */)
+             .getResult();
+ 
+     // The linalg.generic op should have the following inputs:
+@@ -213,10 +212,10 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
+       inputs.push_back(gatherOp.getMask());
+     }
+ 
+-    auto emptyTensor = rewriter
+-                           .create<tensor::EmptyOp>(loc, resultType.getShape(),
+-                                                    resultType.getElementType())
+-                           .getResult();
++    auto emptyTensor =
++        tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
++                                resultType.getElementType())
++            .getResult();
+ 
+     // Affine maps for the inputs and one additional output.
+     SmallVector<AffineMap> affineMaps(
+@@ -227,16 +226,17 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
+     SmallVector<utils::IteratorType> iteratorTypes(
+         resultType.getRank(), utils::IteratorType::parallel);
+ 
+-    auto genericOp = rewriter.create<linalg::GenericOp>(
+-        loc, TypeRange{resultType}, inputs, ValueRange{emptyTensor}, affineMaps,
+-        iteratorTypes, [&](OpBuilder &b, Location loc, ValueRange args) {
++    auto genericOp = linalg::GenericOp::create(
++        rewriter, loc, TypeRange{resultType}, inputs, ValueRange{emptyTensor},
++        affineMaps, iteratorTypes,
++        [&](OpBuilder &b, Location loc, ValueRange args) {
+           auto getValueAtIndex = [baseTensor](OpBuilder &b, Location loc,
+                                               Value index) -> Value {
+             Value index0 =
+-                b.create<arith::IndexCastOp>(loc, b.getIndexType(), index);
++                arith::IndexCastOp::create(b, loc, b.getIndexType(), index);
+ 
+-            return b.create<tensor::ExtractOp>(loc, baseTensor,
+-                                               ValueRange{index0});
++            return tensor::ExtractOp::create(b, loc, baseTensor,
++                                             ValueRange{index0});
+           };
+ 
+           auto offset = args[0];
+@@ -245,34 +245,34 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
+             // If there is no mask, simply extract the current element from the
+             // base tensor and use it as the yield value.
+             auto loadValue = getValueAtIndex(b, loc, offset);
+-            b.create<linalg::YieldOp>(loc, loadValue);
++            linalg::YieldOp::create(b, loc, loadValue);
+           } else {
+             // If the mask value is truthy, the current element is loaded from
+             // the base tensor using its offset. Otherwise, if `other` is
+             // present, yield `other`. If `other` is not present, a default
+             // value of 0 is used.
+             auto mask = args[1];
+-            auto ifOp = b.create<scf::IfOp>(
+-                loc, mask,
++            auto ifOp = scf::IfOp::create(
++                b, loc, mask,
+                 [&](OpBuilder &b, Location loc) {
+                   // Truthy case, load from the index.
+                   auto value = getValueAtIndex(b, loc, offset);
+-                  b.create<scf::YieldOp>(loc, value);
++                  scf::YieldOp::create(b, loc, value);
+                 },
+                 [&](OpBuilder &b, Location loc) {
+                   // Falsy case, yield `other` or 0 as the default value.
+                   if (gatherOp.getOther()) {
+-                    b.create<scf::YieldOp>(loc, gatherOp.getOther());
++                    scf::YieldOp::create(b, loc, gatherOp.getOther());
+                   } else {
+                     auto elemType = resultType.getElementType();
+                     auto zeroAttr = b.getZeroAttr(elemType);
+                     assert(zeroAttr && "unexpected element type");
+-                    Value extract = b.create<arith::ConstantOp>(loc, zeroAttr);
+-                    b.create<scf::YieldOp>(loc, extract);
++                    Value extract = arith::ConstantOp::create(b, loc, zeroAttr);
++                    scf::YieldOp::create(b, loc, extract);
+                   }
+                 });
+ 
+-            b.create<linalg::YieldOp>(loc, ifOp->getResult(0));
++            linalg::YieldOp::create(b, loc, ifOp->getResult(0));
+           }
+         });
+ 
+@@ -312,11 +312,10 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
+     // Treat the base pointer (memref) as 1D because the offsets are all
+     // relative to a single base pointer (already collapsed).
+     auto baseMemref =
+-        rewriter
+-            .create<memref::CastOp>(loc,
+-                                    MemRefType::get({ShapedType::kDynamic},
+-                                                    valueType.getElementType()),
+-                                    ptr)
++        memref::CastOp::create(
++            rewriter, loc,
++            MemRefType::get({ShapedType::kDynamic}, valueType.getElementType()),
++            ptr)
+             .getResult();
+ 
+     // The linalg.generic op should have the following inputs:
+@@ -339,16 +338,16 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
+ 
+     rewriter.setInsertionPoint(scatterOp);
+ 
+-    auto genericOp = rewriter.create<linalg::GenericOp>(
+-        loc, TypeRange{}, inputs, ValueRange{}, affineMaps, iteratorTypes,
+-        [&](OpBuilder &b, Location loc, ValueRange args) {
++    auto genericOp = linalg::GenericOp::create(
++        rewriter, loc, TypeRange{}, inputs, ValueRange{}, affineMaps,
++        iteratorTypes, [&](OpBuilder &b, Location loc, ValueRange args) {
+           auto storeValueAtIndex = [baseMemref](OpBuilder &b, Location loc,
+                                                 Value index, Value value) {
+             Value index0 =
+-                b.create<arith::IndexCastOp>(loc, b.getIndexType(), index);
++                arith::IndexCastOp::create(b, loc, b.getIndexType(), index);
+ 
+-            b.create<memref::StoreOp>(loc, value, baseMemref,
+-                                      ValueRange{index0});
++            memref::StoreOp::create(b, loc, value, baseMemref,
++                                    ValueRange{index0});
+           };
+ 
+           auto offset = args[0];
+@@ -362,14 +361,14 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
+             // If the mask value is truthy, insert the current value to the
+             // the base memref using its offset. Otherwise, noop.
+             auto mask = args[2];
+-            auto ifOp =
+-                b.create<scf::IfOp>(loc, mask, [&](OpBuilder &b, Location loc) {
++            auto ifOp = scf::IfOp::create(
++                b, loc, mask, [&](OpBuilder &b, Location loc) {
+                   storeValueAtIndex(b, loc, offset, value);
+-                  b.create<scf::YieldOp>(loc);
++                  scf::YieldOp::create(b, loc);
+                 });
+           }
+ 
+-          b.create<linalg::YieldOp>(loc);
++          linalg::YieldOp::create(b, loc);
+         });
+ 
+     rewriter.eraseOp(scatterOp);
+@@ -379,7 +378,7 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
+ };
+ 
+ class UnstructuredToMemrefPass
+-    : public UnstructuredToMemrefBase<UnstructuredToMemrefPass> {
++    : public ::impl::UnstructuredToMemrefBase<UnstructuredToMemrefPass> {
+ 
+ public:
+   void getDependentDialects(DialectRegistry &registry) const override {
+diff --git a/lib/Dialect/TPtr/IR/TPtrDialect.cpp b/lib/Dialect/TPtr/IR/TPtrDialect.cpp
+index 6db2c63..84b17f1 100644
+--- a/lib/Dialect/TPtr/IR/TPtrDialect.cpp
++++ b/lib/Dialect/TPtr/IR/TPtrDialect.cpp
+@@ -58,28 +58,31 @@ void mlir::tptr::TPtrDialect::initialize() {
+ }
+ 
+ bool tptr::DefaultMemorySpaceAttr::isValidLoad(
+-    Type type, mlir::ptr::AtomicOrdering ordering, IntegerAttr alignment,
+-    llvm::function_ref<InFlightDiagnostic()> emitError) const {
++    Type type, mlir::ptr::AtomicOrdering ordering,
++    std::optional<int64_t> alignment, const ::mlir::DataLayout *dataLayout,
++    function_ref<InFlightDiagnostic()> emitError) const {
+   return true;
+ }
+ 
+ bool tptr::DefaultMemorySpaceAttr::isValidStore(
+-    Type type, mlir::ptr::AtomicOrdering ordering, IntegerAttr alignment,
++    Type type, mlir::ptr::AtomicOrdering ordering,
++    std::optional<int64_t> alignment, const ::mlir::DataLayout *dataLayout,
+     llvm::function_ref<InFlightDiagnostic()> emitError) const {
+   return true;
+ }
+ 
+ bool tptr::DefaultMemorySpaceAttr::isValidAtomicOp(
+     mlir::ptr::AtomicBinOp binOp, Type type, mlir::ptr::AtomicOrdering ordering,
+-    IntegerAttr alignment,
++    std::optional<int64_t> alignment, const ::mlir::DataLayout *dataLayout,
+     llvm::function_ref<InFlightDiagnostic()> emitError) const {
+   return true;
+ }
+ 
+ bool tptr::DefaultMemorySpaceAttr::isValidAtomicXchg(
+     Type type, mlir::ptr::AtomicOrdering successOrdering,
+-    mlir::ptr::AtomicOrdering failureOrdering, IntegerAttr alignment,
+-    llvm::function_ref<InFlightDiagnostic()> emitError) const {
++    mlir::ptr::AtomicOrdering failureOrdering, std::optional<int64_t> alignment,
++    const ::mlir::DataLayout *dataLayout,
++    function_ref<InFlightDiagnostic()> emitError) const {
+   return true;
+ }
+ 
+diff --git a/lib/Dialect/TritonStructured/IR/TritonStructuredOps.cpp b/lib/Dialect/TritonStructured/IR/TritonStructuredOps.cpp
+index daa9cf1..dbbb0e4 100644
+--- a/lib/Dialect/TritonStructured/IR/TritonStructuredOps.cpp
++++ b/lib/Dialect/TritonStructured/IR/TritonStructuredOps.cpp
+@@ -53,14 +53,14 @@ Value getScalarValue(Value operand, Location loc, OpBuilder &builder) {
+                   if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                     resType = shapedType.getElementType();
+                   }
+-                  return builder.create<arith::SIToFPOp>(loc, resType, src);
++                  return arith::SIToFPOp::create(builder, loc, resType, src);
+                 })
+                 .Case<arith::TruncFOp>([&](Operation *op) {
+                   auto resType = op->getResults()[0].getType();
+                   if (auto shapedType = dyn_cast<ShapedType>(resType)) {
+                     resType = shapedType.getElementType();
+                   }
+-                  return builder.create<arith::TruncFOp>(loc, resType, src);
++                  return arith::TruncFOp::create(builder, loc, resType, src);
+                 })
+                 .Default([](Operation *op) {
+                   llvm_unreachable("unsupported op in generating ");
+diff --git a/lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp b/lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp
+index 2e90b82..598ae39 100644
+--- a/lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp
++++ b/lib/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.cpp
+@@ -29,12 +29,12 @@ Value getSlice(OpBuilder &b, Location loc, Value source,
+                ArrayRef<OpFoldResult> strides) {
+   return TypeSwitch<Type, Value>(source.getType())
+       .Case<RankedTensorType>([&](RankedTensorType t) -> Value {
+-        return b.create<tensor::ExtractSliceOp>(loc, source, offsets, sizes,
+-                                                strides);
++        return tensor::ExtractSliceOp::create(b, loc, source, offsets, sizes,
++                                              strides);
+       })
+       .Case<MemRefType>([&](MemRefType type) -> Value {
+-        return b.create<memref::SubViewOp>(loc, source, offsets, sizes,
+-                                           strides);
++        return memref::SubViewOp::create(b, loc, source, offsets, sizes,
++                                         strides);
+       })
+       .Default([&](Type t) { return nullptr; });
+ }
+diff --git a/lib/Sanitizer/SanitizerAttributes/SanitizerAttributes.cpp b/lib/Sanitizer/SanitizerAttributes/SanitizerAttributes.cpp
+index 3846ee5..32e508a 100644
+--- a/lib/Sanitizer/SanitizerAttributes/SanitizerAttributes.cpp
++++ b/lib/Sanitizer/SanitizerAttributes/SanitizerAttributes.cpp
+@@ -6,7 +6,7 @@
+ //===----------------------------------------------------------------------===//
+ 
+ #include "llvm/Passes/PassBuilder.h"
+-#include "llvm/Passes/PassPlugin.h"
++#include "llvm/Plugins/PassPlugin.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/raw_ostream.h"
+ 
+diff --git a/lib/Transform/AddLLVMDebugInfo/AddLLVMDebugInfoPass.cpp b/lib/Transform/AddLLVMDebugInfo/AddLLVMDebugInfoPass.cpp
+index 2bfe211..5a1e239 100644
+--- a/lib/Transform/AddLLVMDebugInfo/AddLLVMDebugInfoPass.cpp
++++ b/lib/Transform/AddLLVMDebugInfo/AddLLVMDebugInfoPass.cpp
+@@ -16,12 +16,14 @@
+ using namespace mlir;
+ using namespace triton;
+ 
+-#define GEN_PASS_CLASSES
++#define GEN_PASS_DEF_ADDLLVMDEBUGINFO
+ #include "triton-shared/Transform/AddLLVMDebugInfo/Passes.h.inc"
++#undef GEN_PASS_DEF_ADDLLVMDEBUGINFO
+ 
+ namespace {
+ 
+-class AddLLVMDebugInfoPass : public AddLLVMDebugInfoBase<AddLLVMDebugInfoPass> {
++class AddLLVMDebugInfoPass
++    : public ::impl::AddLLVMDebugInfoBase<AddLLVMDebugInfoPass> {
+ 
+   static LLVM::DISubprogramFlags setSubprogramFlags(FuncOp funcOp) {
+     LLVM::DISubprogramFlags subprogramFlags = LLVM::DISubprogramFlags{};

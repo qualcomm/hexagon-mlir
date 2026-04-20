@@ -237,7 +237,7 @@ void HoistScalarOpsPass::hoistOperations(
           Value inputTensor =
               gop.getDpsInputOperand(barg.getArgNumber())->get();
           Value extracted =
-              builder.create<tensor::ExtractOp>(gop.getLoc(), inputTensor);
+              tensor::ExtractOp::create(builder, gop.getLoc(), inputTensor);
           bvm.map(operand, extracted);
           continue;
         }
@@ -253,8 +253,8 @@ void HoistScalarOpsPass::hoistOperations(
 
     // Wrap the scalar result in a rank-0 tensor to pass as input
     auto tensorType = RankedTensorType::get({}, scalarResult.getType());
-    Value tensorInput = builder.create<tensor::FromElementsOp>(
-        gop.getLoc(), tensorType, scalarResult);
+    Value tensorInput = tensor::FromElementsOp::create(
+        builder, gop.getLoc(), tensorType, scalarResult);
     newHoistedTensors.push_back(tensorInput);
   }
 }
@@ -291,9 +291,9 @@ linalg::GenericOp HoistScalarOpsPass::buildNewGenericOp(
   }
 
   // Create the new linalg.generic operation
-  auto newGeneric = builder.create<linalg::GenericOp>(
-      gop.getLoc(), gop->getResultTypes(), newInputs, gop.getOutputs(), newMaps,
-      gop.getIteratorTypesArray());
+  auto newGeneric = linalg::GenericOp::create(
+      builder, gop.getLoc(), gop->getResultTypes(), newInputs, gop.getOutputs(),
+      newMaps, gop.getIteratorTypesArray());
 
   // Build the region for the new linalg.generic
   Region &region = newGeneric.getRegion();

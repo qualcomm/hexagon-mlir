@@ -107,12 +107,12 @@ void ExpandBoolVecPass::runOnOperation() {
     const llvm::fltSemantics &Semantics = *getSemantics(shapedTy);
 
     auto zero = APFloat::getZero(Semantics);
-    auto zeros = rewriter.create<arith::ConstantOp>(
-        loc, DenseElementsAttr::get(shapedTy, zero));
+    auto zeros = arith::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(shapedTy, zero));
 
     auto one = APFloat::getOne(Semantics);
-    auto ones = rewriter.create<arith::ConstantOp>(
-        loc, DenseElementsAttr::get(shapedTy, one));
+    auto ones = arith::ConstantOp::create(
+        rewriter, loc, DenseElementsAttr::get(shapedTy, one));
     rewriter.replaceOpWithNewOp<arith::SelectOp>(op, op.getIn(), ones, zeros);
   });
 }

@@ -150,8 +150,8 @@ struct AddCopyBeforeYieldPattern final : public OpRewritePattern<scf::YieldOp> {
       // If the yieldedValue is a memref and is NOT the iter_arg.
       // Then, we need to insert a copy to canonicalize the IR.
       rewriter.setInsertionPoint(yieldOp); // Insert copy before the yieldOp
-      auto newCopy = rewriter.create<memref::CopyOp>(yieldOp.getLoc(),
-                                                     yieldedValue, iterArg);
+      auto newCopy = memref::CopyOp::create(rewriter, yieldOp.getLoc(),
+                                            yieldedValue, iterArg);
       DBG("Added memref.copy before scf.yield: " << newCopy);
 
       // The new operand for the yield will be the iter_arg itself

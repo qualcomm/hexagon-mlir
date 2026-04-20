@@ -35,6 +35,7 @@ def split_path(path):
 
 def to_torch_type(type_id):
     cpp_to_torch_map = {
+        0: torch.bool,
         1: torch.float16,
         2: torch.float32,
         3: torch.float64,

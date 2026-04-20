@@ -20,12 +20,14 @@ echo "BASE_DIR=${BASE_DIR}"
 # get triton and triton-shared
 cd ${REPO_DIR}
 # Check if triton or triton_shared directories already exist
-if [[ ! -d "${REPO_DIR}/triton" ]]; then
-    echo "Initializing submodules..."
+if [[ ! -d "${REPO_DIR}/triton" || ! -d "${REPO_DIR}/triton_shared" ]]; then
+    echo "Initializing submodules triton and triton_shared..."
     source ci/setup_submodules.sh
 else
     echo "Submodules already initialized. Skipping."
 fi
+
+TRITON_DIR="${REPO_DIR}/triton"
 
 # Get HOST_TOOLCHAIN
 cd ${BASE_DIR}
@@ -132,7 +134,8 @@ fi
 cd ${LLVM_SRC_DIR}
 
 # Pin to a specific commit for reproducibility
-git checkout 064f02dac0c81c19350a74415b3245f42fed09dc
+LLVM_SHA=$(cat $TRITON_DIR/cmake/llvm-hash.txt)
+git checkout $LLVM_SHA
 
 
 if [[ ! -f "${LLVM_PROJECT_BUILD_DIR}/bin/mlir-opt" ]]; then

@@ -16,6 +16,8 @@
 namespace mlir::hexagon {
 
 std::optional<SmallVector<int64_t>> parseTileSizes(std::string tileSizesStr);
+std::optional<DenseMap<int64_t, int64_t>>
+parseConvTileSizes(std::string tileSizesStr);
 
 } // namespace mlir::hexagon
 

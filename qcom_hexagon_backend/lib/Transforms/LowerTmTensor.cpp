@@ -116,124 +116,117 @@ struct LowerAttentionOp : public OpRewritePattern<AttentionOp> {
 
     // Constants
     Value zero =
-        rewriter.create<arith::ConstantOp>(loc, rewriter.getZeroAttr(elType));
-    Value scale = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getFloatAttr(
-                 elType, 1.0 / std::sqrt(static_cast<double>(head_dim))));
+        arith::ConstantOp::create(rewriter, loc, rewriter.getZeroAttr(elType));
+    Value scale = arith::ConstantOp::create(
+        rewriter, loc,
+        rewriter.getFloatAttr(elType,
+                              1.0 / std::sqrt(static_cast<double>(head_dim))));
 
     // Compute K^T
-    Value keyTinit = rewriter.create<tensor::EmptyOp>(loc, keyTshape, elType);
-    Value keyT = rewriter
-                     .create<linalg::TransposeOp>(loc, key, keyTinit,
-                                                  ArrayRef<int64_t>{0, 2, 1})
+    Value keyTinit = tensor::EmptyOp::create(rewriter, loc, keyTshape, elType);
+    Value keyT = linalg::TransposeOp::create(rewriter, loc, key, keyTinit,
+                                             ArrayRef<int64_t>{0, 2, 1})
                      .getResult()[0];
 
     // Compute batch matmul QK^T
-    Value qkTempty = rewriter.create<tensor::EmptyOp>(loc, qkTshape, elType);
+    Value qkTempty = tensor::EmptyOp::create(rewriter, loc, qkTshape, elType);
     Value qkTinit =
-        rewriter.create<linalg::FillOp>(loc, zero, qkTempty).getResult(0);
+        linalg::FillOp::create(rewriter, loc, zero, qkTempty).getResult(0);
     auto qkTtype = RankedTensorType::get(qkTshape, elType);
-    Value qkT = rewriter
-                    .create<linalg::BatchMatmulOp>(loc, qkTtype,
-                                                   ValueRange{query, keyT},
-                                                   ValueRange{qkTinit})
+    Value qkT = linalg::BatchMatmulOp::create(rewriter, loc, qkTtype,
+                                              ValueRange{query, keyT},
+                                              ValueRange{qkTinit})
                     .getResult(0);
     DBG(" batch-matmul: " << qkT);
 
     // Scale QK^T by 1/sqrt(head_dim)
     Value qkTScaled =
-        rewriter
-            .create<linalg::GenericOp>(
-                loc, qkTtype, ValueRange{qkT}, ValueRange{qkTempty},
-                ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
-                                    AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
-                ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value mul = b.create<arith::MulFOp>(loc, args[0], scale);
-                  b.create<linalg::YieldOp>(loc, mul);
-                })
+        linalg::GenericOp::create(
+            rewriter, loc, qkTtype, ValueRange{qkT}, ValueRange{qkTempty},
+            ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
+                                AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
+            ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
+            [&](OpBuilder &b, Location loc, ValueRange args) {
+              Value mul = arith::MulFOp::create(b, loc, args[0], scale);
+              linalg::YieldOp::create(b, loc, mul);
+            })
             .getResult(0);
     DBG("Scaled QK^T: " << qkTScaled);
 
     // Apply mask to scaled QK^T
-    Value qkTMasked =
-        rewriter
-            .create<linalg::AddOp>(loc, ValueRange{qkTScaled, mask}, qkTempty)
-            .getResult(0);
+    Value qkTMasked = linalg::AddOp::create(
+                          rewriter, loc, ValueRange{qkTScaled, mask}, qkTempty)
+                          .getResult(0);
     DBG("Masked QK^T: " << qkTMasked);
 
     // - Softmax -
     // Step 1: Find max for numerical stability
-    Value maxEmpty = rewriter.create<tensor::EmptyOp>(loc, maxShape, elType);
-    Value negInf = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getFloatAttr(elType,
-                                   -std::numeric_limits<double>::infinity()));
+    Value maxEmpty = tensor::EmptyOp::create(rewriter, loc, maxShape, elType);
+    Value negInf = arith::ConstantOp::create(
+        rewriter, loc,
+        rewriter.getFloatAttr(elType,
+                              -std::numeric_limits<double>::infinity()));
     Value maxInit =
-        rewriter.create<linalg::FillOp>(loc, negInf, maxEmpty).getResult(0);
-    Value maxVals = rewriter
-                        .create<linalg::ReduceOp>(
-                            loc, qkTMasked, maxInit, ArrayRef<int64_t>{2},
-                            [&](OpBuilder &b, Location loc, ValueRange args) {
-                              Value max = b.create<arith::MaximumFOp>(
-                                  loc, args[0], args[1]);
-                              b.create<linalg::YieldOp>(loc, max);
-                            })
-                        .getResult(0);
+        linalg::FillOp::create(rewriter, loc, negInf, maxEmpty).getResult(0);
+    Value maxVals =
+        linalg::ReduceOp::create(
+            rewriter, loc, qkTMasked, maxInit, ArrayRef<int64_t>{2},
+            [&](OpBuilder &b, Location loc, ValueRange args) {
+              Value max = arith::MaximumFOp::create(b, loc, args[0], args[1]);
+              linalg::YieldOp::create(b, loc, max);
+            })
+            .getResult(0);
 
     // Step 2: Compute `exp(xi-max)` with implicit broadcast
     Value qkTSub =
-        rewriter
-            .create<linalg::GenericOp>(
-                loc, qkTtype, ValueRange{qkTMasked, maxVals},
-                ValueRange{qkTempty},
-                ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
-                                    AffineMap::get(3, 0, {d0, d1}, ctx),
-                                    AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
-                ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value sub = b.create<arith::SubFOp>(loc, args[0], args[1]);
-                  b.create<linalg::YieldOp>(loc, sub);
-                })
+        linalg::GenericOp::create(
+            rewriter, loc, qkTtype, ValueRange{qkTMasked, maxVals},
+            ValueRange{qkTempty},
+            ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
+                                AffineMap::get(3, 0, {d0, d1}, ctx),
+                                AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
+            ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
+            [&](OpBuilder &b, Location loc, ValueRange args) {
+              Value sub = arith::SubFOp::create(b, loc, args[0], args[1]);
+              linalg::YieldOp::create(b, loc, sub);
+            })
             .getResult(0);
     Value qkTStable =
-        rewriter.create<linalg::ExpOp>(loc, qkTSub, qkTempty).getResult(0);
+        linalg::ExpOp::create(rewriter, loc, qkTSub, qkTempty).getResult(0);
 
     // Step 3: Compute `sum(exp(xi-max))` along the last dimension
     Value sumInit =
-        rewriter.create<linalg::FillOp>(loc, zero, maxEmpty).getResult(0);
-    Value sumVals =
-        rewriter
-            .create<linalg::ReduceOp>(
-                loc, qkTStable, sumInit, ArrayRef<int64_t>{2},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value add = b.create<arith::AddFOp>(loc, args[0], args[1]);
-                  b.create<linalg::YieldOp>(loc, add);
-                })
-            .getResult(0);
+        linalg::FillOp::create(rewriter, loc, zero, maxEmpty).getResult(0);
+    Value sumVals = linalg::ReduceOp::create(
+                        rewriter, loc, qkTStable, sumInit, ArrayRef<int64_t>{2},
+                        [&](OpBuilder &b, Location loc, ValueRange args) {
+                          Value add =
+                              arith::AddFOp::create(b, loc, args[0], args[1]);
+                          linalg::YieldOp::create(b, loc, add);
+                        })
+                        .getResult(0);
 
     // Step 4:  div to get softmax
     Value softmaxResult =
-        rewriter
-            .create<linalg::GenericOp>(
-                loc, qkTtype, ValueRange{qkTStable, sumVals},
-                ValueRange{qkTempty},
-                ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
-                                    AffineMap::get(3, 0, {d0, d1}, ctx),
-                                    AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
-                ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value div = b.create<arith::DivFOp>(loc, args[0], args[1]);
-                  b.create<linalg::YieldOp>(loc, div);
-                })
+        linalg::GenericOp::create(
+            rewriter, loc, qkTtype, ValueRange{qkTStable, sumVals},
+            ValueRange{qkTempty},
+            ArrayRef<AffineMap>{AffineMap::get(3, 0, {d0, d1, d2}, ctx),
+                                AffineMap::get(3, 0, {d0, d1}, ctx),
+                                AffineMap::get(3, 0, {d0, d1, d2}, ctx)},
+            ArrayRef<utils::IteratorType>{parallel, parallel, parallel},
+            [&](OpBuilder &b, Location loc, ValueRange args) {
+              Value div = arith::DivFOp::create(b, loc, args[0], args[1]);
+              linalg::YieldOp::create(b, loc, div);
+            })
             .getResult(0);
     DBG("Softmax result: " << softmaxResult);
 
     // Lastly, `softmax(QK^T)*V`
     auto outType = RankedTensorType::get(outShape, elType);
-    Value result = rewriter
-                       .create<linalg::BatchMatmulOp>(
-                           loc, outType, ValueRange{softmaxResult, value},
-                           ValueRange{opsInit})
+    Value result = linalg::BatchMatmulOp::create(
+                       rewriter, loc, outType, ValueRange{softmaxResult, value},
+                       ValueRange{opsInit})
                        .getResult(0);
 
     rewriter.replaceOp(op, result);

@@ -36,10 +36,10 @@ def HexKL_MatmulOp
   let arguments = (ins
     AnyTypeOf<[Non0RankedTensorOf<[F16]>, Non0RankedMemRefOf<[F16]>]>:$lhs,
     AnyTypeOf<[Non0RankedTensorOf<[F16]>, Non0RankedMemRefOf<[F16]>]>:$rhs,
-    AnyTypeOf<[Non0RankedTensorOf<[F32]>, Non0RankedMemRefOf<[F32]>]>:$outs
+    AnyTypeOf<[Non0RankedTensorOf<[F16,F32]>, Non0RankedMemRefOf<[F16,F32]>]>:$outs
   );
 
-  let results = (outs Variadic<Non0RankedTensorOf<[F32]>>:$result);
+  let results = (outs Variadic<Non0RankedTensorOf<[F16,F32]>>:$result);
 
   let assemblyFormat = [{
     `ins` `(`  $lhs `,` $rhs`:` type($lhs) `,` type($rhs) `)`
@@ -260,6 +260,88 @@ def HexKL_MicroHMXCopyF16ToF32SubmatrixOp
 
   let assemblyFormat =
     "`(` $hmx_block `,` $in_offset `,` $dst `,` $tile_row `,` $tile_col `,` $output_rows `,` $output_cols `)` `:` type($hmx_block) `,` type($in_offset) `,` type($dst) `,` type($tile_row) `,` type($tile_col) `,` type($output_rows) `,` type($output_cols) attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// HexKL Macro ops (runtime library modeled in the dialect)
+//
+// These ops represent the macro runtime calls used by the lowering pipeline.
+// Keeping them as dialect ops (instead of lowering directly to LLVM calls)
+// enables IR-level optimizations (e.g. fusing back-to-back matmuls, hoisting
+// init/lock/unlock/finalize, removing redundant cache operations).
+//===----------------------------------------------------------------------===//
+
+def HexKL_MacroInitializeOp
+  : HexKL_Op<"macro_initialize", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Initialize HexKL macro runtime";
+  let results = (outs);
+  let assemblyFormat = "attr-dict";
+}
+
+def HexKL_MacroFinalizeOp
+  : HexKL_Op<"macro_finalize", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Finalize HexKL macro runtime";
+  let results = (outs);
+  let assemblyFormat = "attr-dict";
+}
+
+def HexKL_MacroLockHmxOp
+  : HexKL_Op<"macro_lock_hmx", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Lock HMX for macro runtime";
+  let results = (outs);
+  let assemblyFormat = "attr-dict";
+}
+
+def HexKL_MacroUnlockHmxOp
+  : HexKL_Op<"macro_unlock_hmx", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Unlock HMX for macro runtime";
+  let results = (outs);
+  let assemblyFormat = "attr-dict";
+}
+
+def HexKL_MacroRmToAhF16InplaceOp
+  : HexKL_Op<"macro_rm_to_ah_f16_inplace",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Transform activation from RM to AH layout (in-place)";
+  let arguments = (ins I32:$m, I32:$k, AnyType:$ptr);
+  let results = (outs);
+  let assemblyFormat =
+    "`(` $m `,` $k `,` $ptr `)` `:` type($m) `,` type($k) `,` type($ptr) attr-dict";
+}
+
+def HexKL_MacroAhToRmF16InplaceOp
+  : HexKL_Op<"macro_ah_to_rm_f16_inplace",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Transform output from AH to RM layout (in-place)";
+  let arguments = (ins I32:$m, I32:$n, AnyType:$ptr);
+  let results = (outs);
+  let assemblyFormat =
+    "`(` $m `,` $n `,` $ptr `)` `:` type($m) `,` type($n) `,` type($ptr) attr-dict";
+}
+
+def HexKL_MacroMmF16Op
+  : HexKL_Op<"macro_mm_f16", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "HexKL macro matmul (f16)";
+  let arguments = (ins
+    I32:$m,
+    I32:$n,
+    I32:$k,
+    AnyType:$out_ptr,
+    AnyType:$act_ptr,
+    AnyType:$wgt_ptr
+  );
+  let results = (outs);
+  let assemblyFormat =
+    "`(` $m `,` $n `,` $k `,` $out_ptr `,` $act_ptr `,` $wgt_ptr `)` `:` type($m) `,` type($n) `,` type($k) `,` type($out_ptr) `,` type($act_ptr) `,` type($wgt_ptr) attr-dict";
+}
+
+def HexKL_QurtMemCacheCleanOp
+  : HexKL_Op<"qurt_mem_cache_clean", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "QURT cache clean/flush/invalidate";
+  let arguments = (ins I32:$ptr_i32, I32:$size_bytes_i32, I32:$op, I32:$cache);
+  let results = (outs);
+  let assemblyFormat =
+    "`(` $ptr_i32 `,` $size_bytes_i32 `,` $op `,` $cache `)` `:` type($ptr_i32) `,` type($size_bytes_i32) `,` type($op) `,` type($cache) attr-dict";
 }
 
 #endif // HEXAGON_DIALECT_HEXKL_IR_HEXKL_OPS_TD

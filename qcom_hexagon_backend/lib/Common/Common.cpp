@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "hexagon/Common/Common.h"
+#include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -78,6 +79,11 @@ bool isStridedMultiDimMemrefType(mlir::MemRefType memRefType, int64_t &stride,
 
 void addTypeConversions(MLIRContext *context,
                         LLVMTypeConverter &typeConverter) {
+  // crouton to llvm ptr
+  typeConverter.addConversion([=](crouton::CroutonType type) {
+    return LLVM::LLVMPointerType::get(context);
+  });
+
   // The hexagon llvm backend does not define a separate address
   // address space for VTCM and DDR (conceptually ptr<0>, ptr<1>).
   // In our mlir flow we allocate on VTCM using runtime hexagonmem

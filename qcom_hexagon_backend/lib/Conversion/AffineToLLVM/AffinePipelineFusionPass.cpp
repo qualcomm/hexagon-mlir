@@ -839,8 +839,8 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
   // Generate loops for free vars.
   for (unsigned varIdx : freeVars) {
     AffineForOp srcLoop = srcLoopIVs[varIdx];
-    auto loop = builder.create<AffineForOp>(
-        srcLoop.getLoc(), srcLoop.getLowerBoundOperands(),
+    auto loop = AffineForOp::create(
+        builder, srcLoop.getLoc(), srcLoop.getLowerBoundOperands(),
         srcLoop.getLowerBoundMap(), srcLoop.getUpperBoundOperands(),
         srcLoop.getUpperBoundMap(), srcLoop.getStepAsInt());
     builder.setInsertionPoint(loop.getBody(), loop.getBody()->begin());
@@ -1031,8 +1031,8 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
     ifOperands[numSrcLoopIVs - 1] = cloned.getBody()->getArgument(0);
     assert(condition.getNumDims() == numSrcLoopIVs);
     OpBuilder ifBuilder(cloned.getBody(), cloned.getBody()->begin());
-    AffineIfOp branch = ifBuilder.create<AffineIfOp>(
-        srcLoopIVs.front().getLoc(), condition, ifOperands, false);
+    AffineIfOp branch = AffineIfOp::create(
+        ifBuilder, srcLoopIVs.front().getLoc(), condition, ifOperands, false);
     // Move body to branch
     auto oldYield = --cloned.getBody()->end();
     assert(oldYield != cloned.getBody()->end());
@@ -1058,14 +1058,14 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
   branchOperands.reserve(numSrcLoopIVs);
   for (int i = 0; i < numSrcLoopIVs; i++) {
     AffineMap map = AffineMap::get(srcOperands.size(), 0, srcVars[i]);
-    auto applyOp =
-        builder.create<AffineApplyOp>(srcLoopIVs[i].getLoc(), map, srcOperands);
+    auto applyOp = AffineApplyOp::create(builder, srcLoopIVs[i].getLoc(), map,
+                                         srcOperands);
     mapper.map(srcLoopIVs[i].getBody()->getArgument(0), applyOp);
     branchOperands.push_back(applyOp);
   }
-  auto pipelineBranch = builder.create<AffineIfOp>(
-      srcLoopIVs.front().getLoc(), pipelineSet,
-      ArrayRef(srcOperands).take_front(loopDepth), false);
+  auto pipelineBranch =
+      AffineIfOp::create(builder, srcLoopIVs.front().getLoc(), pipelineSet,
+                         ArrayRef(srcOperands).take_front(loopDepth), false);
   builder.setInsertionPointToStart(pipelineBranch.getThenBlock());
   for (Operation &op : *srcLoopIVs.back().getBody()) {
     if (isa<AffineYieldOp>(op)) {

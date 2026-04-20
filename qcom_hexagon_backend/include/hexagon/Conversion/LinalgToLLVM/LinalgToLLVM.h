@@ -24,6 +24,9 @@ std::unique_ptr<OperationPass<func::FuncOp>> createFormAsyncThreadsPass();
 std::unique_ptr<OperationPass<func::FuncOp>> createFormVirtualThreadsPass(
     const FormVirtualThreadsOptions &options = FormVirtualThreadsOptions());
 
+std::unique_ptr<InterfacePass<FunctionOpInterface>> createHexagonExtendPackPass(
+    const HexagonExtendPackOptions &options = HexagonExtendPackOptions());
+
 std::unique_ptr<InterfacePass<FunctionOpInterface>> createHexagonFusionPass(
     const HexagonFusionOptions &options = HexagonFusionOptions());
 
@@ -42,10 +45,23 @@ std::unique_ptr<OperationPass<ModuleOp>> createLinalgToLLVMPass(
 
 std::unique_ptr<OperationPass<ModuleOp>> createLowerConstantsSeparatelyPass();
 
+std::unique_ptr<OperationPass<func::FuncOp>> createLowerPackPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>> createSplitReduceGenericPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>>
+createEraseVectorToTensorWritebackPass();
+
 std::unique_ptr<OperationPass<ModuleOp>> createRewriteUBPoisonToZeroPass();
 
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createVTCMTilingPass(const VTCMTilingOptions &options = VTCMTilingOptions());
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createConversionToFp16Pass();
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createOptimizeExtfTruncfOpPass();
 } // namespace hexagon
 } // namespace mlir
 

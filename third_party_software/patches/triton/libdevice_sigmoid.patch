@@ -1,0 +1,12 @@
+diff --git a/python/triton/language/extra/libdevice.py b/python/triton/language/extra/libdevice.py
+index e29810bfb..39acd2d6d 100644
+--- a/python/triton/language/extra/libdevice.py
++++ b/python/triton/language/extra/libdevice.py
+@@ -788,3 +788,7 @@ def logb(arg0):
+ 
+ def isfinited(arg0):
+     ...
++
++
++def sigmoid(arg0):
++    ...

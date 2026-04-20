@@ -45,18 +45,22 @@ struct HexmemCpyToDMAPass
 };
 
 static Value getI32Const(Location loc, IRRewriter &rewriter, int val) {
-  return rewriter.create<arith::ConstantIndexOp>(loc, val);
+  return arith::ConstantIndexOp::create(rewriter, loc, val);
 }
 
 static bool isValidCandidate(CandidateTy op) {
   auto sourceType = op.getSource().getType();
   auto targetType = op.getTarget().getType();
 
+  if (isa<crouton::CroutonType>(sourceType) ||
+      isa<crouton::CroutonType>(targetType))
+    return false;
+
   auto sourceMemRefType = dyn_cast<MemRefType>(sourceType);
   auto targetMemRefType = dyn_cast<MemRefType>(targetType);
 
-  if (!sourceMemRefType || !targetMemRefType)
-    return false;
+  assert(sourceMemRefType && targetMemRefType &&
+         "Expected Memref type as source and target to `hexagonmem.copy`");
 
   auto isContiguousOrMultiDimMemrefType = [&](MemRefType type) {
     int64_t stride, width;
@@ -130,10 +134,10 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 
   // Allocate a tag buffer for DMA operations
   auto tagType = MemRefType::get({1}, rewriter.getI32Type());
-  Value tagAlloc = rewriter.create<memref::AllocOp>(loc, tagType);
+  Value tagAlloc = memref::AllocOp::create(rewriter, loc, tagType);
 
   // Create zero index for tag access
-  Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
   SmallVector<Value, 1> tagIndex = {zero};
 
   MemRefType sourceMemRefType = cast<MemRefType>(sourceType);
@@ -154,10 +158,9 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
                      Value src, Value dst, SmallVector<Value, 8> srcIndices,
                      SmallVector<Value, 8> destIndices, Value numElements,
                      Value stride, Value width) {
-    rewriter.create<memref::DmaStartOp>(loc, src, srcIndices, dst, destIndices,
-                                        numElements, tagAlloc, tagIndex, stride,
-                                        width);
-    rewriter.create<memref::DmaWaitOp>(loc, tagAlloc, tagIndex, numElements);
+    memref::DmaStartOp::create(rewriter, loc, src, srcIndices, dst, destIndices,
+                               numElements, tagAlloc, tagIndex, stride, width);
+    memref::DmaWaitOp::create(rewriter, loc, tagAlloc, tagIndex, numElements);
   };
 
   int sourceMemSpace, targetMemSpace;
@@ -175,8 +178,8 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 
     // Create inner loops for the remaining (rank - 2) dimensions
     for (int64_t i = 0; i < rank - 2; ++i) {
-      curLoop = rewriter.create<scf::ForOp>(
-          loc, getI32Const(loc, rewriter, 0),
+      curLoop = scf::ForOp::create(
+          rewriter, loc, getI32Const(loc, rewriter, 0),
           getI32Const(
               loc, rewriter,
               isa<MemRefType>(copyOp.getSource().getType())
@@ -207,13 +210,13 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
         targetMemSpace == VTCM_ADDRESS_SPACE) {
       int64_t numElements = targetStrides[rank - 3];
       Value numElementsVal =
-          rewriter.create<arith::ConstantIndexOp>(loc, numElements);
+          arith::ConstantIndexOp::create(rewriter, loc, numElements);
       auto shape = targetMemRefType.getShape();
       sizes[rank - 1] = rewriter.getIndexAttr(shape[rank - 1]);
       sizes[rank - 2] = rewriter.getIndexAttr(shape[rank - 2]);
 
-      auto srcStride = rewriter.create<memref::SubViewOp>(loc, source, offsets,
-                                                          sizes, strides);
+      auto srcStride = memref::SubViewOp::create(rewriter, loc, source, offsets,
+                                                 sizes, strides);
       int64_t stride, width;
       assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
              isStridedMultiDimMemrefType(targetMemRefType, stride, width));
@@ -223,13 +226,13 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
     } else {
       int64_t numElements = sourceStrides[rank - 3];
       Value numElementsVal =
-          rewriter.create<arith::ConstantIndexOp>(loc, numElements);
+          arith::ConstantIndexOp::create(rewriter, loc, numElements);
       auto shape = sourceMemRefType.getShape();
       sizes[rank - 1] = rewriter.getIndexAttr(shape[rank - 1]);
       sizes[rank - 2] = rewriter.getIndexAttr(shape[rank - 2]);
 
-      auto dstStride = rewriter.create<memref::SubViewOp>(loc, target, offsets,
-                                                          sizes, strides);
+      auto dstStride = memref::SubViewOp::create(rewriter, loc, target, offsets,
+                                                 sizes, strides);
       int64_t stride, width;
       assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
              isStridedMultiDimMemrefType(targetMemRefType, stride, width));
@@ -240,30 +243,31 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 
     // Deallocate tag buffer
     rewriter.setInsertionPointAfter(outerLoop);
-    rewriter.create<memref::DeallocOp>(loc, tagAlloc);
+    memref::DeallocOp::create(rewriter, loc, tagAlloc);
   } else {
     Value numElements =
         getI32Const(loc, rewriter, sourceMemRefType.getNumElements());
     if (isContiguousMemrefType(sourceMemRefType) &&
         isContiguousMemrefType(targetMemRefType)) {
 
-      rewriter.create<memref::DmaStartOp>(loc, copyOp.getSource(), zeroIndices,
-                                          copyOp.getTarget(), zeroIndices,
-                                          numElements, tagAlloc, zeroIndex);
-      rewriter.create<memref::DmaWaitOp>(loc, tagAlloc, tagIndex, numElements);
+      memref::DmaStartOp::create(rewriter, loc, copyOp.getSource(), zeroIndices,
+                                 copyOp.getTarget(), zeroIndices, numElements,
+                                 tagAlloc, zeroIndex);
+      memref::DmaWaitOp::create(rewriter, loc, tagAlloc, tagIndex, numElements);
     } else {
       int64_t stride, width;
       assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
              isStridedMultiDimMemrefType(targetMemRefType, stride, width));
-      rewriter.create<memref::DmaStartOp>(
-          loc, copyOp.getSource(), zeroIndices, copyOp.getTarget(), zeroIndices,
-          numElements, tagAlloc, zeroIndex, getI32Const(loc, rewriter, stride),
-          getI32Const(loc, rewriter, width));
-      rewriter.create<memref::DmaWaitOp>(loc, tagAlloc, tagIndex, numElements);
+      memref::DmaStartOp::create(rewriter, loc, copyOp.getSource(), zeroIndices,
+                                 copyOp.getTarget(), zeroIndices, numElements,
+                                 tagAlloc, zeroIndex,
+                                 getI32Const(loc, rewriter, stride),
+                                 getI32Const(loc, rewriter, width));
+      memref::DmaWaitOp::create(rewriter, loc, tagAlloc, tagIndex, numElements);
     }
 
     // Deallocate tag buffer
-    rewriter.create<memref::DeallocOp>(loc, tagAlloc);
+    memref::DeallocOp::create(rewriter, loc, tagAlloc);
   }
 
   // Erase the original copy operation

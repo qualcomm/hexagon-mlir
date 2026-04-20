@@ -167,7 +167,8 @@ LogicalResult translateMain(int argc, char **argv, llvm::StringRef toolName) {
   }
 
   if (!noHexagonRuntime)
-    mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmIR);
+    mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmIR,
+                                                 arch_kwargs);
 
   // Aggressive inlining to improve performance after linking runtime modules
   cond_run_inliner(llvmIR, enableHVXInlining);

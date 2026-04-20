@@ -45,12 +45,12 @@ static Value buildOne(Location loc, Type ty, PatternRewriter &rewriter) {
     assert(ft && "expected vector of float type");
     auto oneElem = rewriter.getFloatAttr(ft, 1.0);
     auto denseOne = DenseElementsAttr::get(vt, oneElem);
-    return rewriter.create<arith::ConstantOp>(loc, vt, denseOne);
+    return arith::ConstantOp::create(rewriter, loc, vt, denseOne);
   }
   auto ft = dyn_cast<FloatType>(ty);
   assert(ft && "scalar base type must be float");
-  return rewriter.create<arith::ConstantOp>(loc,
-                                            rewriter.getFloatAttr(ft, 1.0));
+  return arith::ConstantOp::create(rewriter, loc,
+                                   rewriter.getFloatAttr(ft, 1.0));
 }
 
 /// Return minimal multiply chain for x^k, k >= 0. (k == 0 =>1, k == 1 => x, k
@@ -70,10 +70,10 @@ static Value buildPowPos(Location loc, Value base, int64_t k,
 
   while (k > 0) {
     if (k & 1) // odd exp
-      result = rewriter.create<arith::MulFOp>(loc, result, cur);
+      result = arith::MulFOp::create(rewriter, loc, result, cur);
     k >>= 1; // divide exp by 2
     if (k)
-      cur = rewriter.create<arith::MulFOp>(loc, cur, cur);
+      cur = arith::MulFOp::create(rewriter, loc, cur, cur);
   }
   return result;
 }
@@ -166,7 +166,7 @@ struct SmallExponentToMultiplyPattern : public OpRewritePattern<math::FPowIOp> {
 
     // Negative exponent: build 1.0 / mag.
     Value one = buildOne(loc, resTy, rewriter);
-    Value inv = rewriter.create<arith::DivFOp>(loc, one, mag);
+    Value inv = arith::DivFOp::create(rewriter, loc, one, mag);
     rewriter.replaceOp(op, inv);
     return success();
   }
