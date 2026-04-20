@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
 set -Eeuox pipefail
 
 # If the CI image accidentally has /etc/gitconfig as a *directory*, Git will fail
