@@ -156,7 +156,10 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
           "Enable aggressive inlining after linking runtime modules">,
     Option<"enableSCFLoopUnroll", "enable-scf-loop-unroll", "bool",
           /*default=*/"false",
-          "Enable SCF loop unrolling optimization">
+          "Enable SCF loop unrolling optimization">,
+    Option<"forceHVXCroutonization", "force-hvx-croutonization", "bool",
+          /*default=*/"false",
+          "Force HVX croutonization pass">
    ];
 }
 
@@ -306,7 +309,7 @@ def LowerPack : Pass<"lower-pack", "func::FuncOp"> {
 }
 
 def LowerConstantsSeparately : Pass<"lower-constants-separately", "mlir::ModuleOp"> {
-  let summary = "Lowers constants separately from the code, possibly in multiple modules if above a certain threshold"; 
+  let summary = "Lowers constants separately from the code, possibly in multiple modules if above a certain threshold";
   let constructor = "hexagon::createLowerConstantsSeparatelyPass()";
 }
 

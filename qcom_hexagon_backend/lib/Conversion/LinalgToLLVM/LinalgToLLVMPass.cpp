@@ -290,11 +290,14 @@ public:
           setOpSlicingFactor(HexagonSlicingOptions{})));
 
     pm.addNestedPass<func::FuncOp>(createDecomposeTensorConcatPass());
-    pm.addNestedPass<func::FuncOp>(createForceHVXCroutonPass());
-    pm.addNestedPass<func::FuncOp>(
-        createHexagonExtendPackPass(setExtendPack(HexagonExtendPackOptions{
-            .upperFrontier = false,
-        })));
+    if (forceHVXCroutonization) {
+      pm.addNestedPass<func::FuncOp>(createForceHVXCroutonPass());
+      pm.addNestedPass<func::FuncOp>(
+          createHexagonExtendPackPass(setExtendPack(HexagonExtendPackOptions{
+              .upperFrontier = false,
+          })));
+    }
+
     pm.addNestedPass<func::FuncOp>(createLowerPackPass());
     pm.addPass(createCSEPass());
 
