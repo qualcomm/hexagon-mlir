@@ -39,7 +39,7 @@ bool isContiguousMemrefType(MemRefType type) {
 
   return memrefType &&
          (memrefType.getLayout().isIdentity() ||
-          (memrefType.getNumElements() > 0 &&
+	  (memrefType.hasStaticShape() && memrefType.getNumElements() > 0 &&
            memref::isStaticShapeAndContiguousRowMajor(memrefType)));
 }
 

@@ -7,7 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements rewriting of hexagonmem.copy ops to memref.dma* ops
+// This file implements rewriting of hexagonmem.copy and memref.copy ops to
+// memref.dma* ops
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,9 +31,6 @@ using namespace hexagon;
 
 namespace {
 
-using CandidateTy = mlir::hexagonmem::CopyOp;
-using CandidatesTy = SmallVector<CandidateTy>;
-
 struct HexmemCpyToDMAPass
     : public ::impl::HexmemCpyToDMABase<HexmemCpyToDMAPass> {
 
@@ -48,7 +46,7 @@ static Value getI32Const(Location loc, IRRewriter &rewriter, int val) {
   return arith::ConstantIndexOp::create(rewriter, loc, val);
 }
 
-static bool isValidCandidate(CandidateTy op) {
+template <typename CopyOpTy> static bool isValidCandidate(CopyOpTy op) {
   auto sourceType = op.getSource().getType();
   auto targetType = op.getTarget().getType();
 
@@ -60,18 +58,10 @@ static bool isValidCandidate(CandidateTy op) {
   auto targetMemRefType = dyn_cast<MemRefType>(targetType);
 
   assert(sourceMemRefType && targetMemRefType &&
-         "Expected Memref type as source and target to `hexagonmem.copy`");
+         "Expected Memref type as source and target to copy op");
 
-  auto isContiguousOrMultiDimMemrefType = [&](MemRefType type) {
-    int64_t stride, width;
-    return isContiguousMemrefType(type) ||
-           isStridedMultiDimMemrefType(type, stride, width);
-  };
-
-  // If any of source/target is not (multiDim-strided or contiguous), don't
-  // lower
-  if (!isContiguousOrMultiDimMemrefType(sourceMemRefType) ||
-      !isContiguousOrMultiDimMemrefType(targetMemRefType))
+  // Skip lowering for non-static
+  if (!sourceMemRefType.hasStaticShape() || !targetMemRefType.hasStaticShape())
     return false;
 
   int sourceMemSpace, targetMemSpace;
@@ -83,14 +73,21 @@ static bool isValidCandidate(CandidateTy op) {
   if (targetMemSpace == sourceMemSpace)
     return false;
 
-  // if both are strided don't lower
-  int64_t stride, width;
-  if ((isStridedMultiDimMemrefType(sourceMemRefType, stride, width)) &&
-      (isStridedMultiDimMemrefType(targetMemRefType, stride, width)))
+  // If any of source/target is not (multiDim-strided or contiguous), don't
+  // lower
+  auto isContiguousOrMultiDimMemrefType = [&](MemRefType type) {
+    int64_t stride, width;
+    return isContiguousMemrefType(type) ||
+           isStridedMultiDimMemrefType(type, stride, width);
+  };
+
+  if (!isContiguousOrMultiDimMemrefType(sourceMemRefType) ||
+      !isContiguousOrMultiDimMemrefType(targetMemRefType))
     return false;
 
   // Skip DMA conversion for strided multi-dim memrefs unless
   //  transferring DDR->VTCM (source) or VTCM->DDR (target)
+  int64_t stride, width;
   if ((isStridedMultiDimMemrefType(sourceMemRefType, stride, width) &&
        !(sourceMemSpace == DEFAULT_DDR_ADDRESS_SPACE &&
          targetMemSpace == VTCM_ADDRESS_SPACE)) ||
@@ -99,30 +96,12 @@ static bool isValidCandidate(CandidateTy op) {
          sourceMemSpace == VTCM_ADDRESS_SPACE)))
     return false;
 
-  // Skip lowering for non-static
-  if (!sourceMemRefType.hasStaticShape() || !targetMemRefType.hasStaticShape())
-    return false;
-
-  // All of them hold:
-  // both are either contiguous or strided memrefs
-  // both addres-spaces are int
-  // source not strided, or (sourceMemSpace == DEFAULT_DDR_ADDRESS_SPACE &&
-  // targetMemSpace == VTCM_ADDRESS_SPACE) target not strided, or
-  // (targetMemSpace == DEFAULT_DDR_ADDRESS_SPACE && sourceMemSpace ==
-  // VTCM_ADDRESS_SPACE)
-
   return true;
 }
 
-void populateCandidate(mlir::hexagonmem::CopyOp op, CandidatesTy &candidates) {
-  if (isValidCandidate(op)) {
-    DBG("selected candidate: " << op);
-    candidates.emplace_back(op);
-  }
-}
-
-void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
-                    IRRewriter &rewriter) {
+template <typename CopyOpTy>
+void replaceWithDMA(CopyOpTy copyOp, FunctionOpInterface funcOp,
+                    IRRewriter &rewriter, Value zero, Value one) {
   rewriter.setInsertionPoint(copyOp.getOperation());
   auto loc = copyOp->getLoc();
   auto source = copyOp.getSource();
@@ -132,27 +111,35 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
   auto targetType = target.getType();
   assert(isa<MemRefType>(sourceType) && isa<MemRefType>(targetType));
 
-  // Allocate a tag buffer for DMA operations
-  auto tagType = MemRefType::get({1}, rewriter.getI32Type());
-  Value tagAlloc = memref::AllocOp::create(rewriter, loc, tagType);
-
-  // Create zero index for tag access
-  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  SmallVector<Value, 1> tagIndex = {zero};
-
   MemRefType sourceMemRefType = cast<MemRefType>(sourceType);
   MemRefType targetMemRefType = cast<MemRefType>(targetType);
   int64_t rank = sourceMemRefType.getRank();
-  SmallVector<Value, 8> zeroIndices(rank, getI32Const(loc, rewriter, 0));
-  SmallVector<Value, 8> tileIndices(rank, getI32Const(loc, rewriter, 0));
-  SmallVector<Value, 2> zeroIndex(1, getI32Const(loc, rewriter, 0));
 
   // Extract strides and offsets for source and target memrefs
   SmallVector<int64_t, 4> sourceStrides, targetStrides;
   int64_t srcOffset, targetOffset;
+
   if (failed(sourceMemRefType.getStridesAndOffset(sourceStrides, srcOffset)) ||
       failed(targetMemRefType.getStridesAndOffset(targetStrides, targetOffset)))
     return;
+
+  int sourceMemSpace, targetMemSpace;
+  // Unknown memory space - don't lower
+  if (!(isMemorySpaceIntTypeOrDefault(sourceMemRefType, sourceMemSpace)) ||
+      !(isMemorySpaceIntTypeOrDefault(targetMemRefType, targetMemSpace)))
+    return;
+
+  // All early returns above are before any IR modification.
+  // Allocate a tag buffer for DMA operations
+  auto tagType = MemRefType::get({1}, rewriter.getI32Type());
+  Value tagAlloc = memref::AllocOp::create(rewriter, loc, tagType);
+
+  // Reuse shared constants for tag and index access
+  SmallVector<Value, 1> tagIndex = {zero};
+
+  SmallVector<Value, 8> zeroIndices(rank, zero);
+  SmallVector<Value, 8> tileIndices(rank, zero);
+  SmallVector<Value, 2> zeroIndex(1, zero);
 
   auto emitDMA = [loc, &rewriter, &tagAlloc, &tagIndex](
                      Value src, Value dst, SmallVector<Value, 8> srcIndices,
@@ -162,12 +149,6 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
                                numElements, tagAlloc, tagIndex, stride, width);
     memref::DmaWaitOp::create(rewriter, loc, tagAlloc, tagIndex, numElements);
   };
-
-  int sourceMemSpace, targetMemSpace;
-  // Unknown memory space - don't lower
-  if (!(isMemorySpaceIntTypeOrDefault(sourceMemRefType, sourceMemSpace)) ||
-      !(isMemorySpaceIntTypeOrDefault(targetMemRefType, targetMemSpace)))
-    return;
 
   if ((rank > 2) && (!isContiguousMemrefType(sourceMemRefType) ||
                      !isContiguousMemrefType(targetMemRefType))) {
@@ -179,13 +160,8 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
     // Create inner loops for the remaining (rank - 2) dimensions
     for (int64_t i = 0; i < rank - 2; ++i) {
       curLoop = scf::ForOp::create(
-          rewriter, loc, getI32Const(loc, rewriter, 0),
-          getI32Const(
-              loc, rewriter,
-              isa<MemRefType>(copyOp.getSource().getType())
-                  ? cast<MemRefType>(copyOp.getSource().getType()).getDimSize(i)
-                  : sourceMemRefType.getDimSize(i)),
-          getI32Const(loc, rewriter, 1));
+          rewriter, loc, zero,
+          getI32Const(loc, rewriter, sourceMemRefType.getDimSize(i)), one);
       rewriter.setInsertionPointToStart(curLoop.getBody());
       loopIvs.push_back(curLoop.getInductionVar());
 
@@ -217,9 +193,11 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 
       auto srcStride = memref::SubViewOp::create(rewriter, loc, source, offsets,
                                                  sizes, strides);
-      int64_t stride, width;
-      assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
-             isStridedMultiDimMemrefType(targetMemRefType, stride, width));
+      int64_t stride = 0, width = 0;
+      bool found =
+          isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
+          isStridedMultiDimMemrefType(targetMemRefType, stride, width);
+      assert(found && "Expected at least one strided multi-dim memref");
       emitDMA(srcStride, target, zeroIndices, tileIndices, numElementsVal,
               getI32Const(loc, rewriter, stride),
               getI32Const(loc, rewriter, width));
@@ -233,9 +211,11 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 
       auto dstStride = memref::SubViewOp::create(rewriter, loc, target, offsets,
                                                  sizes, strides);
-      int64_t stride, width;
-      assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
-             isStridedMultiDimMemrefType(targetMemRefType, stride, width));
+      int64_t stride = 0, width = 0;
+      bool found =
+          isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
+          isStridedMultiDimMemrefType(targetMemRefType, stride, width);
+      assert(found && "Expected at least one strided multi-dim memref");
       emitDMA(source, dstStride, tileIndices, zeroIndices, numElementsVal,
               getI32Const(loc, rewriter, stride),
               getI32Const(loc, rewriter, width));
@@ -255,9 +235,11 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
                                  tagAlloc, zeroIndex);
       memref::DmaWaitOp::create(rewriter, loc, tagAlloc, tagIndex, numElements);
     } else {
-      int64_t stride, width;
-      assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
-             isStridedMultiDimMemrefType(targetMemRefType, stride, width));
+      int64_t stride = 0, width = 0;
+      bool found =
+          isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
+          isStridedMultiDimMemrefType(targetMemRefType, stride, width);
+      assert(found && "Expected at least one strided multi-dim memref");
       memref::DmaStartOp::create(rewriter, loc, copyOp.getSource(), zeroIndices,
                                  copyOp.getTarget(), zeroIndices, numElements,
                                  tagAlloc, zeroIndex,
@@ -277,15 +259,39 @@ void replaceWithDMA(mlir::hexagonmem::CopyOp copyOp, FunctionOpInterface funcOp,
 void HexmemCpyToDMAPass::runOnOperation() {
   auto funcOp = getOperation();
   IRRewriter rewriter(&getContext());
-  CandidatesTy candidates;
+  SmallVector<Operation *> candidates;
 
   funcOp.walk([&](hexagonmem::CopyOp op) {
-    populateCandidate(op, candidates);
+    if (isValidCandidate(op)) {
+      DBG("selected candidate: " << op);
+      candidates.push_back(op.getOperation());
+    }
     return WalkResult::advance();
   });
 
-  for (auto op : candidates) {
-    replaceWithDMA(op, funcOp, rewriter);
+  funcOp.walk([&](memref::CopyOp op) {
+    if (isValidCandidate(op)) {
+      DBG("selected candidate: " << op);
+      candidates.push_back(op.getOperation());
+    }
+    return WalkResult::advance();
+  });
+
+  if (candidates.empty())
+    return;
+
+  // Create shared constants at the function entry, reused across all DMA
+  // replacements to avoid duplicate arith.constant ops.
+  auto loc = funcOp.getLoc();
+  rewriter.setInsertionPointToStart(&funcOp.getFunctionBody().front());
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+  for (auto *op : candidates) {
+    if (auto hexOp = dyn_cast<hexagonmem::CopyOp>(op))
+      replaceWithDMA(hexOp, funcOp, rewriter, zero, one);
+    else if (auto memOp = dyn_cast<memref::CopyOp>(op))
+      replaceWithDMA(memOp, funcOp, rewriter, zero, one);
   }
 }
 } // namespace

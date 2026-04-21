@@ -21,6 +21,36 @@ func.func @hexagon_memcpy(%arg0: memref<256x256xf32, strided<[256, 1]>>, %arg1: 
   return
 }
 
+// Test memref.copy between DDR and VTCM is converted to DMA ops
+// CHECK1-LABEL: func.func @memref_copy_ddr_to_vtcm
+// CHECK1: %[[DMA_ALLOC:.*]] = memref.alloc() : memref<1xi32>
+// CHECK1: %[[C65536:.*]] = arith.constant 65536 : index
+// CHECK1: memref.dma_start %arg0[%{{.*}}, %{{.*}}], %arg1[%{{.*}}, %{{.*}}], %[[C65536]], %[[DMA_ALLOC]][%{{.*}}] : memref<256x256xf32>, memref<256x256xf32, 1>, memref<1xi32>
+// CHECK1: memref.dma_wait %[[DMA_ALLOC]][%{{.*}}], %[[C65536]] : memref<1xi32>
+// CHECK1: %[[DMA_ALLOC2:.*]] = memref.alloc() : memref<1xi32>
+// CHECK1: %[[C65536_2:.*]] = arith.constant 65536 : index
+// CHECK1: memref.dma_start %arg1[%{{.*}}, %{{.*}}], %arg2[%{{.*}}, %{{.*}}], %[[C65536_2]], %[[DMA_ALLOC2]][%{{.*}}] : memref<256x256xf32, 1>, memref<256x256xf32>, memref<1xi32>
+// CHECK1: memref.dma_wait %[[DMA_ALLOC2]][%{{.*}}], %[[C65536_2]] : memref<1xi32>
+// CHECK1: return
+
+func.func @memref_copy_ddr_to_vtcm(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32, 1>, %arg2: memref<256x256xf32>) {
+  memref.copy %arg0, %arg1 : memref<256x256xf32> to memref<256x256xf32, 1>
+  memref.copy %arg1, %arg2 : memref<256x256xf32, 1> to memref<256x256xf32>
+  return
+}
+
+// Test memref.copy between same memory space is NOT converted to DMA
+// CHECK1-LABEL: func.func @memref_copy_same_memspace
+// CHECK1-NOT: memref.dma_start
+// CHECK1-NOT: memref.dma_wait
+// CHECK1: memref.copy
+// CHECK1: return
+
+func.func @memref_copy_same_memspace(%arg0: memref<256x256xf32>, %arg1: memref<256x256xf32>) {
+  memref.copy %arg0, %arg1 : memref<256x256xf32> to memref<256x256xf32>
+  return
+}
+
 // Tests to ensure that non-contiguous copies to/from same memspace are not replaced with DMA calls and instead gets lowered to `memrefCopy`;
 // CHECK2-LABEL: llvm.func @subview
 // CHECK2-NOT: memref.dma_start

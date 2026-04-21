@@ -194,7 +194,7 @@ def FormVirtualThreads : Pass<"form-virtual-threads", "func::FuncOp"> {
 
 def HexmemCpyToDMA :
     InterfacePass<"hexmem-cpy-to-dma", "mlir::FunctionOpInterface"> {
-  let summary = "Pass to rewrite some hexagonmem.copy ops to memref.dma ops";
+  let summary = "Pass to rewrite hexagonmem.copy and memref.copy ops to memref.dma ops";
 
   let constructor =
        "hexagon::createHexmemCpyToDMAPass()";
