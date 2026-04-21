@@ -540,7 +540,7 @@ class HexagonExecutor:
             ),
             # Run the kernel using run_main_on_hexagon
             (
-                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; export ADSP_LIBRARY_PATH={}:/vendor/lib/rfsa/adsp/ ; ./run_main_on_hexagon 3 {}'".format(
+                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; export ADSP_LIBRARY_PATH=\"{};/vendor/lib/rfsa/adsp/\" ; ./run_main_on_hexagon 3 {}'".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     self.device_path,
@@ -722,8 +722,7 @@ class HexagonExecutor:
                     self.config.env_vars["HEXAGON_TOOLS"], SIM_Q6SS_PATH
                 )
             ),
-            (
-                "{} -mv{} \
+            ("{} -mv{} \
                 --usefs={}/../Tools/target/hexagon/lib/v{}/G0/pic \
                 --simulated_returnval \
                 --cosim_file {} \
@@ -732,8 +731,7 @@ class HexagonExecutor:
                 {}/rtos/qurt/computev{}/sdksim_bin/runelf.pbn -- \
                 {}/libs/run_main_on_hexagon/ship/hexagon_toolv87_v{}/run_main_on_hexagon_sim \
                 stack_size=0x400000 -- \
-                {}"
-            ).format(
+                {}").format(
                 self.config.HEX_TOOLS["hexagon-sim"],
                 self.config.Q6_VERSION,
                 self.config.env_vars["HEXAGON_TOOLS"],
