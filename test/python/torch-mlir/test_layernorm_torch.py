@@ -34,7 +34,8 @@ class LayerNorm(nn.Module):
 @pytest.mark.parametrize(
     "enablelwp, enableetm",
     [
-        (False, False)
+        # (False, False),
+        (True, False)
     ],
 )
 def test_layernorm_torch(enablelwp, enableetm):

@@ -87,6 +87,10 @@ Examples:
   # Combine explicit and generic options
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
       --enable-multi-threading --option enableLWP=true
+
+  # Enable pyetm profiling
+  python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
+      --enable_etm
         """,
     )
 
@@ -106,6 +110,12 @@ Examples:
     parser.add_argument(
         "--validate_result",
         help="To extract and print perf report",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--enable_etm",
+        help="To enable pyetm profiling",
         action="store_true",
     )
 
@@ -177,6 +187,7 @@ def run_mlir():
         args.validate_result,
         options,
         args.func_name,
+        args.enable_etm,
     )
 
 

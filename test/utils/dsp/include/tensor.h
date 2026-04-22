@@ -24,6 +24,7 @@
 
 enum MemType { VTCM, HEAP };
 enum DataType {
+  Bool = 0,  // bool
   Half = 1,  // f16
   Float = 2, // f32
   Double = 3,
@@ -37,7 +38,9 @@ enum DataType {
 };
 
 template <typename T> int32_t get_dtype() {
-  if (std::is_same<T, _Float16>::value) {
+  if (std::is_same<T, bool>::value) {
+    return DataType::Bool;
+  } else if (std::is_same<T, _Float16>::value) {
     return DataType::Half;
   } else if (std::is_same<T, float>::value) {
     return DataType::Float;

@@ -25,4 +25,5 @@ def test_mlir_suite():
         current_file_dir=current_file_dir,
         options_overrides=None,
         validate_result=True,
+        enable_etm=False,
     )

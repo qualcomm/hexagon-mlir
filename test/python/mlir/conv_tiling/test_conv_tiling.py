@@ -25,8 +25,7 @@ def test_mlir_suite():
         current_file_dir=current_file_dir,
         options_overrides={
             "enableConvTiling": True,
-            "convTilingFactor": 32,
-            "convTileOCDim": True,
+            "convTileSizes": "3:32",
             "enableHexagonMemCopyToDMA": True,
         },
         validate_result=False,

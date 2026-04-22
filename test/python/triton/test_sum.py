@@ -19,13 +19,12 @@ triton.runtime.driver.set_active(HexagonDriver())
 
 ATOL = 1e-2
 
-torch.manual_seed(42)  # Setting a seed for reproducibility.
-
 
 @pytest.mark.parametrize("num_elements", [1024 * 1024])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_vec_add(num_elements, dtype):
-    x = torch.randn(num_elements, dtype=dtype)
+    g = torch.Generator().manual_seed(42)
+    x = torch.randn(num_elements, dtype=dtype, generator=g)
     output = torch.empty((1), dtype=dtype)
 
     @triton.jit

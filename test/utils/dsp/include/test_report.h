@@ -51,12 +51,8 @@ private:
 
 public:
   TestReport(string n, double p, string u, Result r = Result::Unknown,
-             string path = "")
-      : name(n), perf(p), units(u), result(r) {
-    if (path.empty()) {
-      save_path = "perf.txt";
-    }
-  }
+             string path = "/data/local/tmp/perf.txt")
+      : name(n), perf(p), units(u), result(r), save_path(path) {}
   void print() { stringify_report(stdout); }
   int save() {
     FILE *fp = fopen(save_path.c_str(), "w");
