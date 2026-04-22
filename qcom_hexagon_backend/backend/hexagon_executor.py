@@ -408,7 +408,9 @@ class HexagonExecutor:
             f"{self.device_path}/{os.path.basename(fname)}" for fname in output_paths
         ]
 
-        lwp_device_path = f"{self.device_path}/lwp.json"
+        # WriteLWPOutput() in all wrappers writes to /data/local/tmp/lwp.json;
+        # pull from that fixed path regardless of where kernel artifacts live.
+        lwp_device_path = "/data/local/tmp/lwp.json"
         lwp_local_path = os.path.join(local_dir, "lwp.json")
 
         etm_local_dir = os.path.join(local_dir, "etm_pyetm")
@@ -576,7 +578,7 @@ class HexagonExecutor:
             (
                 "adb {} -s {} pull {} {} && "
                 "cp {} /tmp/lwp.json && "
-                "cp {}/*.mlirbc /tmp/initial-linalg.mlir || echo 'No MLIRBC files to copy' ".format(
+                "(cp {}/*.mlirbc /tmp/initial-linalg.mlir || echo 'No MLIRBC files to copy')".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     lwp_device_path,

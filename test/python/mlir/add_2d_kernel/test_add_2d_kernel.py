@@ -23,7 +23,7 @@ def test_mlir_suite():
     run_mlir_kernel_test(
         kernel_name=kernel_name,
         current_file_dir=current_file_dir,
-        options_overrides=None,
+        options_overrides={"enableLWP": True},
         validate_result=True,
         enable_etm=False,
     )

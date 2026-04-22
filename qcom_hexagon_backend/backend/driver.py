@@ -55,6 +55,7 @@ def getHexagonLauncherClass(device_type="dsp"):
             compiled_enable_threaded_dispatch = (
                 pack_metadata[11] if len(pack_metadata) > 11 else None
             )
+            compiled_enable_lwp = pack_metadata[12] if len(pack_metadata) > 12 else None
             num_fixed_args = 9
             inputs_with_constants = list(args[num_fixed_args:])
             inputs = [
@@ -81,6 +82,7 @@ def getHexagonLauncherClass(device_type="dsp"):
                 compiled_scratch=compiled_scratch,
                 compiled_enable_multithreading=compiled_enable_multithreading,
                 compiled_enable_threaded_dispatch=compiled_enable_threaded_dispatch,
+                compiled_enable_lwp=compiled_enable_lwp,
                 runtime_options=kwargs,
             )
             # TODO: There seems to be no way to propogate the call returns upward, because

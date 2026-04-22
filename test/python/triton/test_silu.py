@@ -22,9 +22,16 @@ ATOL = 1e-2
 
 
 @pytest.mark.parametrize("num_elements", [16384])
-@pytest.mark.parametrize("num_threads", [1, 4])
+@pytest.mark.parametrize(
+    "num_threads,enable_mt,enablelwp",
+    [
+        (1, False, True),  # single-threaded + LWP; MT disabled (LWP constraint)
+        (1, True, False),  # single-threaded + MT optimization; LWP disabled
+        (4, False, False),  # multi-threaded; neither MT nor LWP
+    ],
+)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_silu(num_elements, num_threads, dtype):
+def test_silu(num_elements, num_threads, dtype, enable_mt, enablelwp):
     print(
         f"Running with num-elements: {num_elements}, "
         f"num-triton-thread: {num_threads}, dtype: {dtype}"
@@ -54,10 +61,11 @@ def test_silu(num_elements, num_threads, dtype):
         x,
         output,
         BLOCK_SIZE=block_size,
-        enableMultiThreading=true_if_single_threaded,
+        enableMultiThreading=enable_mt,
         enableVTCMTiling=true_if_single_threaded,
         enableConvertToHexagonmem=true_if_single_threaded,
         enableHexagonmemCopyToDMA=true_if_single_threaded,
+        enableLWP=enablelwp,
     )
 
     reference = torch.nn.functional.silu(x)

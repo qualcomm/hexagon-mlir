@@ -116,6 +116,7 @@ int main() {{
 {benchmarking_and_reporting}
 {update_tensor}
 {write_to_file_calls}
+{lwp}
 {cleanup_str}
 return 0;
 }}
@@ -166,6 +167,9 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
         assert not (
             self.multithreading_enabled and options["enableLWP"]
         ), "LWP is not supported with multithreading. Please disable LWP."
+        assert not (
+            options["enableMultiThreading"] and options["enableLWP"]
+        ), "LWP is not supported with enableMultiThreading=True (FormVirtualThreadsPass conflict). Please disable one."
         super().__init__(
             input_profs,
             iterations,
@@ -511,6 +515,7 @@ FuncInput<int8_t, 1> *pVtcmScratch = &wrVtcmScratch;
             ),
             update_tensor=self.generate_update_tensor_calls(),
             setup_thread_pool=setup_thread_pool,
+            lwp=self.generate_lwp_call(),
             cleanup_str=self.generate_cleanup(),
         )
         return code_body
@@ -540,6 +545,7 @@ class TritonHexagonLauncher(HexagonLauncherBase):
         compiled_scratch: int | str | None = None,
         compiled_enable_multithreading: bool | str | None = None,
         compiled_enable_threaded_dispatch: bool | str | None = None,
+        compiled_enable_lwp: bool | str | None = None,
         runtime_options: dict | None = None,
     ) -> list[Tensor]:
         # Getting the input metadata for effective wrapper codegen.
@@ -574,6 +580,11 @@ class TritonHexagonLauncher(HexagonLauncherBase):
                 options["enableThreadedDispatch"] = bool(
                     compiled_enable_threaded_dispatch
                 )
+        if compiled_enable_lwp is not None:
+            if isinstance(compiled_enable_lwp, str):
+                options["enableLWP"] = compiled_enable_lwp.lower() == "true"
+            else:
+                options["enableLWP"] = bool(compiled_enable_lwp)
         if runtime_options:
             # Use the union of cached option keys and current HexagonOptions fields
             # so that newly added flags (e.g. enableThreadedDispatch) are never silently
@@ -615,7 +626,7 @@ class TritonHexagonLauncher(HexagonLauncherBase):
         # threads (1:1 with closures) and VTCM is sliced per flat_pid.  When
         # prod(grid) > num_threads, closures with flat_pid >= num_threads
         # would access VTCM out-of-bounds.  Full oversubscription support
-        # (cap threads + loop) is deferred.
+        # (cap threads + loop is deferred.
         if options["scratch"] > 0 and prod(launch_grid) > options["num_threads"]:
             raise ValueError(
                 f"VTCM scratch with oversubscription "

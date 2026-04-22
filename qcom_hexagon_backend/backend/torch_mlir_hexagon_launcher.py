@@ -117,7 +117,7 @@ class TorchMlirHexagonWrapperGenerator(HexagonWrapperGenerator):
                 file_name, exec_dir
             ),
             update_tensor=self.generate_update_tensor_calls(),
-            lwp=self.generate_lwp_call(exec_dir),
+            lwp=self.generate_lwp_call(),
         )
 
         return self.common_strings.code_string.format(

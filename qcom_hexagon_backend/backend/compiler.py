@@ -109,6 +109,7 @@ def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
     metadata["scratch"] = options_map["scratch"]
     metadata["enableMultiThreading"] = options_map["enableMultiThreading"]
     metadata["enableThreadedDispatch"] = options_map["enableThreadedDispatch"]
+    metadata["enableLWP"] = options_map["enableLWP"]
 
     # TODO: The lowering pipeline needs to be refactored similar to other Triton backends to
     # have a dynamic pipeline filtered by options with each pass represented by a pybind function.
@@ -282,6 +283,7 @@ class HexagonBackend(BaseBackend):
             metadata.scratch,
             metadata.enableMultiThreading,
             metadata.enableThreadedDispatch,
+            metadata.enableLWP,
         )
 
     def get_module_map(self) -> Dict[str, ModuleType]:

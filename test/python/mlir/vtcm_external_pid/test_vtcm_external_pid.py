@@ -186,9 +186,10 @@ def test_vtcm_external_pid(grid):
 
           HAP_compute_res_release(vtcmContextID);
 
-          WriteLWPOutput("/vendor/bin/lwp.json");
           TestReport tr("vtcm_external_pid", avg_cycles, "microseconds", result);
           tr.save();
+
+          WriteLWPOutput("/data/local/tmp/lwp.json");
 
           return 0;
         }}
@@ -223,6 +224,7 @@ def test_vtcm_external_pid(grid):
 
         options = HexagonOptions().__dict__.copy()
         options["enableConvertToHexagonmem"] = False
+        options["enableLWP"] = True
         options = {k: str(v) for k, v in options.items()}
 
         MLIRHexagonLauncher.run_mlir_with_custom_cpp_wrapper(
