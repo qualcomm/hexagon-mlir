@@ -21,7 +21,7 @@
 
 #define DEBUG_TYPE "hexmem-cpy-to-dma"
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
-#define DBG(X) (DBGS() << X << "\n")
+#define DBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 using namespace mlir;
 using namespace hexagon;
