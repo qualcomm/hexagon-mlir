@@ -1,3 +1,12 @@
+# ===- test_fdiv_sqrt_to_rsqrt_hexagon_routines.py --------------------------===
+#
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+# ===------------------------------------------------------------------------===
+
 import pytest
 import os
 import sys
