@@ -28,6 +28,7 @@
 #include "hexagon/Conversion/HexKLToLLVM/Passes.h"
 #include "hexagon/Conversion/HexagonMemToLLVM/Passes.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
+#include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexKL/Transforms/BufferizableOpInterfaceImpl.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
@@ -46,6 +47,7 @@ int main(int argc, char **argv) {
   mlir::registerAllPasses();             // TODO: restrict
   mlir::registerAllExtensions(registry); // TODO: restrict
 
+  registry.insert<mlir::crouton::CroutonDialect>();
   registry.insert<mlir::ttx::TTXDialect>();
   registry.insert<mlir::tm_tensor::TmTensorDialect>();
   registry.insert<mlir::tptr::HexagonTPtrDialect>();
@@ -62,6 +64,7 @@ int main(int argc, char **argv) {
 
   mlir::hexagon::registerHexagonAddFastMathPass();
   mlir::hexagon::registerHexagonFusionPass();
+  mlir::hexagon::registerHexagonExtendPack();
   mlir::hexagon::registerEraseUnusedLinalgOperands();
   mlir::hexagon::registerReduceContractionRankPass();
   mlir::hexagon::registerHoistScalarOpsPass();
@@ -98,17 +101,34 @@ int main(int argc, char **argv) {
   mlir::hexagon::registerConvertLayoutPass();
   mlir::hexagon::registerFastInversePass();
   mlir::hexagon::registerConvertZeroSizeMemref();
+  mlir::hexagon::registerLowerPack();
+  mlir::hexagon::registerSplitReduceGenericPass();
+  mlir::hexagon::registerEraseVectorToTensorWritebackPass();
+  mlir::hexagon::registerSeedLayoutConversions();
+  mlir::hexagon::registerForceHVXCroutonPass();
   mlir::hexagon::registerSmallExponentToMultiplyPass();
+  mlir::hexagon::registerPreprocessTiledConv2DPass();
   mlir::hexagon::registerFormSCFThreadsPass();
   mlir::hexagon::registerFormVirtualThreadsPass();
   mlir::hexagon::registerFormAsyncThreadsPass();
+  mlir::hexagon::registerInsertScratchArgPass();
   mlir::hexagon::registerMemoryOffsetsPass();
   mlir::hexagon::registerCopyCanonicalizationPass();
   mlir::hexagon::registerHexagonLWPPass();
   mlir::hexagon::registerHexagonLowerTmTensorPass();
   mlir::hexagon::registerLowerTTXPass();
   mlir::hexagon::registerLowerTPtrPass();
+  mlir::hexagon::registerLowerHexKLMatmulToMacroPass();
+  mlir::hexagon::registerFoldCastsIntoMatmulPass();
+  mlir::hexagon::registerPreprocessWeightsForHMXPass();
   mlir::hexagon::registerFoldMulFByZeroPass();
+  mlir::hexagon::registerFoldResourceTransposePass();
+  mlir::hexagon::registerFoldPackUnpackConstantsPass();
+  mlir::hexagon::registerEliminateRedundantUnpackPackPass();
+  mlir::hexagon::registerConversionToFp16Pass();
+  mlir::hexagon::registerOptimizeExtfTruncfOpPass();
+  mlir::hexagon::registerDivToMulOptimizationPass();
+  mlir::hexagon::registerSCFLoopUnrollPass();
 
   // Register all external models.
   mlir::hexkl::registerBufferizableOpInterfaceExternalModels(registry);

@@ -1,0 +1,132 @@
+diff --git a/include/triton-shared/AnalysisStructured/PtrAnalysis.h b/include/triton-shared/AnalysisStructured/PtrAnalysis.h
+index 306a7b5..4feff20 100644
+--- a/include/triton-shared/AnalysisStructured/PtrAnalysis.h
++++ b/include/triton-shared/AnalysisStructured/PtrAnalysis.h
+@@ -238,6 +238,18 @@ public:
+   LogicalResult visitOperandRem(arith::RemSIOp mulOp, PtrState &state,
+                                 const Location loc, OpBuilder &builder);
+ 
++  // Operand is the result of arith.minsi. Process both arguments.
++  // For bounds clamping operations like tl.minimum(indices, max_val),
++  // we propagate the state from the non-constant operand.
++  LogicalResult visitOperandMinSI(arith::MinSIOp minOp, PtrState &state,
++                                  const Location loc, OpBuilder &builder);
++
++  // Operand is the result of arith.maxsi. Process both arguments.
++  // For bounds clamping operations like tl.maximum(indices, min_val),
++  // we propagate the state from the non-constant operand.
++  LogicalResult visitOperandMaxSI(arith::MaxSIOp maxOp, PtrState &state,
++                                  const Location loc, OpBuilder &builder);
++
+   // Operand is the result of make_range.
+   // Main assumptions:
+   //  start, end, and shape are all statically known
+diff --git a/lib/AnalysisStructured/PtrAnalysis.cpp b/lib/AnalysisStructured/PtrAnalysis.cpp
+index 09a152d..3768946 100644
+--- a/lib/AnalysisStructured/PtrAnalysis.cpp
++++ b/lib/AnalysisStructured/PtrAnalysis.cpp
+@@ -892,6 +892,93 @@ LogicalResult PtrAnalysis::visitOperandExtSI(arith::ExtSIOp extOp,
+   return visitOperand(extOp.getIn(), state, loc, builder);
+ }
+ 
++/// Local patch to QC.
++LogicalResult PtrAnalysis::visitOperandMinSI(arith::MinSIOp minOp,
++                                             PtrState &state,
++                                             const Location loc,
++                                             OpBuilder &builder) {
++  assert(state.isEmpty());
++
++  // For min/max operations used in bounds clamping (e.g., tl.minimum(indices, max_val)),
++  // we want to propagate the state from the operand that contains the actual indices.
++  // Typically, one operand is a constant or scalar bound, and the other is the tensor of indices.
++
++  PtrState lhsState;
++  if (visitOperand(minOp.getLhs(), lhsState, loc, builder).failed()) {
++    return failure();
++  }
++
++  PtrState rhsState;
++  if (visitOperand(minOp.getRhs(), rhsState, loc, builder).failed()) {
++    return failure();
++  }
++
++  // If one operand is a scalar and the other is a tensor, use the tensor's state
++  if (lhsState.scalar && !rhsState.scalar && rhsState.getRank() > 0) {
++    state = rhsState;
++    return success();
++  } else if (rhsState.scalar && !lhsState.scalar && lhsState.getRank() > 0) {
++    state = lhsState;
++    return success();
++  }
++
++  // If both are tensors or both are scalars, prefer the one that's not structured
++  // (for gather/scatter patterns) or just use lhs as default
++  if (!lhsState.isStructured() && rhsState.isStructured()) {
++    state = lhsState;
++  } else if (lhsState.isStructured() && !rhsState.isStructured()) {
++    state = rhsState;
++  } else {
++    // Default: use lhs state
++    state = lhsState;
++  }
++
++  return success();
++}
++
++LogicalResult PtrAnalysis::visitOperandMaxSI(arith::MaxSIOp maxOp,
++                                             PtrState &state,
++                                             const Location loc,
++                                             OpBuilder &builder) {
++  assert(state.isEmpty());
++
++  // For min/max operations used in bounds clamping (e.g., tl.maximum(indices, min_val)),
++  // we want to propagate the state from the operand that contains the actual indices.
++  // Typically, one operand is a constant or scalar bound, and the other is the tensor of indices.
++
++  PtrState lhsState;
++  if (visitOperand(maxOp.getLhs(), lhsState, loc, builder).failed()) {
++    return failure();
++  }
++
++  PtrState rhsState;
++  if (visitOperand(maxOp.getRhs(), rhsState, loc, builder).failed()) {
++    return failure();
++  }
++
++  // If one operand is a scalar and the other is a tensor, use the tensor's state
++  if (lhsState.scalar && !rhsState.scalar && rhsState.getRank() > 0) {
++    state = rhsState;
++    return success();
++  } else if (rhsState.scalar && !lhsState.scalar && lhsState.getRank() > 0) {
++    state = lhsState;
++    return success();
++  }
++
++  // If both are tensors or both are scalars, prefer the one that's not structured
++  // (for gather/scatter patterns) or just use lhs as default
++  if (!lhsState.isStructured() && rhsState.isStructured()) {
++    state = lhsState;
++  } else if (lhsState.isStructured() && !rhsState.isStructured()) {
++    state = rhsState;
++  } else {
++    // Default: use lhs state
++    state = lhsState;
++  }
++
++  return success();
++}
++
+ LogicalResult PtrAnalysis::visitOperandMakeRange(triton::MakeRangeOp rangeOp,
+                                                  PtrState &state, Location loc,
+                                                  OpBuilder &builder) {
+@@ -1269,6 +1356,10 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
+     return visitOperandRem(op, state, loc, builder);
+   } else if (auto op = operand.getDefiningOp<arith::ExtSIOp>()) {
+     return visitOperandExtSI(op, state, loc, builder);
++  } else if (auto op = operand.getDefiningOp<arith::MinSIOp>()) {
++    return visitOperandMinSI(op, state, loc, builder);
++  } else if (auto op = operand.getDefiningOp<arith::MaxSIOp>()) {
++    return visitOperandMaxSI(op, state, loc, builder);
+   } else if (auto op = operand.getDefiningOp<scf::ForOp>()) {
+     return visitOperandForOp(op, operand, state, loc, builder);
+   } else if (!operand.getDefiningOp()) {

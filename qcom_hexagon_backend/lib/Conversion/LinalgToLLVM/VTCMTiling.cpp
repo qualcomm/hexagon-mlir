@@ -133,8 +133,8 @@ Value copyToMemorySpace(IRRewriter &rewriter, Value rankedTensor, Location loc,
   auto sourceType = ::llvm::cast<RankedTensorType>(rankedTensor.getType());
 
   rewriter.setInsertionPointAfterValue(rankedTensor);
-  auto copyOp = rewriter.create<bufferization::AllocTensorOp>(
-      loc, sourceType, dynamicSizes, rankedTensor);
+  auto copyOp = bufferization::AllocTensorOp::create(
+      rewriter, loc, sourceType, dynamicSizes, rankedTensor);
   copyOp.setMemorySpaceAttr(
       rewriter.getIntegerAttr(rewriter.getI64Type(), memorySpace));
   return copyOp.getResult();
@@ -157,8 +157,8 @@ GenericOp getGenericWithNewOperands(IRRewriter &rewriter, GenericOp op,
                                     SmallVector<Value> &newIns,
                                     SmallVector<Value> &newOuts) {
   rewriter.setInsertionPointAfter(op);
-  GenericOp newOp = rewriter.create<GenericOp>(
-      op.getLoc(), op.getResultTypes(), newIns, newOuts,
+  GenericOp newOp = GenericOp::create(
+      rewriter, op.getLoc(), op.getResultTypes(), newIns, newOuts,
       op.getIndexingMapsArray(), op.getIteratorTypesArray(),
       /*bodyBuild=*/nullptr);
   rewriter.inlineRegionBefore(op->getRegion(0), newOp.getRegion(),
@@ -236,7 +236,7 @@ void VTCMTilingPass::runOnOperation() {
     IRRewriter rewriter(op.getContext());
     SmallVector<bool> prefetch(op.getNumOperands(), false);
     FailureOr<linalg::LinalgTilingOptions> vtcmTilingOptions =
-        getVTCMTilingOptions(op, userProvidedTileSizes, prefetch);
+        getVTCMTilingOptions(op, userProvidedTileSizes, prefetch, vtcmBudget);
     if (failed(vtcmTilingOptions))
       return WalkResult::advance();
 

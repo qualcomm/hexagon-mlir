@@ -76,7 +76,7 @@ struct DBSchedule {
 void insertDMAWaits(Location loc, IRRewriter &rewriter, ArrayRef<Value> tags,
                     ArrayRef<Value> tagIndex, ArrayRef<Value> numElements) {
   for (int i = 0; i < tags.size(); ++i) {
-    rewriter.create<memref::DmaWaitOp>(loc, tags[i], tagIndex, numElements[i]);
+    memref::DmaWaitOp::create(rewriter, loc, tags[i], tagIndex, numElements[i]);
   }
 }
 
@@ -117,7 +117,7 @@ void replaceStoreshWithDMA(Location loc, IRRewriter &rewriter,
     rewriter.setInsertionPoint(copy);
     bool created = createDMAStartOp(loc, rewriter, copy.getSource(),
                                     copy.getTarget(), tags[i]);
-    rewriter.create<memref::DmaWaitOp>(loc, tags[i], tagIndex, numElements[i]);
+    memref::DmaWaitOp::create(rewriter, loc, tags[i], tagIndex, numElements[i]);
     rewriter.eraseOp(schedule.stores[i]);
   }
 }
@@ -140,7 +140,7 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
 
   // Create tag-index
   rewriter.setInsertionPoint(schedule.prologue);
-  Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
   SmallVector<Value> tagIndex = {zero};
 
   // Generate the num-elements.
@@ -169,14 +169,14 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
   auto tagType = rewriter.getI32Type();
   auto waitMemrefType = MemRefType::get({1}, tagType);
   for (auto i = 0; i < preloads.size(); i++) {
-    Value pingWait = rewriter.create<memref::AllocOp>(loc, waitMemrefType);
-    Value pongWait = rewriter.create<memref::AllocOp>(loc, waitMemrefType);
+    Value pingWait = memref::AllocOp::create(rewriter, loc, waitMemrefType);
+    Value pongWait = memref::AllocOp::create(rewriter, loc, waitMemrefType);
     pingWaits.push_back(pingWait);
     pongWaits.push_back(pongWait);
   }
   for (auto i = 0; i < numStores; ++i) {
-    Value ping = rewriter.create<memref::AllocOp>(loc, waitMemrefType);
-    Value pong = rewriter.create<memref::AllocOp>(loc, waitMemrefType);
+    Value ping = memref::AllocOp::create(rewriter, loc, waitMemrefType);
+    Value pong = memref::AllocOp::create(rewriter, loc, waitMemrefType);
     pingStoreWaits.push_back(ping);
     pongStoreWaits.push_back(pong);
   }
@@ -184,12 +184,12 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
   // Deallocte tags.
   rewriter.setInsertionPointAfter(schedule.kernel);
   for (auto i = 0; i < preloads.size(); i++) {
-    rewriter.create<memref::DeallocOp>(loc, pingWaits[i]);
-    rewriter.create<memref::DeallocOp>(loc, pongWaits[i]);
+    memref::DeallocOp::create(rewriter, loc, pingWaits[i]);
+    memref::DeallocOp::create(rewriter, loc, pongWaits[i]);
   }
   for (auto i = 0; i < numStores; ++i) {
-    rewriter.create<memref::DeallocOp>(loc, pingStoreWaits[i]);
-    rewriter.create<memref::DeallocOp>(loc, pongStoreWaits[i]);
+    memref::DeallocOp::create(rewriter, loc, pingStoreWaits[i]);
+    memref::DeallocOp::create(rewriter, loc, pongStoreWaits[i]);
   }
 
   // Rewrite preloads to dma-starts

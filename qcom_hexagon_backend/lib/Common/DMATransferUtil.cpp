@@ -39,7 +39,7 @@ unsigned getMemorySpace(Type type) {
 }
 
 static Value getI32Const(Location loc, IRRewriter &rewriter, int val) {
-  return rewriter.create<arith::ConstantIndexOp>(loc, val);
+  return arith::ConstantIndexOp::create(rewriter, loc, val);
 }
 } // unnamed namespace
 
@@ -64,7 +64,7 @@ bool createDMAStartOp(Location loc, IRRewriter &rewriter, Value source,
   int64_t rank = sourceMemRefType.getRank();
 
   // Create zero index for tag access
-  Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
   SmallVector<Value, 1> tagIndex = {zero};
 
   SmallVector<Value, 8> zeroIndices(rank, zero);
@@ -89,19 +89,18 @@ bool createDMAStartOp(Location loc, IRRewriter &rewriter, Value source,
   if (isContiguousMemrefType(sourceMemRefType) &&
       isContiguousMemrefType(targetMemRefType)) {
 
-    rewriter.create<memref::DmaStartOp>(loc, source, zeroIndices, target,
-                                        zeroIndices, numElements, tagAlloc,
-                                        zeroIndex);
+    memref::DmaStartOp::create(rewriter, loc, source, zeroIndices, target,
+                               zeroIndices, numElements, tagAlloc, zeroIndex);
     return true;
   }
 
   int64_t stride, width;
   assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
          isStridedMultiDimMemrefType(targetMemRefType, stride, width));
-  rewriter.create<memref::DmaStartOp>(
-      loc, source, zeroIndices, target, zeroIndices, numElements, tagAlloc,
-      zeroIndex, getI32Const(loc, rewriter, stride),
-      getI32Const(loc, rewriter, width));
+  memref::DmaStartOp::create(rewriter, loc, source, zeroIndices, target,
+                             zeroIndices, numElements, tagAlloc, zeroIndex,
+                             getI32Const(loc, rewriter, stride),
+                             getI32Const(loc, rewriter, width));
   return true;
 }
 

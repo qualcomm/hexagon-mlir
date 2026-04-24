@@ -9,6 +9,7 @@
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from math import prod
 from torch import Tensor  # For type annotations
@@ -73,6 +74,7 @@ for (int pid_X = 0; pid_X < {grid[0]}; pid_X++) {{
             closures[flat_pid] = {{{closure_args_string}
                                   {grid[0]}, {grid[1]}, {grid[2]},
                                   pid_X, pid_Y, pid_Z}};
+            {vtcm_setup_str}
         }}
     }}
 }}
@@ -114,6 +116,8 @@ int main() {{
 {benchmarking_and_reporting}
 {update_tensor}
 {write_to_file_calls}
+{lwp}
+{cleanup_str}
 return 0;
 }}
 """
@@ -141,11 +145,31 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
         self.grid = launch_grid
         self.grid_strides = (launch_grid[1] * launch_grid[2], launch_grid[2], 1)
         # Set a flag to check if multithreading codegen should be enabled.
+        # NOTE: For Triton SPMD, grid>1 still needs closure/thread-pool scaffolding
+        # to iterate over pids. Actual execution can be threaded (tm.exec) or
+        # serialized (tm.exec_serial) depending on enableThreadedDispatch.
         self.multithreading_enabled = prod(self.grid) > 1
+        # enableThreadedDispatch controls tm.exec() (real qurt threads) vs
+        # tm.exec_serial() (serial loop over pids). For new code, set
+        # enableThreadedDispatch directly; parse_options() auto-sets it when
+        # scratch > 0.
+        #
+        # enableMultiThreading also enables threaded dispatch for backward
+        # compatibility: before enableThreadedDispatch existed, enableMultiThreading
+        # was the only flag that controlled both FormVirtualThreadsPass (compiler-side
+        # async DMA pipelining) and tm.exec() (launcher-side thread dispatch).
+        # Removing this OR would silently change dispatch behavior for existing
+        # callers of enableMultiThreading=True (e.g. test_double_buffer_gelu.py).
+        self.enable_threaded_spmd = bool(options["enableThreadedDispatch"]) or bool(
+            options["enableMultiThreading"]
+        )
 
         assert not (
             self.multithreading_enabled and options["enableLWP"]
         ), "LWP is not supported with multithreading. Please disable LWP."
+        assert not (
+            options["enableMultiThreading"] and options["enableLWP"]
+        ), "LWP is not supported with enableMultiThreading=True (FormVirtualThreadsPass conflict). Please disable one."
         super().__init__(
             input_profs,
             iterations,
@@ -154,6 +178,55 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
             TritonWrapperGeneratorStrings(),
             options,
         )
+        self.scratch = options["scratch"]
+        self._init_vtcm_resources()
+
+    def _init_vtcm_resources(self):
+        """Compute per-instance VTCM scratch sizing.
+
+        Only computes vtcm_per_instance_bytes (the aligned per-thread
+        slice).  Total VTCM required is computed at code-gen time as
+        vtcm_per_instance_bytes * prod(grid), since an oversubscription
+        guard in _exec_kernel guarantees prod(grid) <= num_threads.
+        Subclasses may override to change the alignment or add
+        additional validation.
+        """
+        _vtcm_alignment = 2048
+        if self.scratch == 0:
+            self.vtcm_per_instance_bytes = 0
+        else:
+            self.vtcm_per_instance_bytes = self.scratch & ~(_vtcm_alignment - 1)
+            if self.vtcm_per_instance_bytes <= 0:
+                raise ValueError(
+                    f"Per-instance VTCM scratch is zero after alignment "
+                    f"(scratch={self.scratch}, alignment={_vtcm_alignment}). "
+                    f"Increase scratch size."
+                )
+
+    def _vtcm_signature_arg(self):
+        if not self.scratch:
+            return ""
+        # When output_profs is empty the kernel has no return-value profiling
+        # and the VTCM buffer is passed directly as a MemRefDescriptor.
+        # When output_profs is non-empty the calling convention wraps inputs in
+        # FuncInput<> structs and passes a void* to the wrapper struct instead.
+        if len(self.output_profs) == 0:
+            return ", int8_t *, int8_t *, int64_t, int64_t, int64_t"
+        return ", void *"
+
+    def _vtcm_call_arg(self):
+        if not self.scratch:
+            return ""
+        # Matches the asymmetry in _vtcm_signature_arg above.
+        if len(self.output_profs) == 0:
+            return (
+                ", vtcmScratchDesc.allocated"
+                ", vtcmScratchDesc.aligned"
+                ", vtcmScratchDesc.offset"
+                ", vtcmScratchDesc.sizes[0]"
+                ", vtcmScratchDesc.strides[0]"
+            )
+        return ", pVtcmScratch"
 
     def generate_llvm_function_signature(self):
         """Generate LLVM function definition for Triton"""
@@ -162,6 +235,7 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
         else:
             function_arg_string = self.generate_llvm_direct_returns_function_signature()
         # Represents the num_programs(x,y,z) and program_id(x,y,z) arguments
+        function_arg_string += self._vtcm_signature_arg()
         function_arg_string += ", int, int, int, int, int, int"
         return self.common_strings.extern_llvm_func_defn.format(
             kernel_name=self.func_name, function_arg_string=function_arg_string
@@ -191,6 +265,7 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                 self.generate_llvm_direct_returns_function_call_arg_string()
             )
         # Since this is used for the single threaded case only, the num_programs is (1,1,1) and program_ids is (0,0,0).
+        function_call_descriptor_string += self._vtcm_call_arg()
         function_call_descriptor_string += ", 1, 1, 1, 0, 0, 0"
         return self.common_strings.extern_llvm_func_call.format(
             func_name=self.func_name, descriptor_string=function_call_descriptor_string
@@ -211,7 +286,33 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                     f"{self.common_strings.scalar_name}{scalar_index}, "
                 )
         return function_call_descriptor_string[:-2]
-        """Generates LLVM func call args for Triton with >0 return values- the input calling convention changes"""
+
+    def generate_input_declarations(self):
+        formatted_tensor_string = super().generate_input_declarations()
+        if self.scratch:
+            grid_size = prod(self.grid)
+            total_scratch = self.vtcm_per_instance_bytes * grid_size
+            formatted_tensor_string += f"""constexpr int64_t vtcmPerInstanceBytes = {self.vtcm_per_instance_bytes};
+constexpr int64_t totalRequiredScratch = {total_scratch};
+compute_res_attr_t vtcmRes;
+HAP_compute_res_attr_init(&vtcmRes);
+HAP_compute_res_attr_set_vtcm_param(&vtcmRes, totalRequiredScratch, ENFORCE_SINGLE_PAGE_VTCM_ALLOC);
+uint32_t vtcmContextID = HAP_compute_res_acquire(&vtcmRes, HAP_REQUEST_TIMEOUT_US);
+if (vtcmContextID == 0) {{
+  FARF(ERROR, "Failed to acquire VTCM scratch (bytes=%lld)", (long long)totalRequiredScratch);
+  return -1;
+}}
+int8_t *vtcmBase = (int8_t *)HAP_compute_res_attr_get_vtcm_ptr(&vtcmRes);
+if (vtcmBase == nullptr) {{
+  FARF(ERROR, "VTCM acquire returned null pointer");
+  HAP_compute_res_release(vtcmContextID);
+  return -1;
+}}
+// For the non-MT direct-call path (flat_pid == 0), construct a descriptor
+// covering the first (and only) instance's slice.
+MemRefDescriptor<int8_t, 1> vtcmScratchDesc = {{vtcmBase, vtcmBase, 0, {{vtcmPerInstanceBytes}}, {{1}}}};
+"""
+        return formatted_tensor_string
 
     def generate_input_wrapper_struct_def(self):
         """Generates template for input wrapper structs (only used by Triton)"""
@@ -236,7 +337,18 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                         input_wrapper_ptr_name=self.common_strings.input_wrapper_ptr_name,
                     ).lstrip()
                     formatted_tensor_string += tensor_declaration
+            if self.scratch:
+                formatted_tensor_string += f"""FuncInput<int8_t, 1> wrVtcmScratch = {{1, &vtcmScratchDesc}};
+FuncInput<int8_t, 1> *pVtcmScratch = &wrVtcmScratch;
+"""
         return formatted_tensor_string
+
+    def generate_cleanup(self):
+        """Generates cleanup code for resources allocated in the wrapper."""
+        cleanup_str = ""
+        if self.scratch:
+            cleanup_str += "HAP_compute_res_release(vtcmContextID);\n"
+        return cleanup_str
 
     def generate_closure_definition(self):
         """
@@ -254,6 +366,16 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                 closure_fields_string += f"{indent}MemRefDescriptor<{inp.dtype}, {inp.rank}> *t{str(inp.idx)}MemRef;\n"
             else:
                 closure_fields_string += f"{indent}{inp.dtype} S{str(inp.idx)};\n"
+        if self.scratch:
+            if len(self.output_profs) == 0:
+                closure_fields_string += (
+                    # Store by value so each closure owns its own per-instance
+                    # slice descriptor — storing a pointer would alias all
+                    # closures to the same descriptor.
+                    f"{indent}MemRefDescriptor<int8_t, 1> vtcmScratchMemRef;\n"
+                )
+            else:
+                closure_fields_string += f"{indent}void *vtcmScratch;\n"
 
         return self.common_strings.closure_struct_def.format(
             closure_fields=closure_fields_string.strip()
@@ -272,9 +394,37 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                 closure_helper_string += f"{indent}closure->t{str(inp.idx)}MemRef,\n"
             else:
                 closure_helper_string += f"{indent}closure->S{str(inp.idx)},\n"
+        if self.scratch:
+            if len(self.output_profs) == 0:
+                closure_helper_string += (
+                    f"{indent}closure->vtcmScratchMemRef.allocated,\n"
+                )
+                closure_helper_string += (
+                    f"{indent}closure->vtcmScratchMemRef.aligned,\n"
+                )
+                closure_helper_string += f"{indent}closure->vtcmScratchMemRef.offset,\n"
+                closure_helper_string += (
+                    f"{indent}closure->vtcmScratchMemRef.sizes[0],\n"
+                )
+                closure_helper_string += (
+                    f"{indent}closure->vtcmScratchMemRef.strides[0],\n"
+                )
+            else:
+                closure_helper_string += f"{indent}closure->vtcmScratch,\n"
         return self.common_strings.multithread_helper.format(
             func_name=self.func_name, closure_args_string=closure_helper_string.strip()
         )
+
+    def generate_vtcm_closure_setup(self):
+        if not self.scratch:
+            return ""
+        if len(self.output_profs) == 0:
+            return """closures[flat_pid].vtcmScratchMemRef = {vtcmBase,
+                                                    vtcmBase + flat_pid * vtcmPerInstanceBytes,
+                                                    0,
+                                                    {vtcmPerInstanceBytes},
+                                                    {1}};"""
+        return "closures[flat_pid].vtcmScratch = vtcmBase + flat_pid * vtcmPerInstanceBytes;"
 
     def generate_thread_pool_setup(self):
         """
@@ -292,39 +442,68 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                 closure_args_string += f"{indent}{inp.rank}, dt{inp.idx},\n"
             else:
                 closure_args_string += f"{indent}S{inp.idx},\n"
+        if self.scratch:
+            if len(self.output_profs) == 0:
+                # Placeholder values keep aggregate-initializer field ordering
+                # intact; per-instance descriptor is assigned right after.
+                closure_args_string += f"{indent}{{}},\n"
+            else:
+                closure_args_string += f"{indent}nullptr,\n"
         return self.common_strings.thread_pool_setup.format(
             grid=self.grid,
             strides=self.grid_strides,
             num_threads=prod(self.grid),
             closure_args_string=closure_args_string.strip(),
+            vtcm_setup_str=self.generate_vtcm_closure_setup(),
         )
 
     def generate_thread_pool_exec(self):
         """Generates the calls to execute each closure with a thread"""
-        return self.common_strings.thread_pool_exec
+        if self.enable_threaded_spmd:
+            return self.common_strings.thread_pool_exec
+        return "tm.exec_serial(multithread_helper, closures.data());"
 
     def generate_cpp_code_headers(self) -> str:
-        code_headers = (
-            self.common_strings.code_headers + self.common_strings.triton_code_headers
-        )
+        if self.multithreading_enabled:
+            code_headers = (
+                self.common_strings.code_headers
+                + self.common_strings.triton_code_headers
+            )
+        else:
+            code_headers = self.common_strings.code_headers
         return code_headers
 
     def generate_cpp_code_define(self) -> str:
-        # Note: return values for multithreaded kernels are not supported when executed by the
-        #       Triton/Hexagon driver
-        code_define = self.common_strings.code_define.format(
-            llvm_func_sign=self.generate_llvm_function_signature(),
-            input_wrapper_struct_def="",
-            result_struct_def="",
-        ) + self.common_strings.triton_code_define.format(
-            closure_struct_def=self.generate_closure_definition(),
-            multithread_helper=self.generate_multithread_helper(),
-        )
+        if self.multithreading_enabled:
+            # Note: return values for multithreaded kernels are not supported when executed by the
+            #       Triton/Hexagon driver
+            code_define = self.common_strings.code_define.format(
+                llvm_func_sign=self.generate_llvm_function_signature(),
+                input_wrapper_struct_def="",
+                result_struct_def="",
+            ) + self.common_strings.triton_code_define.format(
+                closure_struct_def=self.generate_closure_definition(),
+                multithread_helper=self.generate_multithread_helper(),
+            )
+        else:
+            code_define = self.common_strings.code_define.format(
+                llvm_func_sign=self.generate_llvm_function_signature(),
+                input_wrapper_struct_def=self.generate_input_wrapper_struct_def(),
+                result_struct_def=self.generate_result_struct(),
+            )
         return code_define
 
     def generate_cpp_code_body(self, file_name, exec_dir) -> str:
+        if self.multithreading_enabled:
+            func_call = self.generate_thread_pool_exec()
+            setup_thread_pool = self.generate_thread_pool_setup()
+        else:
+            func_call = self.generate_llvm_function_call()
+            setup_thread_pool = ""
+
         code_body = self.common_strings.triton_code_body.format(
-            tensor_definition_str=self.generate_input_declarations(),
+            tensor_definition_str=self.generate_input_declarations()
+            + self.generate_input_wrapper_structs_init(),
             read_from_file_calls=self.generate_tensor_read_from_file_calls(
                 file_name, exec_dir
             ),
@@ -332,26 +511,26 @@ class TritonHexagonWrapperGenerator(HexagonWrapperGenerator):
                 file_name, exec_dir
             ),
             benchmarking_and_reporting=self.generate_benchmarking_and_reporting(
-                self.generate_thread_pool_exec()
+                func_call, exec_dir
             ),
             update_tensor=self.generate_update_tensor_calls(),
-            setup_thread_pool=self.generate_thread_pool_setup(),
+            setup_thread_pool=setup_thread_pool,
+            lwp=self.generate_lwp_call(),
+            cleanup_str=self.generate_cleanup(),
         )
         return code_body
 
     def generate_cpp_wrapper(self, file_name, exec_dir):
         """
         Generates skeleton cpp file which launches triton kernel.
+        Always uses the Triton code body template (which supports cleanup).
         """
-        if self.multithreading_enabled:
-            code_headers = self.generate_cpp_code_headers()
-            code_define = self.generate_cpp_code_define()
-            code_body = self.generate_cpp_code_body(file_name, exec_dir)
-            return self.common_strings.code_string.format(
-                code_headers=code_headers, code_define=code_define, code_body=code_body
-            )
-        else:
-            return super().generate_cpp_wrapper(file_name, exec_dir)
+        code_headers = self.generate_cpp_code_headers()
+        code_define = self.generate_cpp_code_define()
+        code_body = self.generate_cpp_code_body(file_name, exec_dir)
+        return self.common_strings.code_string.format(
+            code_headers=code_headers, code_define=code_define, code_body=code_body
+        )
 
 
 class TritonHexagonLauncher(HexagonLauncherBase):
@@ -363,6 +542,11 @@ class TritonHexagonLauncher(HexagonLauncherBase):
         inputs: list[Tensor],
         output_profs: list,
         launch_grid: tuple,
+        compiled_scratch: int | str | None = None,
+        compiled_enable_multithreading: bool | str | None = None,
+        compiled_enable_threaded_dispatch: bool | str | None = None,
+        compiled_enable_lwp: bool | str | None = None,
+        runtime_options: dict | None = None,
     ) -> list[Tensor]:
         # Getting the input metadata for effective wrapper codegen.
         input_profs = profile_triton_inputs(inputs)
@@ -370,17 +554,130 @@ class TritonHexagonLauncher(HexagonLauncherBase):
             [1 for inp in input_profs if inp.input_type == "tensor"]
         )
 
-        local_dir_path = create_timestamped_folder(func_name)
+        local_dir_path, kernel_run_id = create_timestamped_folder(func_name)
         # 1 - Writting the object code for the kernel to disk
         obj_src_path = os.path.join(local_dir_path, func_name + ".o")
         Path(obj_src_path).write_bytes(kernel_obj_as_bytes)
         print(f"==> kernel obj saved in: {obj_src_path}")
 
         # Get HexagonOptions at this point for triton pipeline.
-        options = HexagonOptions().__dict__
+        options = HexagonOptions().__dict__.copy()
+        if compiled_scratch is not None:
+            options["scratch"] = int(compiled_scratch)
+        if compiled_enable_multithreading is not None:
+            if isinstance(compiled_enable_multithreading, str):
+                options["enableMultiThreading"] = (
+                    compiled_enable_multithreading.lower() == "true"
+                )
+            else:
+                options["enableMultiThreading"] = bool(compiled_enable_multithreading)
+        if compiled_enable_threaded_dispatch is not None:
+            if isinstance(compiled_enable_threaded_dispatch, str):
+                options["enableThreadedDispatch"] = (
+                    compiled_enable_threaded_dispatch.lower() == "true"
+                )
+            else:
+                options["enableThreadedDispatch"] = bool(
+                    compiled_enable_threaded_dispatch
+                )
+        if compiled_enable_lwp is not None:
+            if isinstance(compiled_enable_lwp, str):
+                options["enableLWP"] = compiled_enable_lwp.lower() == "true"
+            else:
+                options["enableLWP"] = bool(compiled_enable_lwp)
+        if runtime_options:
+            # Use the union of cached option keys and current HexagonOptions fields
+            # so that newly added flags (e.g. enableThreadedDispatch) are never silently
+            # dropped when the kernel is served from a cache built before the flag existed.
+            supported_keys = set(options.keys()) | set(HexagonOptions().__dict__.keys())
+            for key, value in runtime_options.items():
+                if key in supported_keys:
+                    # Coerce types to match the compiled-time option types.
+                    if key == "scratch":
+                        value = int(value)
+                    options[key] = value
+            if (
+                compiled_scratch is not None
+                and "scratch" in runtime_options
+                and int(runtime_options["scratch"]) != int(compiled_scratch)
+            ):
+                raise ValueError(
+                    "Runtime scratch option does not match compile-time scratch "
+                    f"(runtime={runtime_options['scratch']}, "
+                    f"compiled={compiled_scratch})."
+                )
+            unsupported_keys = sorted(set(runtime_options.keys()) - supported_keys)
+            # Keep compatibility with Triton call kwargs (e.g. constexpr args)
+            # by ignoring unknown keys. Warn only for option-like names that
+            # likely indicate a typo in backend/runtime options.
+            suspicious = [
+                k
+                for k in unsupported_keys
+                if k == "scratch" or k.startswith("enable") or k.endswith("_scratch")
+            ]
+            if suspicious:
+                warnings.warn(
+                    "Unsupported runtime options ignored: " + ", ".join(suspicious),
+                    stacklevel=2,
+                )
+
+        # Safety gate: VTCM scratch with oversubscription is not supported on
+        # the Hexagon launcher.  The ThreadManager spawns prod(grid) qurt
+        # threads (1:1 with closures) and VTCM is sliced per flat_pid.  When
+        # prod(grid) > num_threads, closures with flat_pid >= num_threads
+        # would access VTCM out-of-bounds.  Full oversubscription support
+        # (cap threads + loop is deferred.
+        if options["scratch"] > 0 and prod(launch_grid) > options["num_threads"]:
+            raise ValueError(
+                f"VTCM scratch with oversubscription "
+                f"(grid={prod(launch_grid)} > "
+                f"num_threads={options['num_threads']}) is not supported on "
+                f"the Hexagon launcher. Reduce grid size."
+            )
+
+        # Safety gate: enableMultiThreading causes FormVirtualThreadsPass to
+        # emit scf.forall (parallel tiling loops) which rely on the async
+        # runtime. The single-instance wrapper uses a direct call with no async
+        # setup, so scf.forall iterations beyond the first never execute and
+        # the output is garbage. Disable for grid==1.
+        if prod(launch_grid) == 1 and options.get("enableMultiThreading", False):
+            warnings.warn(
+                "Disabling enableMultiThreading for single-instance launch (grid==1) "
+                "to avoid incorrect results from unexecuted scf.forall iterations.",
+                stacklevel=2,
+            )
+            options["enableMultiThreading"] = False
+
+        # Safety gate: enableThreadedDispatch has no effect for grid==1 since
+        # the single-instance path uses a direct call (no ThreadManager).
+        if prod(launch_grid) == 1 and options.get("enableThreadedDispatch", False):
+            warnings.warn(
+                "Disabling enableThreadedDispatch for single-instance launch (grid==1) "
+                "since ThreadManager is not used for single-instance kernels.",
+                stacklevel=2,
+            )
+            options["enableThreadedDispatch"] = False
+
+        # Temporary safety gate:
+        # UserDMA-backed hexagonmem-copy lowering is unstable with Triton SPMD
+        # multithreaded wrappers at higher grid sizes (observed DSP abort in
+        # UserDMA ring buffer handling). Keep SPMD functional by disabling DMA
+        # copy lowering when more than one program instance is launched.
+        if prod(launch_grid) > 1 and options.get("enableHexagonmemCopyToDMA", False):
+            warnings.warn(
+                "Disabling enableHexagonmemCopyToDMA for SPMD launch (grid>1) "
+                "to avoid known UserDMA runtime instability.",
+                stacklevel=2,
+            )
+            options["enableHexagonmemCopyToDMA"] = False
 
         # Pass lwp related info to HexagonExecutor() for creating shared obj and pulling lwp.json file if enabled.
-        hexec = HexagonExecutor(options["enableLWP"])
+        hexec = HexagonExecutor(
+            kernel_run_id=kernel_run_id,
+            enable_lwp=options["enableLWP"],
+            enable_hexkl=options["enableHexKL"],
+            cleanup_device_post_exec=options["deviceCleanup"],
+        )
 
         # Pass options to the wrapper generator.
         # TritonHexagonWrapperGenerator will assert for lwp and multithreading conflict.

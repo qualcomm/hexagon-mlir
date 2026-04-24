@@ -1,13 +1,13 @@
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexmem-cpy-to-dma,cse))' | FileCheck %s --check-prefixes=CHECK
 
 // CHECK-LABEL: func.func @hexmem_copy_firstTile_3d
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: %[[TILE:.*]] = hexagonmem.alloc() {alignment = 2048 : i64, bufferization.manual_deallocation} : memref<2x32x32xi8, 1>
 // CHECK: %[[SUBVIEW_SRC:.*]] = memref.subview %arg0[0, 0, 0] [2, 32, 32] [1, 1, 1]
 // CHECK: %[[SUBVIEW_DST:.*]] = memref.subview %arg1[0, 0, 0] [2, 32, 32] [1, 1, 1]
 // CHECK: %[[DMA_ALLOC1:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[C0:.*]] = arith.constant 0 : index
 // CHECK: %[[C2:.*]] = arith.constant 2 : index
-// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: scf.for %[[IV1:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // CHECK: %[[C1024:.*]] = arith.constant 1024 : index
 // CHECK: %[[SUB1:.*]] = memref.subview %[[SUBVIEW_SRC]][%[[IV1]], 0, 0] [1, 32, 32] [1, 1, 1] : memref<2x32x32xi8, strided<[4096, 64, 1]>> to memref<1x32x32xi8, strided<[4096, 64, 1], offset: ?>>
@@ -54,13 +54,13 @@ func.func @hexmem_copy_firstTile_3d(
 }
 
 // CHECK-LABEL: func.func @hexmem_copy_middleTile_3d
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: %[[TILE:.*]] = hexagonmem.alloc() {alignment = 2048 : i64, bufferization.manual_deallocation} : memref<2x32x32xi8, 1>
 // CHECK: %[[SUBVIEW_SRC:.*]] = memref.subview %arg0[4, 64, 64] [2, 32, 32] [1, 1, 1]
 // CHECK: %[[SUBVIEW_DST:.*]] = memref.subview %arg1[4, 64, 64] [2, 32, 32] [1, 1, 1]
 // CHECK: %[[DMA_ALLOC1:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[C0:.*]] = arith.constant 0 : index
 // CHECK: %[[C2:.*]] = arith.constant 2 : index
-// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: scf.for %[[IV1:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // CHECK: %[[C1024:.*]] = arith.constant 1024 : index
 // CHECK: %[[SUB1:.*]] = memref.subview %[[SUBVIEW_SRC]][%[[IV1]], 0, 0] [1, 32, 32] [1, 1, 1] : memref<2x32x32xi8, strided<[16384, 128, 1], offset: 73792>> to memref<1x32x32xi8, strided<[16384, 128, 1], offset: ?>>
@@ -108,13 +108,13 @@ func.func @hexmem_copy_middleTile_3d(
 }
 
 // CHECK-LABEL: func.func @hexmem_copy_middleTile_4d
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: %[[TILE:.*]] = hexagonmem.alloc() {alignment = 2048 : i64, bufferization.manual_deallocation} : memref<4x2x32x32xi8, 1>
 // CHECK: %[[SUBVIEW_SRC:.*]] = memref.subview %arg0[8, 4, 64, 64] [4, 2, 32, 32] [1, 1, 1, 1]
 // CHECK: %[[SUBVIEW_DST:.*]] = memref.subview %arg1[8, 4, 64, 64] [4, 2, 32, 32] [1, 1, 1, 1]
 // CHECK: %[[DMA_ALLOC1:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[C0:.*]] = arith.constant 0 : index
 // CHECK: %[[C4:.*]] = arith.constant 4 : index
-// CHECK: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: scf.for %[[IV1:.*]] = %[[C0]] to %[[C4]] step %[[C1]] {
 // CHECK: %[[C2:.*]] = arith.constant 2 : index
 // CHECK: scf.for %[[IV2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
@@ -184,7 +184,7 @@ func.func @hexmem_copy_same_memory(
         alignment = 2048 : i64} : memref<4x2x32x32xi8, 1>
     %tile2 = hexagonmem.alloc() {bufferization.manual_deallocation,
         alignment = 2048 : i64} : memref<4x2x32x32xi8, 1>
-    
+
     %src0 = memref.subview %arg0[8, 4, 64, 64][4, 2, 32, 32][1, 1, 1, 1]
         : memref<20x10x128x128xi8, strided<[163840, 16384, 128, 1], offset: 0>>
         to memref<4x2x32x32xi8, strided<[163840, 16384, 128, 1], offset: 1384512>>
@@ -209,5 +209,60 @@ func.func @hexmem_copy_same_memory(
 
     hexagonmem.dealloc %tile1 : memref<4x2x32x32xi8, 1>
     hexagonmem.dealloc %tile2 : memref<4x2x32x32xi8, 1>
+    return
+}
+
+// Test memref.copy with N-D strided memrefs between DDR and VTCM
+// CHECK-LABEL: func.func @memref_copy_nd_strided
+// CHECK: %[[C0:.*]] = arith.constant 0 : index
+// CHECK: %[[C1:.*]] = arith.constant 1 : index
+// CHECK: %[[ALLOC:.*]] = memref.alloc() : memref<2x32x32xi8, 1>
+// CHECK: %[[SUBVIEW_SRC:.*]] = memref.subview %arg0[0, 0, 0] [2, 32, 32] [1, 1, 1]
+// CHECK: %[[SUBVIEW_DST:.*]] = memref.subview %arg1[0, 0, 0] [2, 32, 32] [1, 1, 1]
+// CHECK: %[[DMA_ALLOC1:.*]] = memref.alloc() : memref<1xi32>
+// CHECK: %[[C2:.*]] = arith.constant 2 : index
+// CHECK: scf.for %[[IV1:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// CHECK: %[[C1024:.*]] = arith.constant 1024 : index
+// CHECK: %[[SUB1:.*]] = memref.subview %[[SUBVIEW_SRC]][%[[IV1]], 0, 0] [1, 32, 32] [1, 1, 1] : memref<2x32x32xi8, strided<[4096, 64, 1]>> to memref<1x32x32xi8, strided<[4096, 64, 1], offset: ?>>
+// CHECK: %[[C64:.*]] = arith.constant 64 : index
+// CHECK: %[[C32:.*]] = arith.constant 32 : index
+// CHECK: memref.dma_start %[[SUB1]][%[[C0]], %[[C0]], %[[C0]]], %[[ALLOC]][%[[IV1]], %[[C0]], %[[C0]]], %[[C1024]], %[[DMA_ALLOC1]][%[[C0]]], %[[C64]], %[[C32]] : memref<1x32x32xi8, strided<[4096, 64, 1], offset: ?>>, memref<2x32x32xi8, 1>, memref<1xi32>
+// CHECK: memref.dma_wait %[[DMA_ALLOC1]][%[[C0]]], %[[C1024]] : memref<1xi32>
+// CHECK: }
+// CHECK: memref.dealloc %[[DMA_ALLOC1]] : memref<1xi32>
+// CHECK: %[[DMA_ALLOC2:.*]] = memref.alloc() : memref<1xi32>
+// CHECK: scf.for %[[IV2:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
+// CHECK: %[[C1024_2:.*]] = arith.constant 1024 : index
+// CHECK: %[[SUB2:.*]] = memref.subview %[[SUBVIEW_DST]][%[[IV2]], 0, 0] [1, 32, 32] [1, 1, 1] : memref<2x32x32xi8, strided<[4096, 64, 1]>> to memref<1x32x32xi8, strided<[4096, 64, 1], offset: ?>>
+// CHECK: %[[C64_2:.*]] = arith.constant 64 : index
+// CHECK: %[[C32_2:.*]] = arith.constant 32 : index
+// CHECK: memref.dma_start %[[ALLOC]][%[[IV2]], %[[C0]], %[[C0]]], %[[SUB2]][%[[C0]], %[[C0]], %[[C0]]], %[[C1024_2]], %[[DMA_ALLOC2]][%[[C0]]], %[[C64_2]], %[[C32_2]] : memref<2x32x32xi8, 1>, memref<1x32x32xi8, strided<[4096, 64, 1], offset: ?>>, memref<1xi32>
+// CHECK: memref.dma_wait %[[DMA_ALLOC2]][%[[C0]]], %[[C1024_2]] : memref<1xi32>
+// CHECK: }
+// CHECK: memref.dealloc %[[DMA_ALLOC2]] : memref<1xi32>
+// CHECK: memref.dealloc %[[ALLOC]] : memref<2x32x32xi8, 1>
+// CHECK: return
+
+func.func @memref_copy_nd_strided(
+        %arg0 : memref<2x64x64xi8, strided<[4096, 64, 1], offset: 0>>,
+        %arg1 : memref<2x64x64xi8, strided<[4096, 64, 1], offset: 0>>) {
+    // Allocate a VTCM buffer for tile of <2x32x32xi8>
+    %tile = memref.alloc() : memref<2x32x32xi8, 1>
+
+    %src0 = memref.subview %arg0[0, 0, 0][2, 32, 32][1, 1, 1]
+        : memref<2x64x64xi8, strided<[4096, 64, 1], offset: 0>>
+        to memref<2x32x32xi8, strided<[4096, 64, 1], offset: 0>>
+    %dst0 = memref.subview %arg1[0, 0, 0][2, 32, 32][1, 1, 1]
+        : memref<2x64x64xi8, strided<[4096, 64, 1], offset: 0>>
+        to memref<2x32x32xi8, strided<[4096, 64, 1], offset: 0>>
+    // DDR -> VTCM via memref.copy
+    memref.copy %src0, %tile
+        : memref<2x32x32xi8, strided<[4096, 64, 1], offset: 0>>
+        to memref<2x32x32xi8, 1>
+    // VTCM -> DDR via memref.copy
+    memref.copy %tile, %dst0
+        : memref<2x32x32xi8, 1>
+        to memref<2x32x32xi8, strided<[4096, 64, 1], offset: 0>>
+    memref.dealloc %tile : memref<2x32x32xi8, 1>
     return
 }

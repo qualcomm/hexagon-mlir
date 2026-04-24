@@ -103,11 +103,11 @@ struct LowerFromMemref : public OpRewritePattern<tptr::HexagonFromMemrefOp> {
 
   LogicalResult matchAndRewrite(tptr::HexagonFromMemrefOp op,
                                 PatternRewriter &rewriter) const final {
-    Value asIdx = rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(
-        op->getLoc(), op.getInput());
+    Value asIdx = memref::ExtractAlignedPointerAsIndexOp::create(
+        rewriter, op->getLoc(), op.getInput());
 
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), op.getType(), asIdx);
+    auto cast = UnrealizedConversionCastOp::create(rewriter, op.getLoc(),
+                                                   op.getType(), asIdx);
     rewriter.replaceAllUsesWith(op.getResult(), cast.getResult(0));
     return success();
   }
@@ -123,17 +123,17 @@ struct LowerTPtrAdd : public OpRewritePattern<tptr::HexagonPtrAddOp> {
   LogicalResult matchAndRewrite(tptr::HexagonPtrAddOp op,
                                 PatternRewriter &rewriter) const final {
     auto loc = op.getLoc();
-    auto cast = rewriter.create<UnrealizedConversionCastOp>(
-        loc, IndexType::get(op.getContext()), op.getBase());
+    auto cast = UnrealizedConversionCastOp::create(
+        rewriter, loc, IndexType::get(op.getContext()), op.getBase());
 
     Value offset = op.getOffset();
     if (!offset.getType().isIndex()) {
-      offset = rewriter.create<arith::IndexCastOp>(loc, rewriter.getIndexType(),
-                                                   offset);
+      offset = arith::IndexCastOp::create(rewriter, loc,
+                                          rewriter.getIndexType(), offset);
     }
-    auto addI = rewriter.create<arith::AddIOp>(loc, cast.getResult(0), offset);
-    auto recast = rewriter.create<UnrealizedConversionCastOp>(
-        loc, op.getBase().getType(), addI.getResult());
+    auto addI = arith::AddIOp::create(rewriter, loc, cast.getResult(0), offset);
+    auto recast = UnrealizedConversionCastOp::create(
+        rewriter, loc, op.getBase().getType(), addI.getResult());
 
     rewriter.replaceAllUsesWith(op.getResult(), recast.getResult(0));
     rewriter.eraseOp(op);
@@ -151,16 +151,17 @@ struct LowerToMemRef : public OpRewritePattern<tptr::HexagonToMemrefOp> {
                                 PatternRewriter &rewriter) const final {
     auto loc = op.getLoc();
     // ptrtoint : cast `!ptr.ptr` type to llvm opaque `!llvm.ptr` type.
-    Value ptrAsIdx = rewriter
-                         .create<UnrealizedConversionCastOp>(
-                             loc, IndexType::get(op.getContext()), op.getArg())
-                         .getResult(0);
+    Value ptrAsIdx =
+        UnrealizedConversionCastOp::create(
+            rewriter, loc, IndexType::get(op.getContext()), op.getArg())
+            .getResult(0);
     mlir::Type i64Type = rewriter.getIntegerType(64);
     Value ptrAsI64 =
-        rewriter.create<arith::IndexCastOp>(loc, i64Type, ptrAsIdx).getResult();
+        arith::IndexCastOp::create(rewriter, loc, i64Type, ptrAsIdx)
+            .getResult();
     Type opaquePtrType = LLVM::LLVMPointerType::get(rewriter.getContext());
     Value intToPtr =
-        rewriter.create<mlir::LLVM::IntToPtrOp>(loc, opaquePtrType, ptrAsI64);
+        mlir::LLVM::IntToPtrOp::create(rewriter, loc, opaquePtrType, ptrAsI64);
 
     // construct `!llvm.struct` from the `memref` result type of `to_memref`.
     auto memrefType = cast<MemRefType>(op.getRes().getType());
@@ -177,35 +178,37 @@ struct LowerToMemRef : public OpRewritePattern<tptr::HexagonToMemrefOp> {
         {opaquePtrType, opaquePtrType, i64Type, arrayType, arrayType});
 
     // populate `!llvm.struct` with ptr and memref descriptor contents.
-    Value undefStruct = rewriter.create<LLVM::UndefOp>(loc, structType);
-    Value s0 =
-        rewriter.create<LLVM::InsertValueOp>(loc, undefStruct, intToPtr, 0);
-    Value s1 = rewriter.create<LLVM::InsertValueOp>(loc, s0, intToPtr, 1);
+    Value undefStruct = LLVM::UndefOp::create(rewriter, loc, structType);
+    Value s0 = LLVM::InsertValueOp::create(rewriter, loc, undefStruct, intToPtr,
+                                           ArrayRef<int64_t>{0});
+    Value s1 = LLVM::InsertValueOp::create(rewriter, loc, s0, intToPtr,
+                                           ArrayRef<int64_t>{1});
     Value zero =
-        rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(), 0);
-    Value s2 = rewriter.create<LLVM::InsertValueOp>(loc, s1, zero, 2);
+        LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(), 0);
+    Value s2 = LLVM::InsertValueOp::create(rewriter, loc, s1, zero,
+                                           ArrayRef<int64_t>{2});
 
     SmallVector<int64_t> size_idxs{3, 0};
     SmallVector<int64_t> stride_idxs{4, 0};
     Value structVal = s2;
     for (int i = 0; i < rank; ++i) {
       size_idxs[1] = i;
-      Value size = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(),
-                                                     shape[i]);
-      Value structI =
-          rewriter.create<LLVM::InsertValueOp>(loc, structVal, size, size_idxs);
+      Value size = LLVM::ConstantOp::create(rewriter, loc,
+                                            rewriter.getI64Type(), shape[i]);
+      Value structI = LLVM::InsertValueOp::create(rewriter, loc, structVal,
+                                                  size, size_idxs);
 
       stride_idxs[1] = i;
-      Value stride = rewriter.create<LLVM::ConstantOp>(
-          loc, rewriter.getI64Type(), strides[i]);
-      structVal = rewriter.create<LLVM::InsertValueOp>(loc, structI, stride,
-                                                       stride_idxs);
+      Value stride = LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI64Type(), strides[i]);
+      structVal = LLVM::InsertValueOp::create(rewriter, loc, structI, stride,
+                                              stride_idxs);
     }
     // cast back struct to memref type.
-    Value toMemref = rewriter
-                         .create<UnrealizedConversionCastOp>(
-                             op.getLoc(), op.getRes().getType(), structVal)
-                         .getResult(0);
+    Value toMemref =
+        UnrealizedConversionCastOp::create(rewriter, op.getLoc(),
+                                           op.getRes().getType(), structVal)
+            .getResult(0);
     rewriter.replaceAllUsesWith(op.getResult(), toMemref);
     rewriter.eraseOp(op);
     return success();

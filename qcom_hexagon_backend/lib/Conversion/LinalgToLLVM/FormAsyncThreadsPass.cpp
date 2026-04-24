@@ -77,9 +77,9 @@ LogicalResult formAsyncThreads(RewriterBase &rewriter, scf::ForallOp forallOp) {
 
   // %group_id = async.create_group %num_threads : !async.group
   // For virtual threads lbs is '0' and range is affine map.
-  Value nThreads = rewriter.create<arith::DivUIOp>(loc, ubs[0], steps[0]);
+  Value nThreads = arith::DivUIOp::create(rewriter, loc, ubs[0], steps[0]);
   auto groupId =
-      rewriter.create<async::CreateGroupOp>(loc, nThreads).getResult();
+      async::CreateGroupOp::create(rewriter, loc, nThreads).getResult();
 
   // Create a scf::for with an empty-body.
   scf::LoopNest loopNest = scf::buildLoopNest(rewriter, loc, lbs, ubs, steps);
@@ -90,8 +90,8 @@ LogicalResult formAsyncThreads(RewriterBase &rewriter, scf::ForallOp forallOp) {
 
   // Create empty execute in for-body.
   rewriter.setInsertionPoint(forBody->getTerminator());
-  auto executeOp = rewriter.create<async::ExecuteOp>(
-      loc, TypeRange{}, ValueRange{}, ValueRange{});
+  auto executeOp = async::ExecuteOp::create(rewriter, loc, TypeRange{},
+                                            ValueRange{}, ValueRange{});
   Value tokenId = executeOp.getResult(0);
 
   // Inline ops of forall-body into execute-body, before terminator.
@@ -104,11 +104,11 @@ LogicalResult formAsyncThreads(RewriterBase &rewriter, scf::ForallOp forallOp) {
   rewriter.eraseOp(forallOp);
 
   rewriter.setInsertionPoint(forBody->getTerminator());
-  rewriter.create<async::AddToGroupOp>(loc, tokenId, groupId);
+  async::AddToGroupOp::create(rewriter, loc, tokenId, groupId);
 
   // add await after the loop.
   rewriter.setInsertionPointAfter(loopNest.loops[0]);
-  rewriter.create<async::AwaitAllOp>(loc, groupId);
+  async::AwaitAllOp::create(rewriter, loc, groupId);
   return success();
 }
 

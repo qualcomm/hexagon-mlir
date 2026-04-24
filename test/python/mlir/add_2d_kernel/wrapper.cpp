@@ -69,7 +69,7 @@ int main() {
   Result result = Result::Pass;
   if (!check(dt0->allocated, dt1->allocated, dt2->allocated))
     result = Result::Fail;
-  WriteLWPOutput("/vendor/bin/lwp.json");
+  WriteLWPOutput("/data/local/tmp/lwp.json");
   TestReport tr("add_2d_mlir", avg_cycles, "microseconds", result);
   tr.save();
 

@@ -32,8 +32,9 @@
 using namespace mlir;
 using namespace hexagon;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_HEXAGONLLVMENABLEHEXAGONROUTINES
 #include "hexagon/Transforms/Passes.h.inc"
+#undef GEN_PASS_DEF_HEXAGONLLVMENABLEHEXAGONROUTINES
 
 namespace {
 
@@ -62,8 +63,8 @@ getOrCreateFunc(Operation *op, std::string fnName, PatternRewriter &rewriter,
   // Insert before module terminator.
   rewriter.setInsertionPoint(module.getBody(),
                              std::prev(module.getBody()->end()));
-  LLVM::LLVMFuncOp funcOp = rewriter.create<LLVM::LLVMFuncOp>(
-      op->getLoc(), fnNameAttr.getValue(), fnType);
+  LLVM::LLVMFuncOp funcOp = LLVM::LLVMFuncOp::create(
+      rewriter, op->getLoc(), fnNameAttr.getValue(), fnType);
   funcOp.setPrivate();
   return fnNameAttr;
 }
@@ -196,13 +197,13 @@ Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
     auto shapedType = mlir::cast<mlir::ShapedType>(nativeVectorType);
     auto denseAttr = DenseFPElementsAttr::get(
         shapedType, FloatAttr::get(elemType, 2.0f).getValue());
-    auto splatVector = rewriter.create<LLVM::ConstantOp>(
-        op->getLoc(), nativeVectorType, denseAttr);
+    auto splatVector = LLVM::ConstantOp::create(rewriter, op->getLoc(),
+                                                nativeVectorType, denseAttr);
 
     auto intVectorType = mlir::VectorType::get({32}, rewriter.getI32Type());
     // Bitcast the splat vector to <32xi32>
-    auto bitcastSplatVector = rewriter.create<LLVM::BitcastOp>(
-        op->getLoc(), intVectorType, splatVector);
+    auto bitcastSplatVector = LLVM::BitcastOp::create(
+        rewriter, op->getLoc(), intVectorType, splatVector);
 
     // Create the function type with two operands
     auto fnType = LLVM::LLVMFunctionType::get(intVectorType,
@@ -210,17 +211,17 @@ Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
     auto fnNameRefAttr = getOrCreateFunc(op, fnName, rewriter, fnType);
 
     // Bitcast the input operand to <32xi32>
-    auto bitcastInput =
-        rewriter.create<LLVM::BitcastOp>(op->getLoc(), intVectorType, operand1);
+    auto bitcastInput = LLVM::BitcastOp::create(rewriter, op->getLoc(),
+                                                intVectorType, operand1);
 
     // Create the call operation
-    auto callOp = rewriter.create<LLVM::CallOp>(
-        op->getLoc(), intVectorType, fnNameRefAttr,
+    auto callOp = LLVM::CallOp::create(
+        rewriter, op->getLoc(), intVectorType, fnNameRefAttr,
         ValueRange{bitcastSplatVector, bitcastInput});
 
     // Bitcast the result back to natrive vector type
-    auto bitcastResult = rewriter.create<LLVM::BitcastOp>(
-        op->getLoc(), nativeVectorType, callOp.getResults());
+    auto bitcastResult = LLVM::BitcastOp::create(
+        rewriter, op->getLoc(), nativeVectorType, callOp.getResults());
     Result = bitcastResult.getResult();
   } else {
     auto intVectorType = mlir::VectorType::get({32}, rewriter.getI32Type());
@@ -229,16 +230,16 @@ Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
     auto fnNameRefAttr = getOrCreateFunc(op, fnName, rewriter, fnType);
 
     // Bitcast the input operand to <32xi32>
-    auto bitcastInput =
-        rewriter.create<LLVM::BitcastOp>(op->getLoc(), intVectorType, operand1);
+    auto bitcastInput = LLVM::BitcastOp::create(rewriter, op->getLoc(),
+                                                intVectorType, operand1);
 
     // Create the call operation
-    auto callOp = rewriter.create<LLVM::CallOp>(
-        op->getLoc(), intVectorType, fnNameRefAttr, ValueRange{bitcastInput});
+    auto callOp = LLVM::CallOp::create(rewriter, op->getLoc(), intVectorType,
+                                       fnNameRefAttr, ValueRange{bitcastInput});
 
     // Bitcast the result back to natrive vector type
-    auto bitcastResult = rewriter.create<LLVM::BitcastOp>(
-        op->getLoc(), nativeVectorType, callOp.getResults());
+    auto bitcastResult = LLVM::BitcastOp::create(
+        rewriter, op->getLoc(), nativeVectorType, callOp.getResults());
     Result = bitcastResult.getResult();
   }
   return Result;
@@ -250,8 +251,8 @@ Value multiVectorHandle(Operation *op, PatternRewriter &rewriter,
   Value bitCastOp = replaceWithHexRTCall(op, rewriter, operand1,
                                          nativeVectorType, fnName, elemType);
 
-  Value insertOp = rewriter.create<LLVM::vector_insert>(op->getLoc(), destOp,
-                                                        bitCastOp, idx);
+  Value insertOp = LLVM::vector_insert::create(rewriter, op->getLoc(), destOp,
+                                               bitCastOp, idx);
 
   return insertOp;
 }
@@ -304,12 +305,12 @@ replaceOpWithHexagonRuntimeCall(Operation *op, PatternRewriter &rewriter,
 
   if (factor > 1) {
     // Handle large vectors by splitting
-    LLVM::UndefOp undefOp = rewriter.create<LLVM::UndefOp>(loc, resultType);
+    LLVM::UndefOp undefOp = LLVM::UndefOp::create(rewriter, loc, resultType);
     Value destOp = undefOp;
 
     for (int idx = 0; idx < elemCount; idx += nativeVectorWidth) {
-      LLVM::vector_extract extractOp = rewriter.create<LLVM::vector_extract>(
-          loc, nativeVectorType, inputOperand, idx);
+      LLVM::vector_extract extractOp = LLVM::vector_extract::create(
+          rewriter, loc, nativeVectorType, inputOperand, idx);
 
       Value insertOp =
           multiVectorHandle(op, rewriter, extractOp.getResult(), destOp,
@@ -347,20 +348,74 @@ public:
     if (!sqrtOp)
       return failure();
 
+    Type resultType = fdivOp.getType();
+
     // Check if numerator is a constant 1.0 (or splat of 1.0 for vectors)
     if (!isConstantOne(numerator))
       return failure();
+
+    // scalar float, call qhmath_rsqrt_f directly ---
+    if (!isa<VectorType>(resultType)) {
+      bool isF32 = resultType.isF32();
+      bool isF16 = resultType.isF16();
+      // Require it to be a 32-bit float (f32) or f16
+      if (!isF32 && !isF16)
+        return failure();
+
+      DBG("Detected scalar 1.0/sqrt(x) pattern, converting to qhmath_rsqrt_f");
+
+      Value sqrtInput = sqrtOp.getOperand();
+      if (sqrtInput.getType() != resultType)
+        return failure();
+
+      MLIRContext *context = rewriter.getContext();
+      Type f32Ty = Float32Type::get(context);
+
+      // Get or create qhmath_rsqrt_f(float) declaration
+      auto fnType = LLVM::LLVMFunctionType::get(f32Ty, {f32Ty});
+      auto fnSym = getOrCreateFunc(fdivOp.getOperation(), "qhmath_rsqrt_f",
+                                   rewriter, fnType);
+
+      // Prepare argument for the call: always f32
+      Value argForCall = sqrtInput;
+
+      // If input is f16, need to cast to f32 for the call
+      if (isF16) {
+        // f16 -> f32
+        argForCall =
+            LLVM::FPExtOp::create(rewriter, fdivOp.getLoc(), f32Ty, sqrtInput);
+      }
+
+      // qhmath_rsqrt_f: f32 (f32)
+      auto callOp = LLVM::CallOp::create(rewriter, fdivOp.getLoc(), f32Ty,
+                                         fnSym, ValueRange{argForCall});
+      Value callResult = callOp.getResult();
+
+      // If original result is f16, truncate back.
+      Value finalResult = callResult;
+      if (isF16) {
+        // f32 -> f16
+        finalResult = LLVM::FPTruncOp::create(rewriter, fdivOp.getLoc(),
+                                              resultType, callResult);
+      }
+
+      rewriter.replaceOp(fdivOp, finalResult);
+
+      if (sqrtOp.getResult().use_empty())
+        rewriter.eraseOp(sqrtOp);
+
+      return success();
+    }
 
     // Check if the types are native vector factor types
     if (!isNativeVectorFactorFloat(fdivOp.getType()))
       return failure();
 
-    DBG("Detected 1.0/sqrt(x) pattern, converting directly to Hexagon rsqrt "
-        "runtime call");
-
     // Get the sqrt's input
     Value sqrtInput = sqrtOp.getOperand();
-    Type resultType = fdivOp.getType();
+    DBG("Detected vector 1.0/sqrt(x) pattern, converting directly to Hexagon "
+        "rsqrt "
+        "runtime call");
 
     // Get element type to generate function name
     auto elementInfo = getVectorElementInfo(resultType);
@@ -445,7 +500,7 @@ void populateEnableHexagonRoutinesPattern(RewritePatternSet &patterns) {
 }
 
 struct HexagonLLVMEnableHexagonRoutinesPass
-    : public HexagonLLVMEnableHexagonRoutinesBase<
+    : public ::impl::HexagonLLVMEnableHexagonRoutinesBase<
           HexagonLLVMEnableHexagonRoutinesPass> {
 public:
   void runOnOperation() override {

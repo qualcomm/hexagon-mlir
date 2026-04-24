@@ -27,6 +27,7 @@ def run_mlir_kernel_test(
     current_file_dir: str,
     options_overrides: Dict[str, bool] = None,
     validate_result: bool = True,
+    enable_etm: bool = False,
 ):
     """
     Run an MLIR kernel test with the specified parameters.
@@ -36,6 +37,7 @@ def run_mlir_kernel_test(
         current_file_dir: Directory containing the test files (input.mlir and wrapper.cpp)
         options_overrides: Dictionary of HexagonOptions to override (str->bool)
         validate_result: Whether to validate the result
+        enable_etm: When set to True, etm trace is collected on device and pyetm processes it.
     """
     mlir_input_path = f"{current_file_dir}/input.mlir"
     cpp_wrapper_path = f"{current_file_dir}/wrapper.cpp"
@@ -51,5 +53,10 @@ def run_mlir_kernel_test(
     options = {k: str(v) for k, v in options.items()}
 
     MLIRHexagonLauncher.run_mlir_with_custom_cpp_wrapper(
-        mlir_input_path, cpp_wrapper_path, validate_result, options, kernel_name
+        mlir_input_path,
+        cpp_wrapper_path,
+        validate_result,
+        options,
+        kernel_name,
+        enable_etm,
     )

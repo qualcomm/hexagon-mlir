@@ -49,10 +49,16 @@
 using namespace mlir;
 using namespace mlir::hexagonmem;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_HEXAGONMEMTOLLVM
 #include "hexagon/Conversion/HexagonMemToLLVM/Passes.h.inc"
+#undef GEN_PASS_DEF_HEXAGONMEMTOLLVM
 
 namespace {
+
+/// This defines the default crouton size used for the crouton type. This needs
+/// to be updated if the crouton type is modified to specific the size as part
+/// of its parameters
+constexpr size_t DEFAULT_CROUTON_SIZE = 2048;
 
 static LLVM::LLVMPointerType getPtrTy(MLIRContext *context) {
   return LLVM::LLVMPointerType::get(context);
@@ -65,7 +71,11 @@ static LLVM::LLVMVoidType getVoidTy(MLIRContext *context) {
 static LLVM::ConstantOp getI32Constant(ConversionPatternRewriter &rewriter,
                                        Location loc, int64_t val) {
   Type paramTy = rewriter.getI32Type();
-  return rewriter.create<LLVM::ConstantOp>(loc, paramTy, val);
+  return LLVM::ConstantOp::create(rewriter, loc, paramTy, val);
+}
+
+static int64_t getAllocationSize(crouton::CroutonType cTy) {
+  return cTy.getNumElements();
 }
 
 static int64_t getAllocationSize(MemRefType cTy) {
@@ -83,53 +93,94 @@ static Value computeAllocationSize(MemRefType type,
   }
 
   // Compute number of elements.
-  Value numElements = rewriter.create<LLVM::ConstantOp>(
-      loc, indexType, rewriter.getIndexAttr(1));
+  Value numElements = LLVM::ConstantOp::create(rewriter, loc, indexType,
+                                               rewriter.getIndexAttr(1));
   for (int pos = 0; pos < type.getRank(); ++pos) {
     auto size = desc.size(rewriter, loc, pos);
-    numElements = rewriter.create<LLVM::MulOp>(loc, numElements, size);
+    numElements = LLVM::MulOp::create(rewriter, loc, numElements, size);
   }
-  Value totalSize = rewriter.create<LLVM::MulOp>(loc, numElements, sizeInBytes);
+  Value totalSize =
+      LLVM::MulOp::create(rewriter, loc, numElements, sizeInBytes);
   Value sizeI32 =
-      rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), totalSize);
+      LLVM::TruncOp::create(rewriter, loc, rewriter.getI32Type(), totalSize);
   return sizeI32;
 }
 
-/// Runtime call prototype for memref type:
-/// void* (size_t bytes, size_t alignment, bool isVtcm)
+/// the 2 runtime call prototypes are :
+/// void* (size_t bytes, bool isVtcm) for memref type
+/// void* (size_t numBlocks, size_t blockSize, bool isVtcm) for crouton type
 static FailureOr<LLVM::LLVMFuncOp>
 getAllocFn(Operation *module, StringRef fnName,
-           ConversionPatternRewriter &rewriter) {
+           ConversionPatternRewriter &rewriter, bool isCroutonType) {
   MLIRContext *context = module->getContext();
-  return LLVM::lookupOrCreateFn(
-      rewriter, module, fnName,
-      {rewriter.getI32Type(), rewriter.getI64Type(), rewriter.getI1Type()},
-      getPtrTy(context));
+  FailureOr<LLVM::LLVMFuncOp> funcOp;
+
+  if (isCroutonType)
+    funcOp =
+        LLVM::lookupOrCreateFn(rewriter, module, fnName,
+                               {rewriter.getI32Type(), rewriter.getI32Type(),
+                                rewriter.getI64Type(), rewriter.getI1Type()},
+                               getPtrTy(context));
+  else
+    funcOp = LLVM::lookupOrCreateFn(
+        rewriter, module, fnName,
+        {rewriter.getI32Type(), rewriter.getI64Type(), rewriter.getI1Type()},
+        getPtrTy(context));
+
+  if (succeeded(funcOp)) {
+    // Mark function as having side effects to prevent LLVM optimizer
+    // from removing or inlining these calls inappropriately.
+    (*funcOp)->setAttr(
+        "passthrough",
+        rewriter.getArrayAttr({rewriter.getStringAttr("noinline"),
+                               rewriter.getStringAttr("willreturn")}));
+  }
+
+  return funcOp;
 }
 
-/// Dealloc just needs the pointer: void(void *ptr)
+/// Both memref and crouton type dealloc just need the pointer
+/// void(void *ptr) for memref type
 static FailureOr<LLVM::LLVMFuncOp>
 getDeallocFn(ModuleOp module, StringRef fnName,
              ConversionPatternRewriter &rewriter) {
   MLIRContext *context = module->getContext();
-  return LLVM::lookupOrCreateFn(rewriter, module, fnName, {getPtrTy(context)},
-                                getVoidTy(context));
-}
+  auto funcOp = LLVM::lookupOrCreateFn(rewriter, module, fnName,
+                                       {getPtrTy(context)}, getVoidTy(context));
 
-/// Common code to determine the type used and its memory space
-template <typename AllocDeallocOp>
-std::tuple<LogicalResult, bool>
-computeTypeInfo(AllocDeallocOp op, ConversionPatternRewriter &rewriter) {
-  auto type = op.getBuffer().getType();
-  bool isInVtcm = false;
-  if (auto memrefType = mlir::dyn_cast<MemRefType>(type)) {
-    isInVtcm = hexagon::isInVTCMAddressSpace(memrefType);
-  } else {
-    llvm::errs() << "Invalid type passed to hexagonmem operation\n";
-    return {failure(), isInVtcm};
+  if (succeeded(funcOp)) {
+    // Mark function as having side effects to prevent LLVM O3 optimizer
+    // from removing dealloc calls as dead code.
+    // Without these attributes, LLVM sees the function as having no side
+    // effects and removes all calls during optimization.
+    (*funcOp)->setAttr(
+        "passthrough",
+        rewriter.getArrayAttr({rewriter.getStringAttr("noinline"),
+                               rewriter.getStringAttr("willreturn")}));
   }
 
-  return {success(), isInVtcm};
+  return funcOp;
+}
+
+/// Common code to determine the type used and it's memory space
+template <typename AllocDeallocOp>
+std::tuple<LogicalResult, bool, bool>
+computeTypeInfo(AllocDeallocOp op, ConversionPatternRewriter &rewriter,
+                bool isAlloc) {
+  auto type = op.getBuffer().getType();
+  bool isInVtcm = false;
+  bool isCroutonType = true;
+  if (auto croutonType = mlir::dyn_cast<crouton::CroutonType>(type)) {
+    isInVtcm = croutonType.getVtcm().getValue();
+  } else if (auto memrefType = mlir::dyn_cast<MemRefType>(type)) {
+    isCroutonType = false;
+    isInVtcm = hexagon::isInVTCMAddressSpace(memrefType);
+  } else {
+    llvm::errs() << "Invalid type passed to hexagonmem.alloc\n";
+    return {failure(), isInVtcm, isCroutonType};
+  }
+
+  return {success(), isInVtcm, isCroutonType};
 }
 
 //===----------------------------------------------------------------------===//
@@ -139,11 +190,20 @@ computeTypeInfo(AllocDeallocOp op, ConversionPatternRewriter &rewriter) {
 struct LowerAlloc : public ConvertOpToLLVMPattern<hexagonmem::AllocOp> {
   using ConvertOpToLLVMPattern<hexagonmem::AllocOp>::ConvertOpToLLVMPattern;
 
-  /// Lower `hexagonmem.alloc` to `llvm.call @hexagon_runtime_alloc_1d` call
+private:
+  std::string deviceType;
+
+public:
+  explicit LowerAlloc(LLVMTypeConverter &converter, const std::string &devType)
+      : ConvertOpToLLVMPattern<hexagonmem::AllocOp>(converter),
+        deviceType(devType) {}
+
+  /// Lower `hexagonmem.alloc` to `llvm.call @hexagon_runtime_alloc_1d/2d` call
   LogicalResult matchAndRewrite(hexagonmem::AllocOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
-    auto [result, isInVtcm] =
-        computeTypeInfo<hexagonmem::AllocOp>(op, rewriter);
+    auto [result, isInVtcm, isCroutonType] =
+        computeTypeInfo<hexagonmem::AllocOp>(op, rewriter,
+                                             /* isAlloc */ true);
 
     if (failed(result))
       return result;
@@ -152,7 +212,7 @@ struct LowerAlloc : public ConvertOpToLLVMPattern<hexagonmem::AllocOp> {
     auto type = op.getBuffer().getType();
 
     // Replace "hexagonmem.alloc" with "memref.alloc" for flat DDR allocations
-    if (!isInVtcm) {
+    if (!isInVtcm && !isCroutonType) {
       rewriter.replaceOpWithNewOp<memref::AllocOp>(
           op, mlir::cast<MemRefType>(type));
       return success();
@@ -164,37 +224,49 @@ struct LowerAlloc : public ConvertOpToLLVMPattern<hexagonmem::AllocOp> {
     alignmentValue =
         createIndexAttrConstant(rewriter, loc, indexType, alignmentAttr);
 
-    auto allocFnName = getAllocFnName();
-    FailureOr<LLVM::LLVMFuncOp> funcOp = getAllocFn(
-        op->getParentWithTrait<OpTrait::SymbolTable>(), allocFnName, rewriter);
+    auto allocFnName = getAllocFnName(isCroutonType, deviceType);
+    FailureOr<LLVM::LLVMFuncOp> funcOp =
+        getAllocFn(op->getParentWithTrait<OpTrait::SymbolTable>(), allocFnName,
+                   rewriter, isCroutonType);
     if (failed(funcOp))
       return failure();
 
     Value isInVtcmValue =
-        rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI1Type(), isInVtcm);
+        LLVM::ConstantOp::create(rewriter, loc, rewriter.getI1Type(), isInVtcm);
 
-    auto origMemRefType = mlir::cast<MemRefType>(type);
-    auto memRefType = mlir::affine::normalizeMemRefType(origMemRefType);
-    Value size;
+    if (isCroutonType) {
+      crouton::CroutonType croutonType = mlir::cast<crouton::CroutonType>(type);
+      Value size =
+          getI32Constant(rewriter, loc, getAllocationSize(croutonType));
+      Value blockSizeValue =
+          getI32Constant(rewriter, loc, DEFAULT_CROUTON_SIZE);
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+          op, funcOp.value(),
+          ValueRange({size, blockSizeValue, alignmentValue, isInVtcmValue}));
+    } else {
+      auto origMemRefType = mlir::cast<MemRefType>(type);
+      auto memRefType = mlir::affine::normalizeMemRefType(origMemRefType);
+      Value size;
 
-    // Get actual sizes of the memref as values: static sizes are constant
-    // values and dynamic sizes are passed to 'alloc' as operands.  In case of
-    // zero-dimensional memref, assume a scalar (size 1).
-    SmallVector<Value, 4> sizes;
-    SmallVector<Value, 4> strides;
-    Value sizeAsI32;
-    this->getMemRefDescriptorSizes(loc, memRefType, adaptor.getOperands(),
-                                   rewriter, sizes, strides, size,
-                                   /* sizeInBytes */ true);
-    sizeAsI32 =
-        rewriter.create<LLVM::TruncOp>(loc, rewriter.getIntegerType(32), size);
-    mlir::LLVM::CallOp callOp = rewriter.create<LLVM::CallOp>(
-        loc, funcOp.value(),
-        ValueRange({sizeAsI32, alignmentValue, isInVtcmValue}));
-    auto memRefDescriptor = this->createMemRefDescriptor(
-        loc, memRefType, callOp.getResult(), callOp.getResult(), sizes, strides,
-        rewriter);
-    rewriter.replaceOp(op, {memRefDescriptor});
+      // Get actual sizes of the memref as values: static sizes are constant
+      // values and dynamic sizes are passed to 'alloc' as operands.  In case of
+      // zero-dimensional memref, assume a scalar (size 1).
+      SmallVector<Value, 4> sizes;
+      SmallVector<Value, 4> strides;
+      Value sizeAsI32;
+      this->getMemRefDescriptorSizes(loc, memRefType, adaptor.getOperands(),
+                                     rewriter, sizes, strides, size,
+                                     /* sizeInBytes */ true);
+      sizeAsI32 = LLVM::TruncOp::create(rewriter, loc,
+                                        rewriter.getIntegerType(32), size);
+      mlir::LLVM::CallOp callOp = LLVM::CallOp::create(
+          rewriter, loc, funcOp.value(),
+          ValueRange({sizeAsI32, alignmentValue, isInVtcmValue}));
+      auto memRefDescriptor = this->createMemRefDescriptor(
+          loc, memRefType, callOp.getResult(), callOp.getResult(), sizes,
+          strides, rewriter);
+      rewriter.replaceOp(op, {memRefDescriptor});
+    }
 
     return success();
   }
@@ -206,11 +278,21 @@ struct LowerAlloc : public ConvertOpToLLVMPattern<hexagonmem::AllocOp> {
 
 struct LowerDealloc : public ConvertOpToLLVMPattern<hexagonmem::DeallocOp> {
   using ConvertOpToLLVMPattern<hexagonmem::DeallocOp>::ConvertOpToLLVMPattern;
-  /// Lower `hexagonmem.dealloc` to `llvm.call @hexagon_runtime_free_1d` call
+
+private:
+  std::string deviceType;
+
+public:
+  explicit LowerDealloc(LLVMTypeConverter &converter,
+                        const std::string &devType)
+      : ConvertOpToLLVMPattern<hexagonmem::DeallocOp>(converter),
+        deviceType(devType) {}
+  /// Lower `hexagonmem.dealloc` to `llvm.call @hexagon_runtime_free_1d/2d` call
   LogicalResult matchAndRewrite(hexagonmem::DeallocOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
-    auto [result, isInVtcm] =
-        computeTypeInfo<hexagonmem::DeallocOp>(op, rewriter);
+    auto [result, isInVtcm, isCroutonType] =
+        computeTypeInfo<hexagonmem::DeallocOp>(op, rewriter,
+                                               /* isAlloc */ false);
 
     if (failed(result))
       return result;
@@ -220,20 +302,22 @@ struct LowerDealloc : public ConvertOpToLLVMPattern<hexagonmem::DeallocOp> {
 
     // Replace "hexagonmem.dealloc" with "memref.dealloc" for flat DDR
     // allocations
-    if (!isInVtcm) {
+    if (!isInVtcm && !isCroutonType) {
       rewriter.replaceOpWithNewOp<memref::DeallocOp>(op, op.getBuffer());
       return success();
     }
 
-    auto deallocFnName = getDeallocFnName();
+    auto deallocFnName = getDeallocFnName(isCroutonType, deviceType);
     FailureOr<LLVM::LLVMFuncOp> funcOp =
         getDeallocFn(module, deallocFnName, rewriter);
     if (failed(funcOp))
       return failure();
 
-    MemRefDescriptor bufferDesc(adaptor.getBuffer());
-    auto bufferPtr = bufferDesc.alignedPtr(rewriter, loc);
-
+    auto bufferPtr = adaptor.getBuffer();
+    if (!isCroutonType) {
+      MemRefDescriptor bufferDesc(adaptor.getBuffer());
+      bufferPtr = bufferDesc.alignedPtr(rewriter, loc);
+    }
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp.value(),
                                               ValueRange({bufferPtr}));
     return success();
@@ -258,6 +342,14 @@ getCopyFn(ModuleOp module, StringRef fnName,
 struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
   using ConvertOpToLLVMPattern<hexagonmem::CopyOp>::ConvertOpToLLVMPattern;
 
+private:
+  std::string deviceType;
+
+public:
+  explicit LowerCopy(LLVMTypeConverter &converter, const std::string &devType)
+      : ConvertOpToLLVMPattern<hexagonmem::CopyOp>(converter),
+        deviceType(devType) {}
+
   // This method is an exact replica of the one in MemRefToLLVM lowering.
   // TODO: Expose the upstream method and use that instead of a local copy
   LogicalResult
@@ -269,8 +361,8 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
 
     // First make sure we have an unranked memref descriptor representation.
     auto makeUnranked = [&, this](Value ranked, MemRefType type) {
-      auto rank = rewriter.create<LLVM::ConstantOp>(loc, getIndexType(),
-                                                    type.getRank());
+      auto rank = LLVM::ConstantOp::create(rewriter, loc, getIndexType(),
+                                           type.getRank());
       auto *typeConverter = getTypeConverter();
       auto ptr =
           typeConverter->promoteOneMemRefDescriptor(loc, ranked, rewriter);
@@ -282,7 +374,7 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
     };
 
     // Save stack position before promoting descriptors
-    auto stackSaveOp = rewriter.create<LLVM::StackSaveOp>(loc, getPtrType());
+    auto stackSaveOp = LLVM::StackSaveOp::create(rewriter, loc, getPtrType());
 
     auto srcMemRefType = dyn_cast<MemRefType>(srcType);
     Value unrankedSource =
@@ -294,13 +386,13 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
                          : adaptor.getTarget();
 
     // Now promote the unranked descriptors to the stack.
-    auto one = rewriter.create<LLVM::ConstantOp>(loc, getIndexType(),
-                                                 rewriter.getIndexAttr(1));
+    auto one = LLVM::ConstantOp::create(rewriter, loc, getIndexType(),
+                                        rewriter.getIndexAttr(1));
     auto promote = [&](Value desc) {
       auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
       auto allocated =
-          rewriter.create<LLVM::AllocaOp>(loc, ptrType, desc.getType(), one);
-      rewriter.create<LLVM::StoreOp>(loc, desc, allocated);
+          LLVM::AllocaOp::create(rewriter, loc, ptrType, desc.getType(), one);
+      LLVM::StoreOp::create(rewriter, loc, desc, allocated);
       return allocated;
     };
 
@@ -315,18 +407,18 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
         sourcePtr.getType());
     if (failed(copyFn))
       return failure();
-    rewriter.create<LLVM::CallOp>(loc, copyFn.value(),
-                                  ValueRange{elemSize, sourcePtr, targetPtr});
+    LLVM::CallOp::create(rewriter, loc, copyFn.value(),
+                         ValueRange{elemSize, sourcePtr, targetPtr});
 
     // Restore stack used for descriptors
-    rewriter.create<LLVM::StackRestoreOp>(loc, stackSaveOp);
+    LLVM::StackRestoreOp::create(rewriter, loc, stackSaveOp);
 
     rewriter.eraseOp(op);
 
     return success();
   }
 
-  /// Lower `hexagonmem.copy` to `llvm.call @hexagon_runtime_copy` call
+  /// Lower `hexagonmem.` to `llvm.call @hexagon_runtime_copy` call
   LogicalResult matchAndRewrite(hexagonmem::CopyOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
     auto loc = op->getLoc();
@@ -335,68 +427,226 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
     auto sourceType = op.getSource().getType();
     auto targetType = op.getTarget().getType();
 
-    // Verify that both source and target are memref types
-    if (!mlir::isa<MemRefType>(sourceType) ||
-        !mlir::isa<MemRefType>(targetType)) {
-      llvm::errs() << "hexagonmem.copy op expects memref types\n";
+    bool isCroutonType;
+
+    // Verify that the source and targe types match
+    if (mlir::isa<crouton::CroutonType>(sourceType) &&
+        mlir::isa<crouton::CroutonType>(targetType)) {
+      isCroutonType = true;
+    } else if (mlir::isa<MemRefType>(sourceType) &&
+               mlir::isa<MemRefType>(targetType)) {
+      isCroutonType = false;
+    } else {
+      llvm::errs() << "hexagonmem.copy op expects the source and target types "
+                      "to match\n";
       return failure();
     }
 
-    auto srcMemrefType = mlir::cast<MemRefType>(sourceType);
-    auto tgtMemrefType = mlir::cast<MemRefType>(targetType);
+    auto copyFnName = getCopyFnName(deviceType);
+    // TODO: Cleanup the common code for crouton/memref types and make the
+    // function smaller
+    if (isCroutonType) {
+      auto srcCroutonType =
+          mlir::cast<crouton::CroutonType>(op.getSource().getType());
+      auto tgtCroutonType =
+          mlir::cast<crouton::CroutonType>(op.getTarget().getType());
+      bool sourceIsVTCM = srcCroutonType.getVtcm().getValue();
+      bool targetIsVTCM = tgtCroutonType.getVtcm().getValue();
+      int64_t copySize = getAllocationSize(srcCroutonType);
+      assert(getAllocationSize(tgtCroutonType) == copySize &&
+             "The crouton sizes don't match");
 
-    bool sourceIsVTCM = hexagon::isInVTCMAddressSpace(srcMemrefType);
-    bool targetIsVTCM = hexagon::isInVTCMAddressSpace(tgtMemrefType);
+      FailureOr<LLVM::LLVMFuncOp> funcOp =
+          getCopyFn(module, copyFnName, rewriter);
+      if (failed(funcOp))
+        return failure();
 
-    if (!sourceIsVTCM && !targetIsVTCM) {
-      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, op.getSource(),
-                                                  op.getTarget());
-      return success();
+      Value copySizeValue =
+          getI32Constant(rewriter, loc, copySize * DEFAULT_CROUTON_SIZE);
+      Value sourceIsVTCMValue = LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI1Type(), sourceIsVTCM);
+      Value targetIsVTCMValue = LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI1Type(), targetIsVTCM);
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+          op, funcOp.value(),
+          ValueRange({adaptor.getTarget(), adaptor.getSource(), copySizeValue,
+                      targetIsVTCMValue, sourceIsVTCMValue}));
+
+    } else {
+      auto srcMemrefType = mlir::cast<MemRefType>(op.getSource().getType());
+      auto tgtMemrefType = mlir::cast<MemRefType>(op.getTarget().getType());
+
+      bool sourceIsVTCM = hexagon::isInVTCMAddressSpace(srcMemrefType);
+      bool targetIsVTCM = hexagon::isInVTCMAddressSpace(tgtMemrefType);
+
+      if (!sourceIsVTCM && !targetIsVTCM) {
+        rewriter.replaceOpWithNewOp<memref::CopyOp>(op, op.getSource(),
+                                                    op.getTarget());
+        return success();
+      }
+
+      if (!hexagon::isContiguousMemrefType(srcMemrefType) ||
+          !hexagon::isContiguousMemrefType(tgtMemrefType)) {
+        return lowerToMemCopyFunctionCall(op, adaptor, rewriter);
+      }
+
+      FailureOr<LLVM::LLVMFuncOp> funcOp =
+          getCopyFn(module, copyFnName, rewriter);
+      if (failed(funcOp))
+        return failure();
+
+      auto getDescAndPtr =
+          [&](MemRefType memRefType,
+              Value value) -> std::tuple<MemRefDescriptor, Value> {
+        Type elementType =
+            typeConverter->convertType(memRefType.getElementType());
+        MemRefDescriptor desc(value);
+        Value basePtr = desc.alignedPtr(rewriter, loc);
+        Value offset = desc.offset(rewriter, loc);
+        return {desc, LLVM::GEPOp::create(rewriter, loc, basePtr.getType(),
+                                          elementType, basePtr, offset)};
+      };
+
+      auto [sourceDesc, sourcePtr] =
+          getDescAndPtr(srcMemrefType, adaptor.getSource());
+      auto [targetDesc, targetPtr] =
+          getDescAndPtr(tgtMemrefType, adaptor.getTarget());
+
+      // TODO: Check if it's necessary to compare allocation sizes and is it
+      // okay to do so for dynamic shapes as well
+      Value elementSizeInBytes =
+          getSizeInBytes(loc, srcMemrefType.getElementType(), rewriter);
+      Value copySize =
+          computeAllocationSize(srcMemrefType, rewriter, sourceDesc, loc,
+                                getIndexType(), elementSizeInBytes);
+
+      Value sourceIsVTCMValue = LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI1Type(), sourceIsVTCM);
+      Value targetIsVTCMValue = LLVM::ConstantOp::create(
+          rewriter, loc, rewriter.getI1Type(), targetIsVTCM);
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+          op, funcOp.value(),
+          ValueRange({targetPtr, sourcePtr, copySize, targetIsVTCMValue,
+                      sourceIsVTCMValue}));
     }
 
-    if (!hexagon::isContiguousMemrefType(srcMemrefType) ||
-        !hexagon::isContiguousMemrefType(tgtMemrefType)) {
-      return lowerToMemCopyFunctionCall(op, adaptor, rewriter);
-    }
+    return success();
+  }
+};
 
-    auto copyFnName = getCopyFnName();
+//===----------------------------------------------------------------------===//
+// Lower hexagonmem::MemrefToCroutonOp
+//===----------------------------------------------------------------------===//
+
+static FailureOr<LLVM::LLVMFuncOp>
+getMemrefToCroutonFn(ModuleOp module, StringRef fnName,
+                     ConversionPatternRewriter &rewriter) {
+  MLIRContext *context = module->getContext();
+  return LLVM::lookupOrCreateFn(rewriter, module, fnName,
+                                {getPtrTy(context), rewriter.getI32Type()},
+                                getPtrTy(context));
+}
+
+struct LowerMemrefToCrouton
+    : public ConvertOpToLLVMPattern<hexagonmem::MemrefToCroutonOp> {
+  using ConvertOpToLLVMPattern<
+      hexagonmem::MemrefToCroutonOp>::ConvertOpToLLVMPattern;
+
+private:
+  std::string deviceType;
+
+public:
+  explicit LowerMemrefToCrouton(LLVMTypeConverter &converter,
+                                const std::string &devType)
+      : ConvertOpToLLVMPattern<hexagonmem::MemrefToCroutonOp>(converter),
+        deviceType(devType) {}
+
+  LogicalResult matchAndRewrite(hexagonmem::MemrefToCroutonOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    auto loc = op->getLoc();
+    auto memrefToCroutonFnName = getMemrefToCroutonFnName(deviceType);
+    MemRefType sourceType = llvm::cast<MemRefType>(op.getSource().getType());
+
+    auto module = op->getParentOfType<ModuleOp>();
     FailureOr<LLVM::LLVMFuncOp> funcOp =
-        getCopyFn(module, copyFnName, rewriter);
+        getMemrefToCroutonFn(module, memrefToCroutonFnName, rewriter);
     if (failed(funcOp))
       return failure();
 
-    auto getDescAndPtr =
-        [&](MemRefType memRefType,
-            Value value) -> std::tuple<MemRefDescriptor, Value> {
-      Type elementType =
-          typeConverter->convertType(memRefType.getElementType());
-      MemRefDescriptor desc(value);
-      Value basePtr = desc.alignedPtr(rewriter, loc);
-      Value offset = desc.offset(rewriter, loc);
-      return {desc, rewriter.create<LLVM::GEPOp>(loc, basePtr.getType(),
-                                                 elementType, basePtr, offset)};
-    };
-
-    auto [sourceDesc, sourcePtr] =
-        getDescAndPtr(srcMemrefType, adaptor.getSource());
-    auto [targetDesc, targetPtr] =
-        getDescAndPtr(tgtMemrefType, adaptor.getTarget());
+    MemRefDescriptor bufferDesc(adaptor.getSource());
+    auto bufferPtr = bufferDesc.alignedPtr(rewriter, loc);
 
     Value elementSizeInBytes =
-        getSizeInBytes(loc, srcMemrefType.getElementType(), rewriter);
-    Value copySize =
-        computeAllocationSize(srcMemrefType, rewriter, sourceDesc, loc,
-                              getIndexType(), elementSizeInBytes);
+        getSizeInBytes(loc, sourceType.getElementType(), rewriter);
+    Value size = computeAllocationSize(sourceType, rewriter, bufferDesc, loc,
+                                       getIndexType(), elementSizeInBytes);
 
-    Value sourceIsVTCMValue = rewriter.create<LLVM::ConstantOp>(
-        loc, rewriter.getI1Type(), sourceIsVTCM);
-    Value targetIsVTCMValue = rewriter.create<LLVM::ConstantOp>(
-        loc, rewriter.getI1Type(), targetIsVTCM);
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-        op, funcOp.value(),
-        ValueRange({targetPtr, sourcePtr, copySize, targetIsVTCMValue,
-                    sourceIsVTCMValue}));
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, funcOp.value(),
+                                              ValueRange({bufferPtr, size}));
+    return success();
+  }
+};
 
+//===----------------------------------------------------------------------===//
+// Lower hexagonmem::CroutonToMemrefOp
+//===----------------------------------------------------------------------===//
+
+static FailureOr<LLVM::LLVMFuncOp>
+getCroutonToMemrefFn(ModuleOp module, StringRef fnName,
+                     ConversionPatternRewriter &rewriter) {
+  MLIRContext *context = module->getContext();
+  return LLVM::lookupOrCreateFn(rewriter, module, fnName, {getPtrTy(context)},
+                                getPtrTy(context));
+}
+
+struct LowerCroutonToMemref
+    : public ConvertOpToLLVMPattern<hexagonmem::CroutonToMemrefOp> {
+  using ConvertOpToLLVMPattern<
+      hexagonmem::CroutonToMemrefOp>::ConvertOpToLLVMPattern;
+
+private:
+  std::string deviceType;
+
+public:
+  explicit LowerCroutonToMemref(LLVMTypeConverter &converter,
+                                const std::string &devType)
+      : ConvertOpToLLVMPattern<hexagonmem::CroutonToMemrefOp>(converter),
+        deviceType(devType) {}
+
+  LogicalResult matchAndRewrite(hexagonmem::CroutonToMemrefOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    auto loc = op->getLoc();
+    auto croutonToMemrefFnName = getCroutonToMemrefFnName(deviceType);
+
+    auto module = op->getParentOfType<ModuleOp>();
+    FailureOr<LLVM::LLVMFuncOp> funcOp =
+        getCroutonToMemrefFn(module, croutonToMemrefFnName, rewriter);
+    if (failed(funcOp))
+      return failure();
+
+    auto sourcePtr = adaptor.getSource();
+
+    mlir::LLVM::CallOp callOp = LLVM::CallOp::create(
+        rewriter, loc, funcOp.value(), ValueRange({sourcePtr}));
+
+    auto memRefType = mlir::cast<MemRefType>(op.getResult().getType());
+    Value size;
+
+    // Get actual sizes of the memref as values: static sizes are constant
+    // values and dynamic sizes are passed to 'alloc' as operands.  In case of
+    // zero-dimensional memref, assume a scalar (size 1).
+    SmallVector<Value, 4> sizes;
+    SmallVector<Value, 4> strides;
+    this->getMemRefDescriptorSizes(loc, memRefType, {}, rewriter, sizes,
+                                   strides, size,
+                                   /* sizeInBytes */ true);
+
+    auto memRefDescriptor = this->createMemRefDescriptor(
+        loc, memRefType, callOp.getResult(), callOp.getResult(), sizes, strides,
+        rewriter);
+    rewriter.replaceOp(op, {memRefDescriptor});
     return success();
   }
 };
@@ -406,12 +656,20 @@ struct LowerCopy : public ConvertOpToLLVMPattern<hexagonmem::CopyOp> {
 //===----------------------------------------------------------------------===//
 
 void populateHexagonMemToLLVMConversionPatterns(LLVMTypeConverter &converter,
-                                                RewritePatternSet &patterns) {
-  patterns.add<LowerAlloc, LowerDealloc, LowerCopy>(converter);
+                                                RewritePatternSet &patterns,
+                                                const std::string &deviceType) {
+  patterns.add<LowerAlloc>(converter, deviceType);
+  patterns.add<LowerDealloc>(converter, deviceType);
+  patterns.add<LowerCopy>(converter, deviceType);
+  patterns.add<LowerMemrefToCrouton>(converter, deviceType);
+  patterns.add<LowerCroutonToMemref>(converter, deviceType);
 }
 
 struct HexagonMemToLLVMPass
-    : public HexagonMemToLLVMBase<HexagonMemToLLVMPass> {
+    : public ::impl::HexagonMemToLLVMBase<HexagonMemToLLVMPass> {
+  explicit HexagonMemToLLVMPass(const HexagonMemToLLVMOptions &options)
+      : Base(options) {}
+
   using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -434,7 +692,8 @@ struct HexagonMemToLLVMPass
     target.addIllegalDialect<HexagonMemDialect>();
 
     hexagon::addTypeConversions(context, typeConverter);
-    populateHexagonMemToLLVMConversionPatterns(typeConverter, patterns);
+    populateHexagonMemToLLVMConversionPatterns(typeConverter, patterns,
+                                               device_type);
 
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))
       signalPassFailure();
@@ -445,6 +704,7 @@ struct HexagonMemToLLVMPass
 struct HexagonMemToLLVMDialectInterface : public ConvertToLLVMPatternInterface {
   using ConvertToLLVMPatternInterface::ConvertToLLVMPatternInterface;
   void loadDependentDialects(MLIRContext *context) const final {
+    context->loadDialect<mlir::crouton::CroutonDialect>();
     context->loadDialect<LLVM::LLVMDialect>();
   }
 
@@ -454,7 +714,8 @@ struct HexagonMemToLLVMDialectInterface : public ConvertToLLVMPatternInterface {
       ConversionTarget &target, LLVMTypeConverter &typeConverter,
       RewritePatternSet &patterns) const final {
     hexagon::addTypeConversions(getContext(), typeConverter);
-    populateHexagonMemToLLVMConversionPatterns(typeConverter, patterns);
+    populateHexagonMemToLLVMConversionPatterns(typeConverter, patterns,
+                                               "hexagon");
   }
 };
 
@@ -469,6 +730,6 @@ void mlir::hexagonmem::registerConvertHexagonMemToLLVMInterface(
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-hexagonmem::createHexagonMemToLLVMPass() {
-  return std::make_unique<HexagonMemToLLVMPass>();
+hexagonmem::createHexagonMemToLLVMPass(const HexagonMemToLLVMOptions &options) {
+  return std::make_unique<HexagonMemToLLVMPass>(options);
 }

@@ -94,7 +94,7 @@ Value convertToIndex(OpBuilder &builder, Location loc, Value value) {
     return value;
   auto indexType = builder.getIndexType();
   auto indexValue =
-      builder.create<mlir::arith::IndexCastOp>(loc, indexType, value);
+      mlir::arith::IndexCastOp::create(builder, loc, indexType, value);
   return indexValue;
 }
 
@@ -120,7 +120,7 @@ void generatePingPongSubKernel(IRRewriter &rewriter,
   // Create prefetch section: executes if this is not the last iteration.
   rewriter.setInsertionPointToStart(&ppongIfOp.getThenRegion().front());
   auto ifNotLastIter =
-      rewriter.create<scf::IfOp>(loc, TypeRange(), nextExists, false);
+      scf::IfOp::create(rewriter, loc, TypeRange(), nextExists, false);
   ifNotLastIter->setAttr("db_prefetch", UnitAttr::get(context));
   rewriter.setInsertionPointToStart(&ifNotLastIter.getThenRegion().front());
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
@@ -130,7 +130,7 @@ void generatePingPongSubKernel(IRRewriter &rewriter,
     Operation *newViewOp = view->clone(mapping);
     rewriter.insert(newViewOp);
     Value cloneResult = newViewOp->getResult(0);
-    rewriter.create<memref::CopyOp>(loc, cloneResult, nextBuffers[i]);
+    memref::CopyOp::create(rewriter, loc, cloneResult, nextBuffers[i]);
   }
 
   // Re-map the compute.
@@ -156,8 +156,8 @@ void generatePingPongSubKernel(IRRewriter &rewriter,
     Operation *newStore = schedule.stores[i]->clone(mapping2);
     rewriter.insert(newStore);
   }
-  rewriter.create<memref::StoreOp>(loc, toggleNextStoreValue, toggle,
-                                   ValueRange{});
+  memref::StoreOp::create(rewriter, loc, toggleNextStoreValue, toggle,
+                          ValueRange{});
 }
 
 /// Rewrite the single-buffered loop as double buffered.
@@ -174,15 +174,15 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   rewriter.setInsertionPoint(sbForOp);
 
   // Define some general constants.
-  Value trueVal = rewriter.create<arith::ConstantOp>(
-      loc, boolType, rewriter.getBoolAttr(true));
-  Value falseVal = rewriter.create<arith::ConstantOp>(
-      loc, boolType, rewriter.getBoolAttr(false));
+  Value trueVal = arith::ConstantOp::create(rewriter, loc, boolType,
+                                            rewriter.getBoolAttr(true));
+  Value falseVal = arith::ConstantOp::create(rewriter, loc, boolType,
+                                             rewriter.getBoolAttr(false));
 
   // Allocate `toggle` for ping-pong state and initialize it to true.
-  Value toggle = rewriter.create<memref::AllocOp>(loc, boolMemrefType);
+  Value toggle = memref::AllocOp::create(rewriter, loc, boolMemrefType);
   auto store =
-      rewriter.create<memref::StoreOp>(loc, trueVal, toggle, ValueRange{});
+      memref::StoreOp::create(rewriter, loc, trueVal, toggle, ValueRange{});
 
   // Allocate Ping-Pong Buffers.
   int64_t alignment = 2048;
@@ -191,10 +191,10 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   SmallVector<Value, 3> pongBuffers;
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
     auto alloc = schedule.triplets[i].alloc;
-    Value ping = rewriter.create<memref::AllocOp>(
-        loc, alloc.getType(), mlir::ValueRange{}, alignmentAttr);
-    Value pong = rewriter.create<memref::AllocOp>(
-        loc, alloc.getType(), mlir::ValueRange{}, alignmentAttr);
+    Value ping = memref::AllocOp::create(rewriter, loc, alloc.getType(),
+                                         mlir::ValueRange{}, alignmentAttr);
+    Value pong = memref::AllocOp::create(rewriter, loc, alloc.getType(),
+                                         mlir::ValueRange{}, alignmentAttr);
     pingBuffers.push_back(ping);
     pongBuffers.push_back(pong);
   }
@@ -208,16 +208,15 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
 
   // Prologue: executes iff not 0-iteration loop.
   Value mayLoop =
-      rewriter
-          .create<arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::slt,
-                                 lowerBoundIdx, upperBoundIdx)
+      arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::slt,
+                            lowerBoundIdx, upperBoundIdx)
           .getResult();
-  Value mayLoopVar = rewriter.create<memref::AllocOp>(loc, boolMemrefType);
-  rewriter.create<memref::StoreOp>(loc, mayLoop, mayLoopVar, ValueRange{});
+  Value mayLoopVar = memref::AllocOp::create(rewriter, loc, boolMemrefType);
+  memref::StoreOp::create(rewriter, loc, mayLoop, mayLoopVar, ValueRange{});
   Value mayLoopReFetch =
-      rewriter.create<memref::LoadOp>(loc, boolType, mayLoopVar);
+      memref::LoadOp::create(rewriter, loc, boolType, mayLoopVar);
   auto ifMayLoop =
-      rewriter.create<scf::IfOp>(loc, TypeRange(), mayLoopReFetch, false);
+      scf::IfOp::create(rewriter, loc, TypeRange(), mayLoopReFetch, false);
   ifMayLoop->setAttr("db_generic", idAttr);
   ifMayLoop->setAttr("db_prologue", UnitAttr::get(context));
   rewriter.setInsertionPointToStart(&ifMayLoop.getThenRegion().front());
@@ -228,7 +227,7 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
     Operation *newViewOp = view->clone(mapping);
     rewriter.insert(newViewOp);
     Value cloneResult = newViewOp->getResult(0);
-    rewriter.create<memref::CopyOp>(loc, cloneResult, pingBuffers[i]);
+    memref::CopyOp::create(rewriter, loc, cloneResult, pingBuffers[i]);
   }
 
   // Kernel: create the new double-buffered top-loop.
@@ -242,22 +241,21 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
 
   // Toggle decides whether this is ping-or-pong-stage.
   rewriter.setInsertionPoint(forBody->getTerminator());
-  Value toggleVal = rewriter.create<memref::LoadOp>(loc, boolType, toggle);
+  Value toggleVal = memref::LoadOp::create(rewriter, loc, boolType, toggle);
 
   // Check if next preload should happen (or this is last iteration).
   Value nextIdx =
-      rewriter.create<arith::AddIOp>(loc, dbIndVar, stepIdx).getResult();
+      arith::AddIOp::create(rewriter, loc, dbIndVar, stepIdx).getResult();
   Value nextIdxPlusTileSize =
-      rewriter.create<arith::AddIOp>(loc, nextIdx, stepIdx).getResult();
+      arith::AddIOp::create(rewriter, loc, nextIdx, stepIdx).getResult();
   Value nextExists =
-      rewriter
-          .create<arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sle,
-                                 nextIdxPlusTileSize, upperBoundIdx)
+      arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::sle,
+                            nextIdxPlusTileSize, upperBoundIdx)
           .getResult();
 
   // Ping sub-kernel.
   auto pingIfOp =
-      rewriter.create<scf::IfOp>(loc, TypeRange(), toggleVal, false);
+      scf::IfOp::create(rewriter, loc, TypeRange(), toggleVal, false);
   pingIfOp->setAttr("db_ping_kernel", UnitAttr::get(context));
   generatePingPongSubKernel(rewriter, schedule, loopNest, pingIfOp, nextExists,
                             nextIdx, pingBuffers, pongBuffers, toggle,
@@ -266,9 +264,9 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   // Pong sub-kernel.
   rewriter.setInsertionPointAfter(pingIfOp);
   Value invertedToggleVal =
-      rewriter.create<arith::XOrIOp>(loc, toggleVal, trueVal);
+      arith::XOrIOp::create(rewriter, loc, toggleVal, trueVal);
   auto pongIfOp =
-      rewriter.create<scf::IfOp>(loc, TypeRange(), invertedToggleVal, false);
+      scf::IfOp::create(rewriter, loc, TypeRange(), invertedToggleVal, false);
   pongIfOp->setAttr("db_pong_kernel", UnitAttr::get(context));
   generatePingPongSubKernel(rewriter, schedule, loopNest, pongIfOp, nextExists,
                             nextIdx, pongBuffers, pingBuffers, toggle,

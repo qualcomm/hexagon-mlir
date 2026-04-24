@@ -67,7 +67,7 @@ struct FuncResult
 uint64_t avg_time_us = benchmark_time_us({iterations}, [&]() {{
     {function_call}
 }});
-TestReport tr("{func_name}", avg_time_us, "us", Result::Pass);
+TestReport tr("{func_name}", avg_time_us, "us", Result::Pass, "{save_path}");
 tr.save();
 """
 
@@ -236,11 +236,12 @@ class HexagonWrapperGenerator:
         """Generates initializations for input wrapper structs"""
         raise NotImplementedError("Unimplemented- requires definition by frontend.")
 
-    def generate_benchmarking_and_reporting(self, function_call):
+    def generate_benchmarking_and_reporting(self, function_call, exec_dir):
         return self.common_strings.func_call_and_benchmarking.format(
             iterations=self.iterations,
             function_call=function_call,
             func_name=self.func_name,
+            save_path=f"{exec_dir}/perf.txt",
         )
 
     def generate_update_tensor_calls(self):
@@ -302,7 +303,9 @@ class HexagonWrapperGenerator:
 
     def generate_lwp_call(self):
         if self.enable_lwp:
-            return self.common_strings.call_lwp.format(path="/vendor/bin", fname="lwp")
+            return self.common_strings.call_lwp.format(
+                path="/data/local/tmp", fname="lwp"
+            )
         return ""
 
     def generate_tensor_write_to_file_calls(self, fname, exec_dir):
@@ -347,7 +350,7 @@ class HexagonWrapperGenerator:
                 file_name, exec_dir
             ),
             benchmarking_and_reporting=self.generate_benchmarking_and_reporting(
-                self.generate_llvm_function_call()
+                self.generate_llvm_function_call(), exec_dir
             ),
             update_tensor=self.generate_update_tensor_calls(),
             write_to_file_calls=self.generate_tensor_write_to_file_calls(
@@ -379,7 +382,7 @@ class HexagonWrapperGenerator:
 # possibility 2 - the value of the environment variable HEXAGON_MLIR_DUMP_DIR
 # possibility 3 - the /tmp/ directory otherwise
 # which will be check in this order
-# Returns the full path to the folder created
+# Returns (full path, leaf dirname) to the folder created
 def create_timestamped_folder(
     model_name: str, optional_base_dir: Optional[str] = None
 ) -> str:
@@ -414,7 +417,7 @@ def create_timestamped_folder(
     print(
         f"==> Folder '{folder_name}' created successfully inside of", base_dir, reason
     )
-    return full_path
+    return full_path, folder_name
 
 
 class HexagonLauncherBase:

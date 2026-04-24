@@ -12,39 +12,29 @@
 
 #include "hexagon/Target/HEX_LLVMIR/LLVMIRTranslation.h"
 
-#include "mlir/Conversion/Passes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/ExecutionEngine/ExecutionEngine.h"
-#include "mlir/ExecutionEngine/OptUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
-#include "mlir/Pass/Pass.h"
-#include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
-#include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
-#include "mlir/Transforms/Passes.h"
 
-#include "llvm/ADT/APInt.h"
-#include "llvm/ADT/STLExtras.h"
+#include "hexagon/Common/Common.h"
+#include "mlir/ExecutionEngine/ExecutionEngine.h"
+#include "mlir/ExecutionEngine/OptUtils.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/IR/Constants.h"
-#include "llvm/IRReader/IRReader.h"
-#include "llvm/Linker/Linker.h"
-#include "llvm/Support/CodeGen.h"
-#include "llvm/Support/SourceMgr.h"
-#include <dlfcn.h>
-#include <filesystem>
-#include <iostream>
-#include <iterator>
-#include <llvm/IR/LegacyPassManager.h>
-#include <llvm/MC/MCSubtargetInfo.h>
-#include <llvm/MC/TargetRegistry.h>
-#include <llvm/Support/TargetSelect.h>
-#include <llvm/Target/TargetMachine.h>
-#include <llvm/Target/TargetOptions.h>
-#include <llvm/TargetParser/Triple.h>
-#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Module.h"
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 
 namespace mlir {
 namespace hexagon {
@@ -158,6 +148,85 @@ void dumpHexagonAssembly(llvm::Module &module, unsigned moduleId,
   }
 }
 
+/// Helper function to convert raw opt level values to llvm.
+static std::optional<llvm::OptimizationLevel> mapToLevel(unsigned optLevel,
+                                                         unsigned sizeLevel) {
+  static const std::optional<llvm::OptimizationLevel> mapTable[4][3] = {
+      {llvm::OptimizationLevel::O0, std::nullopt, std::nullopt},
+      {llvm::OptimizationLevel::O1, std::nullopt, std::nullopt},
+      {llvm::OptimizationLevel::O2, llvm::OptimizationLevel::Os,
+       llvm::OptimizationLevel::Oz},
+      {llvm::OptimizationLevel::O3, std::nullopt, std::nullopt}};
+
+  if (optLevel > 3 || sizeLevel > 2)
+    return std::nullopt;
+  return mapTable[optLevel][sizeLevel];
+}
+
+/// Run llvm optimizers on the lowered llvm-ir.
+std::function<llvm::Error(llvm::Module *)>
+runLLVMOptimizer(unsigned optLevel, unsigned sizeLevel,
+                 llvm::TargetMachine *targetMachine) {
+
+  return [optLevel, sizeLevel, targetMachine](llvm::Module *m) -> llvm::Error {
+    std::optional<llvm::OptimizationLevel> ol = mapToLevel(optLevel, sizeLevel);
+    if (!ol) {
+      return llvm::make_error<llvm::StringError>(
+          llvm::formatv("invalid optimization/size level {0}/{1}", optLevel,
+                        sizeLevel)
+              .str(),
+          llvm::inconvertibleErrorCode());
+    }
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+
+    llvm::PipelineTuningOptions tuningOptions;
+    tuningOptions.LoopUnrolling = true;
+    tuningOptions.LoopInterleaving = true;
+    tuningOptions.LoopVectorization = true;
+    tuningOptions.SLPVectorization = true;
+
+    // Create PassInstrumentationCallbacks for IR printing
+    llvm::PassInstrumentationCallbacks pic;
+    llvm::StandardInstrumentations si(m->getContext(), /*DebugLogging=*/false);
+    si.registerCallbacks(pic, &mam);
+
+    // Register custom callbacks to print IR after each pass if env var is set
+    const char *dumpPasses = std::getenv("HEXAGON_LLVM_PASSES_DUMP");
+    if (dumpPasses && std::string(dumpPasses) == "1") {
+      pic.registerAfterPassCallback([](llvm::StringRef passName, llvm::Any ir,
+                                       const llvm::PreservedAnalyses &pa) {
+        llvm::errs() << "\n========================================\n";
+        llvm::errs() << "After LLVM-Pass: " << passName << "\n";
+        llvm::errs() << "========================================\n";
+        if (llvm::any_cast<const llvm::Module *>(&ir)) {
+          const llvm::Module *module = llvm::any_cast<const llvm::Module *>(ir);
+          module->print(llvm::errs(), nullptr);
+        } else if (llvm::any_cast<const llvm::Function *>(&ir)) {
+          const llvm::Function *func =
+              llvm::any_cast<const llvm::Function *>(ir);
+          llvm::errs() << "Function: " << func->getName() << "\n";
+          func->print(llvm::errs());
+        }
+      });
+    }
+
+    llvm::PassBuilder pb(targetMachine, tuningOptions, std::nullopt, &pic);
+    pb.registerModuleAnalyses(mam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerLoopAnalyses(lam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::ModulePassManager mpm;
+    mpm.addPass(pb.buildPerModuleDefaultPipeline(*ol));
+    mpm.run(*m, mam);
+    return llvm::Error::success();
+  };
+}
+
 static std::unique_ptr<llvm::Module> translateLLVMToLLVMIR(
     llvm::LLVMContext *llvmContext, mlir::ModuleOp module,
     const std::unordered_map<std::string, std::string> &arch_kwargs,
@@ -178,7 +247,7 @@ static std::unique_ptr<llvm::Module> translateLLVMToLLVMIR(
     f.addFnAttr("target-features", arch_kwargs.at("arch_features"));
 
   if (optLevel != LLVMOptimizationLevel::NoOptimization) {
-    auto optPipeline = mlir::makeOptimizingTransformer(
+    auto optPipeline = runLLVMOptimizer(
         static_cast<int>(optLevel), /*sizeLevel=*/0, /*targetMachine=*/nullptr);
 
     if (auto err = optPipeline(llvmModule.get())) {
@@ -186,7 +255,6 @@ static std::unique_ptr<llvm::Module> translateLLVMToLLVMIR(
       return nullptr;
     }
   }
-
   return llvmModule;
 }
 
@@ -243,6 +311,56 @@ inline std::vector<char> llvm_module_to_obj_string(llvm::Module &llvmModule) {
   return result;
 }
 
+// LLVM_IR_ENABLE_DUMP: Dump IR after each pass while lowering LLVM IR to obj
+// LLVM_IR_DUMP_ONLY_PASSES: Dump IR after selective passes
+// LLVM_IR_LIST_PASSES: Print the list of passes running
+// LLVM_IR_DEBUG_ONLY_PASSES: Set --debug-only flag for selective passes
+static void setupCodegenDumpOptions() {
+  bool dumpAll = mlir::hexagon::isEnvTrue("LLVM_IR_ENABLE_DUMP");
+  const char *dumpSelectivePasses = std::getenv("LLVM_IR_DUMP_ONLY_PASSES");
+  bool listPasses = mlir::hexagon::isEnvTrue("LLVM_IR_LIST_PASSES");
+  const char *debugOnly = std::getenv("LLVM_IR_DEBUG_ONLY_PASSES");
+
+  if (!dumpAll && !listPasses &&
+      (!dumpSelectivePasses || dumpSelectivePasses[0] == '\0') &&
+      (!debugOnly || debugOnly[0] == '\0'))
+    return;
+
+  static bool alreadyParsed = false;
+  if (alreadyParsed)
+    return;
+  alreadyParsed = true;
+
+  std::vector<std::string> argStorage;
+  argStorage.push_back("program");
+
+  // e.g. LLVM_IR_DUMP_ONLY_PASSES="prologepilog,hexagon-packetizer"
+  // This can be updated to -print-before as per need.
+  if (dumpSelectivePasses) {
+    argStorage.push_back(std::string("-print-after=") + dumpSelectivePasses);
+  } else if (dumpAll) {
+    argStorage.push_back("-print-after-all");
+  }
+
+  // Note: -debug-only requires LLVM built with assertions enabled
+  // (CMAKE_BUILD_TYPE=Debug or LLVM_ENABLE_ASSERTIONS=ON).
+  if (debugOnly) {
+    argStorage.push_back(std::string("-debug-only=") + debugOnly);
+  }
+
+  // Dump the list of passes while converting from LLVM IR to obj
+  if (listPasses) {
+    // Prints the pass pipeline structure to stderr before running
+    argStorage.push_back("-debug-pass=Structure");
+  }
+
+  std::vector<const char *> args;
+  for (auto &s : argStorage)
+    args.push_back(s.c_str());
+
+  llvm::cl::ParseCommandLineOptions(args.size(), args.data());
+}
+
 /// Generate object file from mlir-llvm module.
 std::vector<char>
 llvm_module_to_obj_string(std::unique_ptr<llvm::Module> &llvmModule) {
@@ -257,6 +375,10 @@ llvm_module_to_obj_string(std::unique_ptr<llvm::Module> &llvmModule) {
   auto target_triple = llvmModule->getTargetTriple();
   std::unique_ptr<llvm::TargetMachine> targetMachine =
       create_target_machine(target_triple);
+
+  // Set options for debugging
+  setupCodegenDumpOptions();
+
   llvm::legacy::PassManager codegenPasses;
   llvmModule->setDataLayout(targetMachine->createDataLayout());
 

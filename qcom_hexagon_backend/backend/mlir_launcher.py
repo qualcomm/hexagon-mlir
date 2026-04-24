@@ -15,7 +15,6 @@ from triton.backends.qcom_hexagon_backend.hexagon_launcher_base import (
 )
 from triton._C.libtriton import qcom_hexagon_backend, ir  # type: ignore
 
-
 """
 This launcher is only intended for unit testing small MLIR examples and/or
 primiarily to be used for debugging only and not to run large models.
@@ -33,6 +32,7 @@ class MLIRHexagonLauncher:
         cpp_wrapper_path - Path to external C++ stub
         validate_result - Boolean to extract and print perf report if it is generated in C++ stub
         func_name - Identifier for the kernel being executed.
+        enable_etm - When set to True, etm trace is collected on device and pyetm processes it.
     """
 
     @staticmethod
@@ -42,6 +42,8 @@ class MLIRHexagonLauncher:
         validate_result: bool,
         options: dict[str, str],
         func_name: str = "kernel",
+        enable_etm: bool = False,
+        cleanup_device_post_exec: bool = True,
     ):
         context = ir.context()
         qcom_hexagon_backend.load_dialects(context)
@@ -53,13 +55,23 @@ class MLIRHexagonLauncher:
         )
         assert len(obj_modules) == 1, "Multiple modules not supported"
 
-        local_dir_path = create_timestamped_folder(func_name)
+        local_dir_path, kernel_run_id = create_timestamped_folder(func_name)
         print(f"==> cpp wrapper path: {cpp_wrapper_path}")
         obj_src_path = os.path.join(local_dir_path, func_name + ".o")
         Path(obj_src_path).write_bytes(obj_modules[0])
         print(f"==> kernel obj saved in: {obj_src_path}")
 
-        hexec = HexagonExecutor(options["enableLWP"])
+        hexec = HexagonExecutor(
+            kernel_run_id=kernel_run_id,
+            # options values are strings (required by translate_linalg_to_obj), so
+            # parse explicitly — str("False") is truthy and would incorrectly enable LWP/HexKL.
+            enable_lwp=options["enableLWP"].lower() == "true",
+            enable_etm=enable_etm,
+            enable_hexkl=options["enableHexKL"].lower() == "true",
+            cleanup_device_post_exec=cleanup_device_post_exec,
+            perf_path="/data/local/tmp/perf.txt",
+        )
+
         so_path = hexec.generate_shared_object(cpp_wrapper_path, obj_src_path)
         print("==> Shared object generated: ", so_path)
         hexec.run(

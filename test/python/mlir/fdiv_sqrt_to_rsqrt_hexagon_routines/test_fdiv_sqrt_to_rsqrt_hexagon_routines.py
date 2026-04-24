@@ -1,4 +1,4 @@
-# ===- test_conv_tiling.py --------------------------------------------------===
+# ===- test_fdiv_sqrt_to_rsqrt_hexagon_routines.py --------------------------===
 #
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause.
@@ -17,17 +17,12 @@ from mlir_test_utils import run_mlir_kernel_test
 
 
 def test_mlir_suite():
-    kernel_name = "conv_tiling"
+    kernel_name = "fdiv_sqrt_pattern_scalar"
     current_file_dir = os.path.dirname(os.path.abspath(__file__))
 
     run_mlir_kernel_test(
         kernel_name=kernel_name,
         current_file_dir=current_file_dir,
-        options_overrides={
-            "enableConvTiling": True,
-            "convTilingFactor": 32,
-            "convTileOCDim": True,
-            "enableHexagonMemCopyToDMA": True,
-        },
+        options_overrides=None,
         validate_result=False,
     )

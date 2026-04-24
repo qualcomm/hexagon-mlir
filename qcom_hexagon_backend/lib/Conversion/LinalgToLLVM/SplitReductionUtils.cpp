@@ -915,8 +915,8 @@ tileToPartialReduction(Operation *op, OpBuilder &b, Location loc,
   auto resultTypes = ValueRange(tiledInits).getTypes();
   if (tilingStrategy ==
       ReductionTilingStrategy::PartialReductionOuterReduction) {
-    auto newOp = b.create<GenericOp>(loc, resultTypes, tiledInputs, tiledInits,
-                                     newMaps, newIteratorTypes);
+    auto newOp = GenericOp::create(b, loc, resultTypes, tiledInputs, tiledInits,
+                                   newMaps, newIteratorTypes);
     // Update the basic block after moving inits to ins operand.
     IRMapping mapping;
     Region &region = newOp.getRegion();

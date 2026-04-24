@@ -1,0 +1,79 @@
+diff --git a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp
+index 7e9500523..95713d198 100644
+--- a/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp
++++ b/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.cpp
+@@ -7,6 +7,8 @@
+ #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+ #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+ #include "llvm/Support/MathExtras.h"
++#include <optional>
++#include <utility> // std::declval
+ 
+ using namespace mlir;
+ 
+@@ -85,8 +87,13 @@ LLVM::LLVMFuncOp getAssertfailDeclaration(RewriterBase &rewriter) {
+ 
+ namespace mlir::triton::NVIDIA {
+ 
++// TODO(compat): Upstream MLIR renamed NVVM enum type from 'ReduxKind' to 'ReductionKind'.
++// Qualcomm Downstream LLVM has not picked up this change; however, 
++// NVVM::ReduxOp exists in both upstream and downstream LLVM, so we can use decltype to avoid compatibility issues.
++// Remove this typedef once Qualcomm Downstream LLVM has been updated to match upstream LLVM.
++using ReduxKindTy = decltype(std::declval<NVVM::ReduxOp>().getKind());
+ // Check if the reduction can use a redux op and return the kind.
+-static std::optional<NVVM::ReductionKind>
++static std::optional<ReduxKindTy>
+ matchReduxKind(triton::ReduceOp op, int computeCapability,
+                bool &useNanQualifier) {
+   useNanQualifier = false;
+@@ -99,29 +106,29 @@ matchReduxKind(triton::ReduceOp op, int computeCapability,
+     if (isa<arith::MinimumFOp, arith::MaximumFOp>(reduceOp))
+       useNanQualifier = true;
+     if (isa<arith::MaxNumFOp, arith::MaximumFOp>(reduceOp))
+-      return NVVM::ReductionKind::FMAX;
++      return ReduxKindTy::FMAX;
+     if (isa<arith::MinNumFOp, arith::MinimumFOp>(reduceOp))
+-      return NVVM::ReductionKind::FMIN;
++      return ReduxKindTy::FMIN;
+   }
+   auto intType = dyn_cast<IntegerType>(reduceOp->getResultTypes()[0]);
+   if (!intType || intType.getWidth() > 32)
+     return std::nullopt;
+   if (isa<arith::AddIOp>(reduceOp))
+-    return NVVM::ReductionKind::ADD;
++    return ReduxKindTy::ADD;
+   if (isa<arith::AndIOp>(reduceOp))
+-    return NVVM::ReductionKind::AND;
++    return ReduxKindTy::AND;
+   if (isa<arith::OrIOp>(reduceOp))
+-    return NVVM::ReductionKind::OR;
++    return ReduxKindTy::OR;
+   if (isa<arith::XOrIOp>(reduceOp))
+-    return NVVM::ReductionKind::XOR;
++    return ReduxKindTy::XOR;
+   if (isa<arith::MinSIOp>(reduceOp))
+-    return NVVM::ReductionKind::MIN;
++    return ReduxKindTy::MIN;
+   if (isa<arith::MinUIOp>(reduceOp))
+-    return NVVM::ReductionKind::UMIN;
++    return ReduxKindTy::UMIN;
+   if (isa<arith::MaxSIOp>(reduceOp))
+-    return NVVM::ReductionKind::MAX;
++    return ReduxKindTy::MAX;
+   if (isa<arith::MaxUIOp>(reduceOp))
+-    return NVVM::ReductionKind::UMAX;
++    return ReduxKindTy::UMAX;
+   return std::nullopt;
+ }
+ 
+@@ -491,8 +498,8 @@ bool TargetInfo::warpReduce(RewriterBase &rewriter, Location loc,
+       unsigned bitwidth = acc[i].getType().getIntOrFloatBitWidth();
+       if (acc[i].getType().isInteger()) {
+         if (bitwidth < 32) {
+-          if (*kind == NVVM::ReductionKind::MIN ||
+-              *kind == NVVM::ReductionKind::MAX)
++          if (*kind == ReduxKindTy::MIN ||
++              *kind == ReduxKindTy::MAX)
+             acc[i] = b.sext(i32_ty, acc[i]);
+           else
+             acc[i] = b.zext(i32_ty, acc[i]);

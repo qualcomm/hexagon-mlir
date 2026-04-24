@@ -30,8 +30,8 @@ func.func @kernel(%x: memref<1024x256xf32>, %y: memref<1024x256xf32>, %z: memref
 }
 // CHECK-LABEL: @kernel(ptr readnone captures(none) %0, ptr %1, i64 %2,
 // CHECK-SAME:          i64 %3, i64 %4, i64 %5, i64 %6, ptr readnone captures(none) %7, ptr %8,
-// CHECK:      tail call void @hexagon_runtime_copy(ptr [[VTCM_X:%.+]], ptr %1, i32 524288, i1 true, i1 false)
-// CHECK:      tail call void @hexagon_runtime_copy(ptr [[VTCM_Y:%.+]], ptr %8, i32 524288, i1 true, i1 false)
+// CHECK:      tail call void @hexagon_runtime_copy_dsp(ptr [[VTCM_X:%.+]], ptr %1, i32 524288, i1 true, i1 false)
+// CHECK:      tail call void @hexagon_runtime_copy_dsp(ptr [[VTCM_Y:%.+]], ptr %8, i32 524288, i1 true, i1 false)
 // CHECK:      {{.*}} = phi
 // CHECK-NEXT: {{.*}} = shl
 // CHECK-NEXT: {{.*}} = trunc

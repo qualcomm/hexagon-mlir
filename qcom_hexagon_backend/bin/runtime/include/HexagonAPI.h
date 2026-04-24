@@ -86,6 +86,14 @@ public:
   /// Allocate the region(s) needed for Hexagon's indirect-tensor format.
   void *Alloc(size_t nallocs, size_t nbytes, uint64_t alignment, bool isVtcm);
 
+  /// Takes a `ptr` to the base of the memref and returns a pointer to the
+  /// crouton table
+  void *CreateBufferAlias(void *ptr, size_t nbytes);
+
+  /// Takes the pointer to crouton table that was created as an alias and
+  /// returns the base pointer to the memref
+  void *GetOrigBufferFromAlias(void *aliasPtr);
+
   /// Frees the allocated memory region.
   void Free(void *ptr);
 

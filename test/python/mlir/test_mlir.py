@@ -36,6 +36,8 @@ def get_options(kernel_name: str, args) -> dict[str, str]:
         options["enableBufferization"] = args.enable_bufferization
     if args.enable_hexkl is not None:
         options["enableHexKL"] = args.enable_hexkl
+    if args.enable_lwp is not None:
+        options["enableLWP"] = args.enable_lwp
 
     # Apply generic option overrides
     if args.option:
@@ -60,6 +62,14 @@ def get_options(kernel_name: str, args) -> dict[str, str]:
                     f"Unknown option: '{key}'. Must be a valid HexagonOptions field."
                 )
 
+    # Validate mutually exclusive options on the final merged dict so that
+    # all flag combinations are caught (dedicated flags + --option overrides).
+    if options.get("enableMultiThreading") and options.get("enableLWP"):
+        raise ValueError(
+            "enableMultiThreading and enableLWP are mutually exclusive. "
+            "LWP profiling cannot be used with multi-threading enabled."
+        )
+
     return {k: str(v) for k, v in options.items()}
 
 
@@ -71,23 +81,27 @@ def parse_args():
 Examples:
   # Basic usage
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp
-  
+
   # Enable DMA conversion
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
       --enable-hexagonmem-copy-to-dma
-  
+
   # Disable bufferization
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
       --no-enable-bufferization
-  
+
+  # Enable LWP profiling (wrapper.cpp must call WriteLWPOutput; incompatible with --enable-multi-threading)
+  python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
+      --enable-lwp
+
   # Use generic option flag for less common options
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
       --option fusion=false --option tileSizes="64,64"
-  
-  # Combine explicit and generic options
+
+  # Enable pyetm profiling
   python test_mlir.py --mlir_file_name input.mlir --cpp_wrapper_path wrapper.cpp \\
-      --enable-multi-threading --option enableLWP=true
-        """,
+      --enable_etm
+    """,
     )
 
     # Required arguments
@@ -106,6 +120,12 @@ Examples:
     parser.add_argument(
         "--validate_result",
         help="To extract and print perf report",
+        action="store_true",
+    )
+
+    parser.add_argument(
+        "--enable_etm",
+        help="To enable pyetm profiling",
         action="store_true",
     )
 
@@ -153,6 +173,15 @@ Examples:
         default=None,
         help="Enable HexKL to lower matmul and convolutions to HMX ops (default: False)",
     )
+    options_group.add_argument(
+        "--enable-lwp",
+        dest="enable_lwp",
+        action="store_true",
+        default=None,
+        help="Enable LWP cycle-accurate profiling (default: False). "
+        "Requires wrapper.cpp to call WriteLWPOutput(). "
+        "Incompatible with --enable-multi-threading.",
+    )
 
     # Generic option flag for all other HexagonOptions
     generic_group = parser.add_argument_group("Generic Options")
@@ -177,6 +206,7 @@ def run_mlir():
         args.validate_result,
         options,
         args.func_name,
+        args.enable_etm,
     )
 
 

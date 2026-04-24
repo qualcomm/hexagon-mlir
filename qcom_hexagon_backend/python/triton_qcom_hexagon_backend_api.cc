@@ -9,6 +9,7 @@
 
 #include "triton_qcom_hexagon_backend_api.h"
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
+#include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexKL/Transforms/BufferizableOpInterfaceImpl.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
@@ -41,6 +42,18 @@
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllExtensions.h"
+
+#include "mlir/IR/Attributes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/Support/Casting.h" // for llvm::isa / mlir::isa
+
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
 
 #include <regex>
 
@@ -101,6 +114,196 @@ fixAlignedAllocTypes(llvm::LLVMContext &context, llvm::Module *originalModule,
 }
 
 namespace hexagon_backend {
+
+/// Classify argument types. We treat tensors, memrefs, and LLVM pointers as
+/// "buffer-like". Everything else (integers, floats, index, vectors, etc.)
+/// is "scalar-like".
+// bool isBufferLike(mlir::Type t) {
+//   if (mlir::isa<mlir::TensorType>(t))
+//     return true;
+//   if (mlir::isa<mlir::MemRefType>(t) ||
+//   mlir::isa<mlir::UnrankedMemRefType>(t))
+//     return true;
+//   if (mlir::isa<mlir::LLVM::LLVMPointerType>(t))
+//     return true;
+//   return false;
+// }
+
+bool isBufferLike(mlir::Type t) {
+  return llvm::isa<mlir::TensorType, mlir::BaseMemRefType,
+                   mlir::LLVM::LLVMPointerType>(t);
+}
+
+/// Build a permutation that moves all buffer-like arguments to the front,
+/// preserving the original relative order within buffers and within scalars.
+///
+/// Example: types [i32, memref<4xf32>, f32, tensor<2xf32>] =>
+/// permutation [1, 3, 0, 2] (new order: memref, tensor, i32, f32).
+llvm::SmallVector<unsigned>
+buildBufferFirstPermutation(mlir::func::FuncOp func) {
+  llvm::SmallVector<unsigned> bufferIdxs;
+  llvm::SmallVector<unsigned> scalarIdxs;
+
+  unsigned n = func.getNumArguments();
+  bufferIdxs.reserve(n);
+  scalarIdxs.reserve(n);
+
+  for (unsigned i = 0; i < n; ++i) {
+    mlir::Type t = func.getArgument(i).getType();
+    (isBufferLike(t) ? bufferIdxs : scalarIdxs).push_back(i);
+  }
+
+  llvm::SmallVector<unsigned> perm;
+  perm.reserve(n);
+  perm.append(bufferIdxs.begin(), bufferIdxs.end());
+  perm.append(scalarIdxs.begin(), scalarIdxs.end());
+  return perm;
+}
+
+/// Reorder arguments and update call sites.
+/// In-place reorder of one function's arguments:
+/// - validates the permutation
+/// - updates func::CallOp call sites
+/// - rewrites entry block arguments
+/// - updates function type and arg attributes
+mlir::LogicalResult reorderFuncArgsAndCalls(mlir::ModuleOp &module,
+                                            mlir::func::FuncOp func,
+                                            llvm::ArrayRef<unsigned> perm) {
+  unsigned n = func.getNumArguments();
+  if (perm.size() != n)
+    return func.emitError("Permutation size mismatch: got ")
+           << perm.size() << ", expected " << n;
+
+  // Validate permutation: values must be unique and < n
+  llvm::SmallVector<unsigned> seen(n, 0);
+  llvm::SmallVector<unsigned> invPerm(n); // inverse permutation
+  for (unsigned newIdx = 0; newIdx < n; ++newIdx) {
+    unsigned oldIdx = perm[newIdx];
+    if (oldIdx >= n)
+      return func.emitError("Invalid old index in permutation: ") << oldIdx;
+    if (++seen[oldIdx] != 1)
+      return func.emitError("Permutation must be a bijection. Index ")
+             << oldIdx << " appears multiple times.";
+    invPerm[oldIdx] = newIdx;
+  }
+
+  // Prepare old types
+  llvm::SmallVector<mlir::Type> oldTypes(func.getArgumentTypes().begin(),
+                                         func.getArgumentTypes().end());
+
+  // New function type
+  llvm::SmallVector<mlir::Type> newTypes(n);
+  for (unsigned newIdx = 0; newIdx < n; ++newIdx)
+    newTypes[newIdx] = oldTypes[perm[newIdx]];
+  auto newFuncType = mlir::FunctionType::get(func.getContext(), newTypes,
+                                             func.getResultTypes());
+
+  // Extract old arg attrs
+  llvm::SmallVector<mlir::DictionaryAttr> oldArgAttrs(n);
+  if (auto allAttrsOpt = func.getArgAttrs()) {
+    auto allAttrs = allAttrsOpt.value();
+    for (unsigned i = 0; i < n && i < allAttrs.size(); ++i)
+      oldArgAttrs[i] =
+          mlir::dyn_cast_or_null<mlir::DictionaryAttr>(allAttrs[i]);
+  }
+
+  // Compute new arg attrs
+  llvm::SmallVector<mlir::DictionaryAttr> newArgAttrs(n);
+  for (unsigned newIdx = 0; newIdx < n; ++newIdx)
+    newArgAttrs[newIdx] = oldArgAttrs[perm[newIdx]];
+
+  // Update call sites
+  if (auto uses = mlir::SymbolTable::getSymbolUses(func, module)) {
+    for (auto &use : *uses) {
+      mlir::Operation *user = use.getUser();
+      if (auto call = llvm::dyn_cast<mlir::func::CallOp>(user)) {
+        auto oldOperands = call.getArgOperands();
+        if (oldOperands.size() != n)
+          return call.emitError("Call operand count mismatch: got ")
+                 << oldOperands.size() << ", expected " << n;
+
+        llvm::SmallVector<mlir::Value> newOperands(n);
+        for (unsigned newIdx = 0; newIdx < n; ++newIdx)
+          newOperands[newIdx] = oldOperands[perm[newIdx]];
+        call->setOperands(newOperands);
+      }
+    }
+  }
+
+  // External function: just update type and attrs
+  if (func.isExternal()) {
+    func.setType(newFuncType);
+    for (unsigned i = 0; i < n; ++i)
+      func.setArgAttrs(i, newArgAttrs[i]);
+    return mlir::success();
+  }
+
+  // Rewrite entry block
+  mlir::Block &entry = func.getBody().front();
+  llvm::SmallVector<mlir::BlockArgument> oldArgs(entry.getArguments().begin(),
+                                                 entry.getArguments().end());
+  if (oldArgs.size() != n)
+    return func.emitError("Entry block arg count mismatch: got ")
+           << oldArgs.size() << ", expected " << n;
+
+  llvm::SmallVector<mlir::Location> oldLocs;
+  oldLocs.reserve(n);
+  for (unsigned i = 0; i < n; ++i)
+    oldLocs.push_back(oldArgs[i].getLoc());
+
+  llvm::SmallVector<mlir::BlockArgument> newArgs(n);
+  for (unsigned newIdx = 0; newIdx < n; ++newIdx) {
+    unsigned oldIdx = perm[newIdx];
+    newArgs[newIdx] =
+        entry.addArgument(oldArgs[oldIdx].getType(), oldLocs[oldIdx]);
+  }
+
+  // Replace uses (O(n) using invPerm)
+  for (unsigned oldIdx = 0; oldIdx < n; ++oldIdx) {
+    unsigned newIdx = invPerm[oldIdx];
+    oldArgs[oldIdx].replaceAllUsesWith(newArgs[newIdx]);
+  }
+
+  // Erase old arguments
+  for (int i = static_cast<int>(n) - 1; i >= 0; --i)
+    entry.eraseArgument(i);
+
+  // Update function type and attrs
+  func.setType(newFuncType);
+  for (unsigned i = 0; i < n; ++i)
+    func.setArgAttrs(i, newArgAttrs[i]);
+
+  return mlir::success();
+}
+
+bool reorderFuncArgsAndCallsTensorFirst(mlir::ModuleOp &module_op,
+                                        const std::string &fname) {
+  bool changed = false;
+  for (auto func : module_op.getOps<mlir::func::FuncOp>()) {
+    if (func.getName() != fname)
+      continue;
+    unsigned n = func.getNumArguments();
+    if (n == 0)
+      continue;
+
+    // Build buffer-first permutation.
+    llvm::SmallVector<unsigned> perm = buildBufferFirstPermutation(func);
+
+    // If already buffer-first, skip.
+    // Requires: perm is a permutation of 0..n-1 (distinct, full coverage)
+    bool isIdentity = llvm::is_sorted(perm) && !perm.empty() &&
+                      perm.front() == 0 && perm.back() == perm.size() - 1;
+
+    if (isIdentity)
+      continue;
+
+    if (!failed(reorderFuncArgsAndCalls(module_op, func, perm))) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // Extract the return types (rank and dtype) of a function given its name.
 std::vector<std::pair<int, mlir::Type>>
 getReturnList(mlir::ModuleOp module_op, const std::string &fName) {
@@ -146,6 +349,7 @@ void loadDialects(mlir::MLIRContext &context) {
   mlir::registerAllDialects(registry);   // TODO: restrict
   mlir::registerAllExtensions(registry); // TODO: restrict
 
+  registry.insert<mlir::crouton::CroutonDialect>();
   registry.insert<mlir::hexagonmem::HexagonMemDialect>();
   registry.insert<mlir::hexkl::HexKLDialect>();
   registry.insert<mlir::tm_tensor::TmTensorDialect>();
@@ -250,21 +454,26 @@ std::vector<std::vector<char>> translateLinalgToObj(
                      << "] - Extra step - Calling linkRuntimeModules for the "
                         "principal module"
                      << "\n");
-      mlir::Hexagon::Translate::linkRuntimeModules(llvmContext,
-                                                   current_llvm_mod);
+      mlir::Hexagon::Translate::linkRuntimeModules(
+          llvmContext, current_llvm_mod, options_map);
+
       // Aggressive inlining to improve performance after linking runtime
       // modules Check if inlining is enabled via options_map
       mlir::hexagon::cond_run_inliner(current_llvm_mod,
                                       optionsLinalgToLLVM.enableHVXInlining);
 
       // Dumping of the principal module if requested
-      if (mlir::hexagon::isEnvTrue("LLVM_IR_ENABLE_DUMP")) {
-        std::string mod_string;
-        std::unique_ptr<llvm::raw_string_ostream> ir_ss(
-            new llvm::raw_string_ostream(mod_string));
-        current_llvm_mod->print(*ir_ss, nullptr);
-        llvm::outs() << "// -----// LLVM IR Dump //----- //\n"
-                     << mod_string << "\n";
+      const char *dumpFile = std::getenv("LLVM_IR_DUMP_TO_FILE");
+      if (dumpFile && dumpFile[0] != '\0') {
+        std::error_code EC;
+        llvm::raw_fd_ostream outFile(dumpFile, EC, llvm::sys::fs::OF_Text);
+        if (EC) {
+          llvm::errs() << "Error opening LLVM IR file: " << EC.message()
+                       << "\n";
+        } else {
+          current_llvm_mod->print(outFile, nullptr);
+          outFile.flush();
+        }
       }
     }
 
@@ -319,7 +528,9 @@ std::string translateLinalgToLLVMIR(
   if (!llvmModule)
     fail("Failed to translate TritonHexagon to LLVM IR.");
 
-  mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmModule);
+  mlir::Hexagon::Translate::linkRuntimeModules(llvmContext, llvmModule,
+                                               options_map);
+
   // Aggressive inlining to improve performance after linking runtime modules
   // Check if inlining is enabled via options_map
   mlir::hexagon::LinalgToLLVMOptions optionsLinalgToLLVM;

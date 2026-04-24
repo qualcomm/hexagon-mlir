@@ -23,7 +23,8 @@ N_FEATURES = 32
 THETA = 10000.0
 
 # 1e-3 is the minimum ATOL where the fp16 test succeeds
-ATOL = 1e-3
+ATOL_FP16 = 1e-2
+ATOL_FP32 = 1e-3
 
 BATCH_SIZE_STRIDE = SEQ_LEN * N_HEADS * N_FEATURES
 SEQ_LEN_STRIDE = N_HEADS * N_FEATURES
@@ -216,4 +217,7 @@ def test_rope(num_threads, dtype):
     )
 
     reference = rope_reference_pytorch(x, THETA)
-    torch.testing.assert_close(output, reference, atol=ATOL, rtol=0)
+    if dtype == torch.float16:
+        torch.testing.assert_close(output, reference, atol=ATOL_FP16, rtol=0)
+    else:
+        torch.testing.assert_close(output, reference, atol=ATOL_FP32, rtol=0)

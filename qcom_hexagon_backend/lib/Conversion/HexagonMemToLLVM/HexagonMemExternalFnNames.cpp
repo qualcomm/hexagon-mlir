@@ -15,14 +15,34 @@
 
 using namespace mlir;
 
-std::string hexagonmem::getAllocFnName() {
-  static const std::string allocFnName = "hexagon_runtime_alloc_1d";
-  return allocFnName;
+std::string hexagonmem::getAllocFnName(bool isCroutonType,
+                                       const std::string &deviceType) {
+  if (isCroutonType) {
+    return "hexagon_runtime_alloc_2d_dsp";
+  } else {
+    return "hexagon_runtime_alloc_1d_dsp";
+  }
 }
 
-std::string hexagonmem::getDeallocFnName() {
-  static const std::string deallocFnName = "hexagon_runtime_free_1d";
-  return deallocFnName;
+std::string hexagonmem::getDeallocFnName(bool isCroutonType,
+                                         const std::string &deviceType) {
+  if (isCroutonType) {
+    return "hexagon_runtime_free_2d_dsp";
+  } else {
+    return "hexagon_runtime_free_1d_dsp";
+  }
 }
 
-std::string hexagonmem::getCopyFnName() { return "hexagon_runtime_copy"; }
+std::string hexagonmem::getCopyFnName(const std::string &deviceType) {
+  return "hexagon_runtime_copy_dsp";
+}
+
+std::string
+hexagonmem::getMemrefToCroutonFnName(const std::string &deviceType) {
+  return "hexagon_runtime_build_crouton_dsp";
+}
+
+std::string
+hexagonmem::getCroutonToMemrefFnName(const std::string &deviceType) {
+  return "hexagon_runtime_get_contiguous_memref_dsp";
+}

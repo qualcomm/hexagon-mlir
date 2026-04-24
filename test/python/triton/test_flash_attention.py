@@ -198,8 +198,15 @@ def test_flash_attention():
         stride_1=stride_1,
         stride_2=stride_2,
         stride_3=stride_3,
+        enableVectorization=True,
+        enableSplitReduceGeneric=True,
+        enableHVXInlining=True,
+        enableSCFLoopUnroll=True,
+        enableMultiThreading=True,
+        enableHexKL=False,
         enableVTCMTiling=False,
         enableConvertToHexagonmem=False,
+        enableHexagonmemCopyToDMA=False,
     )
 
     reference = F.scaled_dot_product_attention(query, key, value, scale=SCALE)

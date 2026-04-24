@@ -1,4 +1,4 @@
-//===- HexagonBufferAlias.h - pointer table alias representation ----------===//
+//===- HexagonBufferAlias.h - crouton table alias representation ----------===//
 //
 // Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 // SPDX-License-Identifier: BSD-3-Clause.
@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Represent an alias of an existing HexagonBuffer.
-// Used when we create a pointer table alias of a flat HexagonBuffer.
+// Used when we create a crouton table alias of a flat HexagonBuffer.
 //
 //===----------------------------------------------------------------------===//
 #ifndef HEXAGON_BIN_RUNTIME_INCLUDE_HEXAGONBUFFERALIAS_H
@@ -23,7 +23,7 @@ namespace hexagon {
 
 /// Represent an alias of an existing HexagonBuffer
 ///
-/// Used when we create a pointer table alias of a flat
+/// Used when we create a crouton table alias of a flat
 /// HexagonBuffer
 class HexagonBufferAlias {
 public:
@@ -39,12 +39,12 @@ public:
   HexagonBufferAlias(HexagonBufferAlias &&) = delete;
   HexagonBufferAlias &operator=(HexagonBufferAlias &&) = delete;
 
-  void *GetPointerTableBase();
-  std::vector<void *> GetPointerTable();
+  void *GetCroutonTableBase();
+  std::vector<void *> GetCroutonTable();
   HexagonBuffer *origBuffer;
 
 private:
-  std::vector<void *> pointerTable;
+  std::vector<void *> croutonTable;
 };
 
 } // namespace hexagon

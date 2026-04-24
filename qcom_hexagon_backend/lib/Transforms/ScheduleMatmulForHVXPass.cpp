@@ -85,8 +85,9 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
         // Check if the second operand is a transpose op
         // Convert linalg.transpose + linalg.matmul to linalg.matmul_transpose_b
         auto transposeOp = dyn_cast<linalg::TransposeOp>(secondOperandDef);
-        auto matmulTransposeBOp = rewriter.create<linalg::MatmulTransposeBOp>(
-            linalgOp.getLoc(), linalgOp.getOperation()->getResultTypes(),
+        auto matmulTransposeBOp = linalg::MatmulTransposeBOp::create(
+            rewriter, linalgOp.getLoc(),
+            linalgOp.getOperation()->getResultTypes(),
             ValueRange{linalgOp.getDpsInputs()[0], transposeOp.getOperand(0)},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeBOp);
@@ -95,8 +96,9 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
         // Check if the first operand is a transpose op
         // Convert linalg.transpose + linalg.matmul to linalg.matmul_transpose_a
         auto transposeOp = dyn_cast<linalg::TransposeOp>(firstOperandDef);
-        auto matmulTransposeAOp = rewriter.create<linalg::MatmulTransposeAOp>(
-            linalgOp.getLoc(), linalgOp.getOperation()->getResultTypes(),
+        auto matmulTransposeAOp = linalg::MatmulTransposeAOp::create(
+            rewriter, linalgOp.getLoc(),
+            linalgOp.getOperation()->getResultTypes(),
             ValueRange{transposeOp.getOperand(0), linalgOp.getDpsInputs()[1]},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeAOp);
@@ -113,12 +115,11 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
         // Convert linalg.transpose + linalg.batch_matmul to
         // linalg.batch_matmul_transpose_b op
         auto transposeOp = dyn_cast<linalg::TransposeOp>(secondOperandDef);
-        auto matmulTransposeBOp =
-            rewriter.create<linalg::BatchMatmulTransposeBOp>(
-                linalgOp.getLoc(), linalgOp.getOperation()->getResultTypes(),
-                ValueRange{linalgOp.getDpsInputs()[0],
-                           transposeOp.getOperand(0)},
-                linalgOp.getDpsInits());
+        auto matmulTransposeBOp = linalg::BatchMatmulTransposeBOp::create(
+            rewriter, linalgOp.getLoc(),
+            linalgOp.getOperation()->getResultTypes(),
+            ValueRange{linalgOp.getDpsInputs()[0], transposeOp.getOperand(0)},
+            linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeBOp);
         rewriter.eraseOp(transposeOp);
       } else if (firstOperandDef && isa<linalg::TransposeOp>(firstOperandDef)) {
@@ -126,12 +127,11 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
         // Convert linalg.transpose + linalg.batch_matmul to
         // linalg.batch_matmul_transpose_a op
         auto transposeOp = dyn_cast<linalg::TransposeOp>(firstOperandDef);
-        auto matmulTransposeAOp =
-            rewriter.create<linalg::BatchMatmulTransposeAOp>(
-                linalgOp.getLoc(), linalgOp.getOperation()->getResultTypes(),
-                ValueRange{transposeOp.getOperand(0),
-                           linalgOp.getDpsInputs()[1]},
-                linalgOp.getDpsInits());
+        auto matmulTransposeAOp = linalg::BatchMatmulTransposeAOp::create(
+            rewriter, linalgOp.getLoc(),
+            linalgOp.getOperation()->getResultTypes(),
+            ValueRange{transposeOp.getOperand(0), linalgOp.getDpsInputs()[1]},
+            linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeAOp);
         rewriter.eraseOp(transposeOp);
       }

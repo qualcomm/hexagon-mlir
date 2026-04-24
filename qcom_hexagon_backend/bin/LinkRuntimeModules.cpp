@@ -162,7 +162,8 @@ void addModToCandidates(
 }
 
 void mlir::Hexagon::Translate::linkRuntimeModules(
-    llvm::LLVMContext &ctx, std::unique_ptr<llvm::Module> &module) {
+    llvm::LLVMContext &ctx, std::unique_ptr<llvm::Module> &module,
+    const std::unordered_map<std::string, std::string> &options_map) {
 
   // We need a map from the module raw pointers to the unique pointers since
   // in our algorithm for detecting dependent modules we use two different
@@ -174,14 +175,16 @@ void mlir::Hexagon::Translate::linkRuntimeModules(
   std::map<llvm::Module *, std::unique_ptr<llvm::Module>> moduleCandidates;
 
   std::unique_ptr<llvm::Module> otherModule;
+  auto it = options_map.find("device_type");
+  std::string device_type = (it != options_map.end()) ? it->second : "hexagon";
   ADD_MODULE_CAND(IntrinsicsHVX, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(VTCMPool, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(HexagonAPI, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(HexagonBuffer, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(HexagonBufferAlias, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(HexagonCAPI, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexKLAPI, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(RuntimeDMA, ctx, otherModule, moduleCandidates);
+  ADD_MODULE_CAND(HexKLAPI, ctx, otherModule, moduleCandidates);
   ADD_MODULE_CAND(UserDMA, ctx, otherModule, moduleCandidates);
 
   llvm::Linker linker(*module);

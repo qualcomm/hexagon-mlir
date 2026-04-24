@@ -19,14 +19,18 @@ namespace hexagon {
 
 // Given a linalg op and (optionally) user defined tile sizes, returns tiling
 // options (if valid) for the vtcm constraints.
+// vtcmBudget: per-instance VTCM budget in bytes. Defaults to vtcmSizeInBytes
+// (2 MB) when 0 is passed.
 FailureOr<linalg::LinalgTilingOptions>
 getVTCMTilingOptions(linalg::LinalgOp op,
                      std::optional<SmallVector<int64_t>> userProvidedTileSizes,
-                     SmallVector<bool> &fullTensorOperands);
+                     SmallVector<bool> &fullTensorOperands,
+                     int64_t vtcmBudget = 0);
 
 SmallVector<int64_t> getInitialTileSize(linalg::LinalgOp);
 std::optional<SmallVector<int64_t>>
-determineTileSizes(linalg::LinalgOp, SmallVector<int64_t> tilingDims = {});
+determineTileSizes(linalg::LinalgOp, int64_t vtcmBudget = 0,
+                   SmallVector<int64_t> tilingDims = {});
 } // namespace hexagon
 } // namespace mlir
 

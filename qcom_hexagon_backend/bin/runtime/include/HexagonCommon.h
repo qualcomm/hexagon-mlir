@@ -23,7 +23,7 @@
 #define HEXAGON_PRINT(level, ...) printf(__VA_ARGS__)
 #endif
 
-#define CHUNK_SIZE 2048
+#define CROUTON_SIZE 2048
 
 #define HEXAGON_SAFE_CALL(api_call)                                            \
   do {                                                                         \

@@ -1,21 +1,21 @@
 // RUN: linalg-hexagon-opt %s -hexagonmem-to-llvm | FileCheck %s
 
-// CHECK-LABEL:   llvm.func @hexagon_runtime_free_1d(!llvm.ptr)
-// CHECK:         llvm.func @hexagon_runtime_copy(!llvm.ptr, !llvm.ptr, i32, i1, i1)
-// CHECK:         llvm.func @hexagon_runtime_alloc_1d(i32, i64, i1) -> !llvm.ptr
+// CHECK-LABEL:   llvm.func @hexagon_runtime_free_1d_dsp(!llvm.ptr)
+// CHECK:         llvm.func @hexagon_runtime_copy_dsp(!llvm.ptr, !llvm.ptr, i32, i1, i1)
+// CHECK:         llvm.func @hexagon_runtime_alloc_1d_dsp(i32, i64, i1) -> !llvm.ptr
 // CHECK-LABEL:   func.func @add
-// CHECK: [[ALLOC3:%.*]] = llvm.call @hexagon_runtime_alloc_1d
+// CHECK: [[ALLOC3:%.*]] = llvm.call @hexagon_runtime_alloc_1d_dsp
 // CHECK: [[CAST2:%.*]] = builtin.unrealized_conversion_cast {{.*}} : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<64xi8, 1>
 // CHECK: [[ALLOC4:%.*]] = memref.alloc() : memref<64xi8>
-// CHECK: [[ALLOC5:%.*]] = llvm.call @hexagon_runtime_alloc_1d
+// CHECK: [[ALLOC5:%.*]] = llvm.call @hexagon_runtime_alloc_1d_dsp
 // CHECK: [[CAST3:%.*]] = builtin.unrealized_conversion_cast {{.*}} : !llvm.struct<(ptr, ptr, i64, array<1 x i64>, array<1 x i64>)> to memref<64xi8, 1>
-// CHECK: llvm.call @hexagon_runtime_copy
+// CHECK: llvm.call @hexagon_runtime_copy_dsp
 // CHECK: memref.copy %arg1, [[ALLOC4]] : memref<64xi8> to memref<64xi8>
 // CHECK: linalg.add ins([[CAST2]], [[ALLOC4]] : memref<64xi8, 1>, memref<64xi8>) outs([[CAST3]] : memref<64xi8, 1>)
-// CHECK: llvm.call @hexagon_runtime_copy
-// CHECK: llvm.call @hexagon_runtime_free_1d
+// CHECK: llvm.call @hexagon_runtime_copy_dsp
+// CHECK: llvm.call @hexagon_runtime_free_1d_dsp
 // CHECK: memref.dealloc [[ALLOC4]] : memref<64xi8>
-// CHECK: llvm.call @hexagon_runtime_free_1d
+// CHECK: llvm.call @hexagon_runtime_free_1d_dsp
 // CHECK: return
 
 func.func @add(%arg0: memref<64xi8>, %arg1: memref<64xi8>, %arg2: memref<64xi8>) {

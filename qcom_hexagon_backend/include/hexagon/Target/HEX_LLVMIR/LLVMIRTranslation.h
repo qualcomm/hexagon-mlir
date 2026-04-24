@@ -56,9 +56,10 @@ llvm_module_to_obj_string(std::unique_ptr<llvm::Module> &llvmModule);
 // Dump Hexagon assembly to file.
 void dumpHexagonAssembly(llvm::Module &module, unsigned moduleId,
                          const std::string &archVersion);
+
 // Conditionally run aggressive inliner on LLVM module.
 void cond_run_inliner(std::unique_ptr<llvm::Module> &llvmModule,
-                      bool enableInlining);                       
+                      bool enableInlining);
 
 } // namespace hexagon
 } // namespace mlir

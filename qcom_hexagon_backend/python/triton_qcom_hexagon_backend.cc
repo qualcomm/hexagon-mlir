@@ -88,6 +88,12 @@ void init_triton_hexagon_translation(py::module &m) {
       },
       ret::take_ownership);
 
+  m.def("reoder_func_args_and_calls_tensor_first",
+        [](mlir::ModuleOp &module_op, std::string fName) {
+          return hexagon_backend::reorderFuncArgsAndCallsTensorFirst(module_op,
+                                                                     fName);
+        });
+
   m.def(
       "translate_linalg_to_obj",
       [](mlir::ModuleOp &linalg_module, py::dict arch_kwargs) {

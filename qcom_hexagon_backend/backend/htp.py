@@ -15,19 +15,31 @@ BINARY_ARTIFACTS = {"o", "so"}
 
 
 # For .so generation for hexagon-nn-v3 custom ops, must set optional argument file_ext="so"
-def triton_htp_compile(kernel, signature, constants={}, file_ext="o"):
+def triton_htp_compile(
+    kernel, signature, constants=None, file_ext="o", extra_options=None
+):
+    if constants is None:
+        constants = {}
+    if extra_options is None:
+        extra_options = {}
+
     src = triton.compiler.ASTSource(
         fn=kernel, signature=signature, constexprs=constants
     )
+    options = {
+        "htp_kernel_gen": True,
+        "target_artifact": file_ext,
+        "enableConvertToHexagonmem": False,
+        "enableVTCMTiling": False,
+    }
+
+    # Allow callers to override or extend Triton compile options
+    options.update(extra_options)
+
     compiled_kernel_artifacts = triton.compile(
         src=src,
         target=GPUTarget("hexagon", 0, 0),
-        options={
-            "htp_kernel_gen": True,
-            "target_artifact": file_ext,
-            "enableConvertToHexagonmem": False,
-            "enableVTCMTiling": False,
-        },
+        options=options,
     )
     compiled_kernel = compiled_kernel_artifacts.asm[file_ext]
     valid_extensions = PLAINTEXT_ARTIFACTS | BINARY_ARTIFACTS

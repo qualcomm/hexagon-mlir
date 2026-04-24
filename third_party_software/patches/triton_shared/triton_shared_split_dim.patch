@@ -1,0 +1,15 @@
+diff --git a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+index 8c1e9e7..dc8e328 100644
+--- a/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
++++ b/lib/Conversion/StructuredToMemref/StructuredToMemref.cpp
+@@ -593,6 +593,10 @@ public:
+     }
+ 
+     if (op.isSplitPtr()) {
++      // Treat rank-1 split pointers as regular pointers.
++      if (op.getStaticShape().size() == 1) {
++        return rewriteStructuredPtr(op, adaptor, rewriter);
++      }
+       return rewriteSplitPtr(op, adaptor, rewriter);
+     }
+ 

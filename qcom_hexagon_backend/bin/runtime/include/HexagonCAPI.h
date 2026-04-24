@@ -23,5 +23,10 @@ void *hexagon_runtime_alloc_2d(size_t numBlocks, size_t blockSize,
 void hexagon_runtime_free_2d(void *ptr);
 void hexagon_runtime_copy(void *dst, void *src, size_t nbytes, bool isDVtcm,
                           bool isSrcVtcm);
+
+/// The source pointer is a pointer to the base of memref
+void *hexagon_runtime_build_crouton(void *source, size_t nbytes);
+/// The source pointer is a pointer to crouton table
+void *hexagon_runtime_get_contiguous_memref(void *source);
 }
 #endif // HEXAGON_BIN_RUNTIME_INCLUDE_HEXAGONCAPI_H_

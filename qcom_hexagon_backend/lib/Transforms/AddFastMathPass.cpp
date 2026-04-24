@@ -43,6 +43,12 @@ using namespace hexagon;
 
 namespace {
 static void addFastMathFlag(Operation *op) {
+  // Skip comparison operations to preserve NaN detection semantics
+  // (e.g., x != x for isNaN checks)
+  if (isa<arith::CmpFOp>(op)) {
+    return;
+  }
+
   // We could set at LLVM level but thats too late.
   LLVM::FastmathFlags llvmFMF = LLVM::FastmathFlags::fast;
   TypeSwitch<Operation *>(op)

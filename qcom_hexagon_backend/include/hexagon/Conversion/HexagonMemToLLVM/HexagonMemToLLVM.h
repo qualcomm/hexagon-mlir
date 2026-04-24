@@ -20,7 +20,8 @@ namespace hexagonmem {
 #define GEN_PASS_DECL
 #include "hexagon/Conversion/HexagonMemToLLVM/Passes.h.inc"
 
-std::unique_ptr<OperationPass<ModuleOp>> createHexagonMemToLLVMPass();
+std::unique_ptr<OperationPass<ModuleOp>> createHexagonMemToLLVMPass(
+    const HexagonMemToLLVMOptions &options = HexagonMemToLLVMOptions());
 
 void registerConvertHexagonMemToLLVMInterface(DialectRegistry &registry);
 

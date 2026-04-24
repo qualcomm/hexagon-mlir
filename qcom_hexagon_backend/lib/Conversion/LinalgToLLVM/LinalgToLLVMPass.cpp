@@ -17,6 +17,7 @@
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
+#include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 #include "hexagon/Dialect/HexagonTPtr/IR/HexagonTPtrDialect.h"
@@ -26,7 +27,7 @@
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Async/Passes.h"
@@ -72,7 +73,7 @@ public:
                     scf::SCFDialect, async::AsyncDialect, tensor::TensorDialect,
                     cf::ControlFlowDialect, bufferization::BufferizationDialect,
                     vector::VectorDialect, memref::MemRefDialect,
-                    LLVM::LLVMDialect, ttx::TTXDialect,
+                    LLVM::LLVMDialect, crouton::CroutonDialect, ttx::TTXDialect,
                     tptr::HexagonTPtrDialect, hexagonmem::HexagonMemDialect,
                     hexkl::HexKLDialect, quant::QuantDialect>();
   }
@@ -104,6 +105,7 @@ public:
 
     auto setVTCMTiling = [&](auto passOption) {
       passOption.tileSizes = tileSizes;
+      passOption.vtcmBudget = scratch > 0 ? scratch : 0;
       return passOption;
     };
 
@@ -143,11 +145,19 @@ public:
       return passOption;
     };
 
+    auto setDeviceType = [&](auto passOption) {
+      passOption.device_type = device_type;
+      return passOption;
+    };
+
     // Set ConvTiling flags
     auto setConvTiling = [&](auto passOption) {
-      passOption.convTilingFactor = convTilingFactor;
-      passOption.convTileHeightDim = convTileHeightDim;
-      passOption.convTileOCDim = convTileOCDim;
+      passOption.convTileSizes = convTileSizes;
+      return passOption;
+    };
+
+    auto setHexKLMode = [&](auto passOption) {
+      passOption.mode = hexKLMode;
       return passOption;
     };
 
@@ -196,9 +206,20 @@ public:
     pm.addPass(createLinalgFoldUnitExtentDimsPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
+
     if (puntBuffer)
       pm.addNestedPass<func::FuncOp>(createHexagonPuntBufferPass());
     pm.addPass(createCanonicalizerPass()); // erase unstrung allocs
+
+    if (enableConversionToFp16)
+      pm.addNestedPass<func::FuncOp>(createConversionToFp16Pass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+
+    pm.addNestedPass<func::FuncOp>(createOptimizeExtfTruncfOpPass());
+
+    // Optimize division to multiplication in linalg.generic
+    pm.addNestedPass<func::FuncOp>(createDivToMulOptimizationPass());
 
     // Quantization related passes in this block
     // Lower quant.qcast and quant.dcast ops to arith dialect
@@ -207,9 +228,29 @@ public:
     pm.addPass(createConvertElementwiseToLinalgPass());
     // Remove quant.scast ops
     pm.addPass(createCSEPass());
+    if (enableHexKL) {
+      pm.addNestedPass<func::FuncOp>(
+          mlir::hexagon::createFoldResourceTransposePass());
+      pm.addNestedPass<func::FuncOp>(
+          mlir::hexagon::createFoldCastsIntoMatmulPass());
+      pm.addNestedPass<func::FuncOp>(
+          createMatmulToHexKLPass(setHexKLMode(MatmulToHexKLOptions{})));
+      if (hexKLMode == "macro") {
+        pm.addNestedPass<func::FuncOp>(
+            hexagon::createPreprocessWeightsForHMXPass());
+      }
+      pm.addPass(createCanonicalizerPass());
+    }
 
-    if (enableHexKL)
-      pm.addNestedPass<func::FuncOp>(createMatmulToHexKLPass());
+    // enableMatmulToConv and enableSeedLayoutConversions are supposed to be set
+    // for unit test only. They are not supposed to run on Full models
+    if (enableMatmulToConv && enableSeedLayoutConversions) {
+      pm.addNestedPass<func::FuncOp>(createMatmulToConvPass());
+      pm.addNestedPass<func::FuncOp>(createSeedLayoutConversionsPass());
+      pm.addNestedPass<func::FuncOp>(createHexagonExtendPackPass(
+          setExtendPack(HexagonExtendPackOptions{})));
+      pm.addPass(createCSEPass());
+    }
 
     if (enableConvTiling) {
       pm.addNestedPass<func::FuncOp>(
@@ -217,7 +258,10 @@ public:
       pm.addPass(createCanonicalizerPass());
     }
 
-    pm.addNestedPass<func::FuncOp>(createConvertLayoutPass());
+    if (enableSeedLayoutConversions) {
+      pm.addNestedPass<func::FuncOp>(createPreprocessTiledConv2DPass());
+    }
+
     pm.addNestedPass<func::FuncOp>(createScheduleMatmulForHVXPass());
     pm.addNestedPass<func::FuncOp>(createLinalgGeneralizePass());
 
@@ -227,7 +271,7 @@ public:
     pm.addPass(createCSEPass());
 
     if (enableSCFThreading) {
-      assert(!enableMultiThreading && !enableVTCMTiling &&
+      assert(!enableMultiThreading && !enableVTCMTiling && scratch == 0 &&
              "currently scf-threading can be enabled only if"
              " linalg multi-threading and vtcm tiling are off");
       pm.addNestedPass<func::FuncOp>(createFormSCFThreadsPass());
@@ -246,11 +290,30 @@ public:
           setOpSlicingFactor(HexagonSlicingOptions{})));
 
     pm.addNestedPass<func::FuncOp>(createDecomposeTensorConcatPass());
+    if (forceHVXCroutonization) {
+      pm.addNestedPass<func::FuncOp>(createForceHVXCroutonPass());
+      pm.addNestedPass<func::FuncOp>(
+          createHexagonExtendPackPass(setExtendPack(HexagonExtendPackOptions{
+              .upperFrontier = false,
+          })));
+    }
 
-    if (enableVTCMTiling) {
+    pm.addNestedPass<func::FuncOp>(createLowerPackPass());
+    pm.addPass(createCSEPass());
+
+    // VTCMTilingPass must run when scratch > 0 to create the VTCM allocs
+    // that MemoryOffsetsPass will replace with views into the scratch buffer.
+    // When scratch > 0, pass it as vtcmBudget so tile sizes respect the
+    // per-instance budget rather than the hardcoded 2 MB default.
+    if (enableVTCMTiling || scratch > 0) {
       pm.addNestedPass<func::FuncOp>(
           createVTCMTilingPass(setVTCMTiling(VTCMTilingOptions{})));
       pm.addPass(createCanonicalizerPass());
+    }
+
+    // split linalg.reduce into [parallel,reduce] followed by smaller [reduce].
+    if (enableSplitReduceGeneric) {
+      pm.addNestedPass<func::FuncOp>(createSplitReduceGenericPass());
     }
 
     if (enableMultiThreading) {
@@ -305,6 +368,11 @@ public:
 
     if (enableBufferization) {
       pm.addPass(bufferization::createEmptyTensorEliminationPass());
+
+      // Erase unnecessary vector-to-tensor writeback in loops before
+      // bufferization.
+      pm.addNestedPass<func::FuncOp>(createEraseVectorToTensorWritebackPass());
+
       mlir::bufferization::OneShotBufferizePassOptions passOpts;
       passOpts.bufferizeFunctionBoundaries = true;
       passOpts.allowReturnAllocsFromLoops = true;
@@ -332,6 +400,11 @@ public:
             createHexagonDoubleBufferGenericS2Pass());
       }
 
+      // SCF Loop Unrolling of innermost loop after vectorization.
+      if (enableSCFLoopUnroll) {
+        pm.addNestedPass<func::FuncOp>(createSCFLoopUnrollPass());
+      }
+
       pm.addNestedPass<func::FuncOp>(createConvertZeroSizeMemrefPass());
       pm.addPass(createConvertBufferizationToMemRefPass());
     }
@@ -339,9 +412,24 @@ public:
     if (enableConvertToHexagonmem)
       pm.addNestedPass<func::FuncOp>(createConvertToHexagonmemPass());
 
-    // Decompose hexkl.matmul to micro ops
-    if (enableHexKL)
-      pm.addNestedPass<func::FuncOp>(createDecomposeHexKLMatmulPass());
+    // External VTCM scratch mode: inject scratch arg and replace VTCM allocs
+    // with views into the per-instance scratch buffer (hexagon.scratch).
+    if (scratch > 0) {
+      InsertScratchArgOptions scratchOpts;
+      scratchOpts.scratch = scratch;
+      pm.addNestedPass<func::FuncOp>(createInsertScratchArgPass(scratchOpts));
+      pm.addNestedPass<func::FuncOp>(createMemoryOffsetsPass());
+    }
+
+    if (enableHexKL) {
+      if (hexKLMode == "macro") {
+        // Lower to HexKL macro API
+        pm.addNestedPass<func::FuncOp>(createLowerHexKLMatmulToMacroPass());
+      } else {
+        // Decompose hexkl.matmul to micro ops
+        pm.addNestedPass<func::FuncOp>(createDecomposeHexKLMatmulPass());
+      }
+    }
 
     // Lower linalg ops with library_call attribute set to custom fns.
     pm.addPass(createHexagonReplaceWithLibraryCallsPass());
@@ -380,7 +468,8 @@ public:
     pm.addPass(createConvertFuncToLLVMPass(ConvertFuncToLLVMPassOptions{}));
 
     pm.addPass(hexagon::createDMAToLLVMPass());
-    pm.addPass(hexagonmem::createHexagonMemToLLVMPass());
+    pm.addPass(hexagonmem::createHexagonMemToLLVMPass(
+        setDeviceType(hexagonmem::HexagonMemToLLVMOptions{})));
     pm.addPass(hexkl::createHexKLToLLVMPass());
 
     if (enableCollapseAddressSpace) {

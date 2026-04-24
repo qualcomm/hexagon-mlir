@@ -29,23 +29,39 @@ from triton.backends.qcom_hexagon_backend.hexagon_profiler import HexagonProfile
 
 
 class HexagonExecutor:
-    def __init__(self, enable_lwp=False, enable_etm=False, compile_only=False):
+    def __init__(
+        self,
+        kernel_run_id,
+        enable_lwp=False,
+        enable_etm=False,
+        compile_only=False,
+        enable_hexkl=False,
+        cleanup_device_post_exec=True,
+        perf_path=None,
+    ):
         """
         Initializes the HexagonExecutor instance.
 
         Attributes:
             exec_mode (str): Stores the provided mode of execution.
-            device_path (str): Stores the path where the executables will be placed on the device.
+            device_path (str): Stores the base path where build artifacts are pushed to on device. Leaf node dir is named after 'kernel_run_id'.
+            lib_path (str): Stores the path where dynamic libraries are pushed to on device. Must be child dir of 'device_path'.
             config (namedtuple): Holds the configuration for the HexagonExecutor, including
                                  environment variables, tools paths, and Q6 version, set by
                                  calling the `get_config` method.
         """
         self.exec_mode = get_exec_mode() if not compile_only else "compile_only"
-        self.device_path = "/vendor/bin"
+        self.device_path = f"/data/local/tmp/{kernel_run_id}"
+        self.lib_path = f"{self.device_path}/lib"
+        self.alt_perf_path = (
+            perf_path  # Only needed in contexts where the .cpp wrapper is hardcoded
+        )
         self.config = self.get_config()
         self.enable_lwp = enable_lwp
         self.enable_etm = enable_etm  # When set to True, etm traces will be collected and processed with pyetm.
+        self.enable_hexkl = enable_hexkl
         self.final_result = "Pass"
+        self.cleanup_device_post_exec = cleanup_device_post_exec
 
     # Cases were encountered where on-device execution
     # performance report reported a failure, but
@@ -232,15 +248,32 @@ class HexagonExecutor:
             QHL_LINK_DIR,
         )
 
+        QHMATH_DIR = """{HEXAGON_SDK_ROOT}/libs/qhl/prebuilt/hexagon_toolv87_v{Q6_VERSION}""".format(
+            HEXAGON_SDK_ROOT=self.config.env_vars["HEXAGON_SDK_ROOT"],
+            Q6_VERSION=self.config.Q6_VERSION,
+        )
+        if os.path.exists(QHMATH_DIR) and os.path.exists(
+            os.path.join(QHMATH_DIR, "libqhmath.a")
+        ):
+            LINK_DIRS += f" -L{QHMATH_DIR}"
+            runtime_libs.append("qhmath")
+        else:
+            print(f"Warning: QHMATH library not found at {QHMATH_DIR}")
+
         hexkl_dir = """{HEXKL_ROOT}/lib/hexagon_toolv19_v{Q6_VERSION}""".format(
             HEXKL_ROOT=self.config.env_vars["HEXKL_ROOT"],
             Q6_VERSION=self.config.Q6_VERSION,
         )
-        if os.path.exists(hexkl_dir) and os.path.exists(
-            os.path.join(hexkl_dir, "libhexkl_micro.a")
+        if (
+            self.enable_hexkl
+            and os.path.exists(hexkl_dir)
+            and os.path.exists(os.path.join(hexkl_dir, "libhexkl_micro.a"))
+            and os.path.exists(os.path.join(hexkl_dir, "libhexkl_macro.a"))
         ):
-            LINK_DIRS += f" -L{hexkl_dir}"
-            runtime_libs.append("hexkl_micro")
+            hexkl_micro_a = os.path.join(hexkl_dir, "libhexkl_micro.a")
+            hexkl_macro_a = os.path.join(hexkl_dir, "libhexkl_macro.a")
+            runtime_libs.append(hexkl_micro_a)
+            runtime_libs.append(hexkl_macro_a)
 
         # Check if HEXAGON_RUNTIME_LIBS_DIR + "/multithreading exists and "libhexagon_mlir_async_runtime.a" inside it
         multithreading_dir = os.path.join(
@@ -251,7 +284,10 @@ class HexagonExecutor:
         ):
             LINK_DIRS += f" -L{multithreading_dir}"
             runtime_libs.append("hexagon_mlir_async_runtime")
-        runtime_libs_str = " ".join([f"-l{lib}" for lib in runtime_libs])
+        # Allow both implicit (-> -lfoo) and explicit archive paths (-> /path/to/libfoo.a).
+        runtime_libs_str = " ".join(
+            [lib if lib.endswith(".a") else f"-l{lib}" for lib in runtime_libs]
+        )
         print("==> Compiling shared object file ...")
         dir, kernel_file_without_ext, _ = split_path(kernel_obj_path)
         so_name = "libTriton" if htp_kernel_gen else "lib" + kernel_file_without_ext
@@ -282,11 +318,11 @@ class HexagonExecutor:
         command = "{} {} {} {} {} {} {} {} -shared -fPIC -G0 {} -o {}".format(
             self.config.HEX_TOOLS["hexagon-clang++"],
             HEX_CXX_FLAGS,
-            keep_or_skip_string(INCLUDES),
-            keep_or_skip_string(LINK_DIRS),
+            INCLUDES,
+            LINK_DIRS,
             keep_or_skip_string(cpp_wrapper_path),
             kernel_obj_path,
-            keep_or_skip_string(runtime_libs_str),
+            runtime_libs_str,
             (
                 ""
                 if not self.enable_lwp
@@ -356,7 +392,13 @@ class HexagonExecutor:
         )
         path_to_principal_lib_on_device = paths_to_shared_libs_on_device[0]
 
-        perf_device_path = f"{self.device_path}/perf.txt" if generatePerf else ""
+        if generatePerf:
+            if self.alt_perf_path:
+                perf_device_path = self.alt_perf_path
+            else:
+                perf_device_path = f"{self.device_path}/perf.txt"
+        else:
+            perf_device_path = ""
         perf_local_path = (
             os.path.join(local_dir, f"{principal_lib_without_ext}_perf.txt")
             if generatePerf
@@ -366,7 +408,9 @@ class HexagonExecutor:
             f"{self.device_path}/{os.path.basename(fname)}" for fname in output_paths
         ]
 
-        lwp_device_path = f"{self.device_path}/lwp.json"
+        # WriteLWPOutput() in all wrappers writes to /data/local/tmp/lwp.json;
+        # pull from that fixed path regardless of where kernel artifacts live.
+        lwp_device_path = "/data/local/tmp/lwp.json"
         lwp_local_path = os.path.join(local_dir, "lwp.json")
 
         etm_local_dir = os.path.join(local_dir, "etm_pyetm")
@@ -432,6 +476,24 @@ class HexagonExecutor:
                 ),
                 True,
             ),
+            # Create base directory for this kernel's execution on device
+            (
+                "adb {} -s {} shell 'mkdir -p {}'".format(
+                    self.config.env_vars["ANDROID_HOST"],
+                    self.config.env_vars["ANDROID_SERIAL"],
+                    self.device_path,
+                ),
+                True,
+            ),
+            # Create dynamic library directory for this kernel's execution on device
+            (
+                "adb {} -s {} shell 'mkdir -p {}'".format(
+                    self.config.env_vars["ANDROID_HOST"],
+                    self.config.env_vars["ANDROID_SERIAL"],
+                    self.lib_path,
+                ),
+                True,
+            ),
             # Push run_main_on_hexagon binary, input_tensors and all the shared libs
             (
                 "adb {} -s {} push {} {}".format(
@@ -448,19 +510,21 @@ class HexagonExecutor:
             ),
             # Push run_main_on_hexagon skel library
             (
-                "adb {} -s {} push {} /vendor/lib/rfsa/adsp".format(
+                "adb {} -s {} push {} {}".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     librun_main_on_hexagon_skel_path,
+                    self.lib_path,
                 ),
                 True,
             ),
             # Push libc++.so.1 library specific to hexagon-tools and Q6 version
             (
-                "adb {} -s {} push {} /vendor/lib/rfsa/adsp".format(
+                "adb {} -s {} push {} {}".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     libcpp_path,
+                    self.lib_path,
                 ),
                 True,
             ),
@@ -478,10 +542,11 @@ class HexagonExecutor:
             ),
             # Run the kernel using run_main_on_hexagon
             (
-                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; ./run_main_on_hexagon 3 {}'".format(
+                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; export ADSP_LIBRARY_PATH=\"{};/vendor/lib/rfsa/adsp/\" ; ./run_main_on_hexagon 3 {}'".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     self.device_path,
+                    self.lib_path,
                     path_to_principal_lib_on_device,
                 ),
                 True,
@@ -513,7 +578,7 @@ class HexagonExecutor:
             (
                 "adb {} -s {} pull {} {} && "
                 "cp {} /tmp/lwp.json && "
-                "cp {}/*.mlirbc /tmp/initial-linalg.mlir || echo 'No MLIRBC files to copy' ".format(
+                "(cp {}/*.mlirbc /tmp/initial-linalg.mlir || echo 'No MLIRBC files to copy')".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     lwp_device_path,
@@ -522,6 +587,16 @@ class HexagonExecutor:
                     local_dir,
                 ),
                 self.enable_lwp,
+            ),
+            # Finally, tear down directories for this kernel's execution
+            (
+                "adb {} -s {} shell 'rm -rf {} {} || true'".format(
+                    self.config.env_vars["ANDROID_HOST"],
+                    self.config.env_vars["ANDROID_SERIAL"],
+                    self.device_path,
+                    self.lib_path,
+                ),
+                self.cleanup_device_post_exec,
             ),
         ]
 
@@ -649,8 +724,7 @@ class HexagonExecutor:
                     self.config.env_vars["HEXAGON_TOOLS"], SIM_Q6SS_PATH
                 )
             ),
-            (
-                "{} -mv{} \
+            ("{} -mv{} \
                 --usefs={}/../Tools/target/hexagon/lib/v{}/G0/pic \
                 --simulated_returnval \
                 --cosim_file {} \
@@ -659,8 +733,7 @@ class HexagonExecutor:
                 {}/rtos/qurt/computev{}/sdksim_bin/runelf.pbn -- \
                 {}/libs/run_main_on_hexagon/ship/hexagon_toolv87_v{}/run_main_on_hexagon_sim \
                 stack_size=0x400000 -- \
-                {}"
-            ).format(
+                {}").format(
                 self.config.HEX_TOOLS["hexagon-sim"],
                 self.config.Q6_VERSION,
                 self.config.env_vars["HEXAGON_TOOLS"],

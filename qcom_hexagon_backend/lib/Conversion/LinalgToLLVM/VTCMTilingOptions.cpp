@@ -166,14 +166,14 @@ void setFullTensors(linalg::LinalgOp op, SmallVector<int64_t> tileSizes,
 // TODO: We are updating the reduction factor as a power of 2, so that tile size
 // generation is easier when tensor sizes are also of power of 2. Can explore
 // if this constraint can be relaxed to use the ratio directly.
-int64_t getReductionFactor(int64_t size) {
+int64_t getReductionFactor(int64_t size, int64_t budget) {
 
-  if (size < vtcmSizeInBytes) {
+  if (size < budget) {
     DBG("Input size is smaller than than vtcm size. Hence, setting reduction "
         "factor to 1.");
     return 1;
   }
-  auto ratio = static_cast<double>(size) / vtcmSizeInBytes;
+  auto ratio = static_cast<double>(size) / budget;
 
   // Even when the ratio is marginally greater than power of 2,
   // it would be updated to the next power of 2. Due to this, tile sizes are
@@ -242,11 +242,11 @@ generateTilingPriorityOrder(linalg::LinalgOp op,
   return ordering;
 }
 
-// Check if a linalg op has inner tiles matching specific optimized shapes.
+// Check if a linalg op has inner tiles as crouton shapes.
 // If so, return the inner tile to be used as lower bounds for tiling.
 std::optional<SmallVector<unsigned>>
-getOptimizedTileLowerBounds(linalg::LinalgOp op,
-                            SmallVector<int64_t> initalLoopRanges) {
+getCroutonLowerBounds(linalg::LinalgOp op,
+                      SmallVector<int64_t> initalLoopRanges) {
 
   // Get element type from the first result
   auto resultTypes = op->getResultTypes();
@@ -255,26 +255,26 @@ getOptimizedTileLowerBounds(linalg::LinalgOp op,
   auto firstType = resultTypes.front();
   auto elementType = getElementType(firstType);
 
-  // Get optimized tile shape for the type if valid
-  llvm::SmallVector<unsigned> tileShape;
+  // Get crouton shape for the type if valid
+  llvm::SmallVector<unsigned> croutonShape;
   auto numLoops = initalLoopRanges.size();
   if (elementType.isInteger(8) && numLoops == 7)
-    tileShape = INT8_TILE_SHAPE;
+    croutonShape = INT8_CROUTON_SHAPE;
   else if (elementType.isF16() && numLoops == 8)
-    tileShape = F16_TILE_SHAPE;
+    croutonShape = F16_CROUTON_SHAPE;
   else
     return std::nullopt;
 
-  // To verify that the inner tiles of the linalg op fit the optimized tile
-  // shape Note: Here we assume that operands have the same type and that there
-  // is 1-1 affine-mapping for the iteration and data space for the inner tiles.
-  // This is done because the checking should have been done by previous passes
-  // such as LoweringToPack/SeedLayoutConversions, and is out of context for
-  // tiling.
+  // To verify that the inner tiles of the linalg op fit the crouton shape
+  // Note: Here we assume that the op has crouton operands, i.e., operands have
+  // same type and that there is 1-1 affine-mapping for the iteration and data
+  // space for the inner tiles related to the crotuon shape. This is done
+  // because the checking should have been done by previous passes such as
+  // LoweringToPack/SeedLayoutConversions, and is out of context for tiling.
   auto innerTileRange = llvm::make_range(
-      initalLoopRanges.end() - tileShape.size(), initalLoopRanges.end());
-  if (llvm::equal(tileShape, innerTileRange))
-    return tileShape;
+      initalLoopRanges.end() - croutonShape.size(), initalLoopRanges.end());
+  if (llvm::equal(croutonShape, innerTileRange))
+    return croutonShape;
   else
     return std::nullopt;
 }
@@ -293,11 +293,11 @@ SmallVector<unsigned> calculateTileSizeLowerBounds(linalg::LinalgOp op) {
   if (ranges[0] >= parallelizationFactor)
     lowerBounds[0] = parallelizationFactor;
 
-  if (auto optimizedLowerBounds = getOptimizedTileLowerBounds(op, ranges)) {
-    assert(lowerBounds.size() >= optimizedLowerBounds->size() &&
-           "Invalid optimized tile lower bounds");
-    llvm::copy(*optimizedLowerBounds,
-               lowerBounds.end() - optimizedLowerBounds->size());
+  if (auto croutonLowerBounds = getCroutonLowerBounds(op, ranges)) {
+    assert(lowerBounds.size() >= croutonLowerBounds->size() &&
+           "Invalid crouton lower bounds");
+    llvm::copy(*croutonLowerBounds,
+               lowerBounds.end() - croutonLowerBounds->size());
   } else {
     // Using the vectorization size of the op (if valid) so that it can be
     // used as a lower bound for the tile size of the innermost loop.
@@ -365,14 +365,19 @@ namespace hexagon {
 //
 // Next steps:
 // - Add support for dynamic tensor shapes.
-// - Optimize the priority order with layout constraints.
+// - Optimize the priority order with crouton layout constraints.
 // - Along with generating the priority order, also generate the exact
 // reduction factor for each dim. This would improve the efficiency of the tile
 // size generated.
 // - Add support for additional tile size constraints in addition to lower
 // bounds.
 std::optional<SmallVector<int64_t>>
-determineTileSizes(linalg::LinalgOp op, SmallVector<int64_t> tilingDims) {
+determineTileSizes(linalg::LinalgOp op, int64_t vtcmBudget,
+                   SmallVector<int64_t> tilingDims) {
+
+  // Use default vtcmSizeInBytes when no budget is provided.
+  if (vtcmBudget <= 0)
+    vtcmBudget = vtcmSizeInBytes;
 
   auto memoryFootprintMap = generateMemoryFootprintAffineMap(op);
   if (!memoryFootprintMap)
@@ -384,16 +389,15 @@ determineTileSizes(linalg::LinalgOp op, SmallVector<int64_t> tilingDims) {
   auto size =
       calcMemoryFootprint(op, getInitialTileSize(op), *memoryFootprintMap);
 
-  if (size <= vtcmSizeInBytes) {
+  if (size <= vtcmBudget) {
     DBG("-> Memory footprint of op:"
-        << size << " bytes, is less than or equal to VTCM Memory size: "
-        << vtcmSizeInBytes
+        << size
+        << " bytes, is less than or equal to VTCM Memory size: " << vtcmBudget
         << " bytes. Hence, tile size estimation for vtcm is not required.");
     return getInitialTileSize(op);
   } else {
     DBG("-> Memory footprint of op:"
-        << size
-        << " bytes, is greater than VTCM Memory size: " << vtcmSizeInBytes
+        << size << " bytes, is greater than VTCM Memory size: " << vtcmBudget
         << " bytes. Starting, tile size estimation for vtcm.");
   }
 
@@ -401,14 +405,8 @@ determineTileSizes(linalg::LinalgOp op, SmallVector<int64_t> tilingDims) {
       generateTilingPriorityOrder(op, *memoryFootprintMap, tilingDims);
   SmallVector<unsigned> lowerBounds = calculateTileSizeLowerBounds(op);
 
-  // For each dim in priority list, the tile size is reduced by a reduction
-  // factor with the minimum as lower bound constraint in the first pass. If
-  // vtcm constraint is not satisfied, then lower bound constraint is removed.
-  // TODO: The constraints and two-pass approach can be folded into the
-  // priority ordering, which would mean that there are duplicates for dims in
-  // the ordering list, but with different constraints or scenarios.
   SmallVector<int64_t> tileSizes = getInitialTileSize(op);
-  int64_t reductionFactor = getReductionFactor(size);
+  int64_t reductionFactor = getReductionFactor(size, vtcmBudget);
   for (int j = 0; j < 2; ++j) {
     for (int i = 0; i < priorityDims.size(); ++i) {
       DBG("-> Current tile size: {" << toString(tileSizes) << "}");
@@ -419,10 +417,10 @@ determineTileSizes(linalg::LinalgOp op, SmallVector<int64_t> tilingDims) {
       tileSizes[idx] = std::max(ratio, lowerBound);
       auto updatedSize =
           calcMemoryFootprint(op, tileSizes, *memoryFootprintMap);
-      if (updatedSize <= vtcmSizeInBytes) {
+      if (updatedSize <= vtcmBudget) {
         return tileSizes;
       } else {
-        reductionFactor = getReductionFactor(updatedSize);
+        reductionFactor = getReductionFactor(updatedSize, vtcmBudget);
       }
     }
   }
@@ -452,7 +450,8 @@ SmallVector<int64_t> getInitialTileSize(linalg::LinalgOp op) {
 
 std::optional<SmallVector<int64_t>>
 getTileSizes(linalg::LinalgOp op,
-             std::optional<SmallVector<int64_t>> userProvidedTileSizes) {
+             std::optional<SmallVector<int64_t>> userProvidedTileSizes,
+             int64_t vtcmBudget) {
   SmallVector<int64_t> tileSizes;
   auto numLoops = op.getNumLoops();
   if (userProvidedTileSizes) {
@@ -463,7 +462,7 @@ getTileSizes(linalg::LinalgOp op,
         userProvidedTileSizes.value().end());
     tileSizes = userProvidedTileSizesForOp;
   } else {
-    auto tileSizesForOp = determineTileSizes(op);
+    auto tileSizesForOp = determineTileSizes(op, vtcmBudget);
     if (!tileSizesForOp) {
       DBG("-> Cannot determine tile size for op.");
       return std::nullopt;
@@ -477,7 +476,11 @@ getTileSizes(linalg::LinalgOp op,
 FailureOr<linalg::LinalgTilingOptions>
 getVTCMTilingOptions(linalg::LinalgOp op,
                      std::optional<SmallVector<int64_t>> userProvidedTileSizes,
-                     SmallVector<bool> &prefetch) {
+                     SmallVector<bool> &prefetch, int64_t vtcmBudget) {
+
+  // Use default vtcmSizeInBytes when no budget is provided.
+  if (vtcmBudget <= 0)
+    vtcmBudget = vtcmSizeInBytes;
 
   DBG("getting vtcm tiling options for: " << op);
   if (!op.hasPureTensorSemantics() || !op->getNumResults() ||
@@ -489,7 +492,7 @@ getVTCMTilingOptions(linalg::LinalgOp op,
 
   linalg::LinalgTilingOptions options;
   options.setInterchange(getInterchangeVector(op));
-  auto tileSizes = getTileSizes(op, userProvidedTileSizes);
+  auto tileSizes = getTileSizes(op, userProvidedTileSizes, vtcmBudget);
   if (!tileSizes)
     return failure();
   setFullTensors(op, *tileSizes, prefetch);

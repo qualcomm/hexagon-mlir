@@ -37,25 +37,9 @@ struct ExpandMathOpsPass : public ::impl::ExpandMathOpsBase<ExpandMathOpsPass> {
   void runOnOperation() override {
     auto moduleOp = getOperation();
     RewritePatternSet patterns(moduleOp.getContext());
-    mlir::populateExpandTanPattern(patterns);
-    mlir::populateExpandSinhPattern(patterns);
-    mlir::populateExpandCoshPattern(patterns);
-    mlir::populateExpandTanhPattern(patterns);
-    mlir::populateExpandAsinhPattern(patterns);
-    mlir::populateExpandAcoshPattern(patterns);
-    mlir::populateExpandAtanhPattern(patterns);
-    mlir::populateExpandRsqrtPattern(patterns);
-    mlir::populateExpandCtlzPattern(patterns);
-    mlir::populateExpandFmaFPattern(patterns);
-    mlir::populateExpandCeilFPattern(patterns);
-    mlir::populateExpandExp2FPattern(patterns);
-    mlir::populateExpandPowFPattern(patterns);
-    mlir::populateExpandFPowIPattern(patterns);
-    mlir::populateExpandRoundFPattern(patterns);
-    mlir::populateExpandRoundEvenPattern(patterns);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    math::populateExpansionPatterns(patterns);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       return signalPassFailure();
-    }
   }
 };
 } // namespace

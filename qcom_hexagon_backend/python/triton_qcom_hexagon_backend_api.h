@@ -38,4 +38,6 @@ std::string translateLinalgToLLVMIR(
     mlir::ModuleOp &linalg_module,
     const std::unordered_map<std::string, std::string> &options_map);
 
+bool reorderFuncArgsAndCallsTensorFirst(mlir::ModuleOp &module_op,
+                                        const std::string &fname);
 } // namespace hexagon_backend

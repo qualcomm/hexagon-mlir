@@ -188,3 +188,18 @@ def sqrt(arg0, _semantic=None):
         is_pure=True,
         _semantic=_semantic,
     )
+
+
+@core.extern
+def sigmoid(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "",
+        "",
+        [arg0],
+        {
+            (core.dtype("fp32"),): ("qhmath_hvx_sigmoid_af", core.dtype("fp32")),
+            (core.dtype("fp16"),): ("qhmath_hvx_sigmoid_ahf", core.dtype("fp16")),
+        },
+        is_pure=True,
+        _semantic=_semantic,
+    )

@@ -6,8 +6,8 @@ include "mlir/Pass/PassBase.td"
 def HexagonMemToLLVM : Pass<"hexagonmem-to-llvm", "mlir::ModuleOp"> {
   let summary = "Convert HexagonMem dialect to LLVM";
   let description = [{
-    HexagonMem ops (like alloc, dealloc, copy, etc.) work on memref types.
-    This pass lowers the ops to LLVM.
+    HexagonMem ops (like alloc, dealloc, copy, etc.) work on both memref and
+    crouton types. This pass lowers the ops to LLVM.
     For example, `%0 = hexagonmem.alloc() : memref<64xi8, 1>`
     can be lowered to:
 
@@ -21,6 +21,11 @@ def HexagonMemToLLVM : Pass<"hexagonmem-to-llvm", "mlir::ModuleOp"> {
     All hexagonmem dialect ops are expected to be lowered after this pass.
     }];
   let constructor = "mlir::hexagonmem::createHexagonMemToLLVMPass()";
+  let options = [
+    Option<"device_type", "device-type", "std::string",
+           /*default=*/"\"hexagon\"",
+           "Target device type for backend-specific lowering">
+  ];
 }
 
 #endif // HEXAGON_CONVERSION_HEXAGONMEMTOLLVM_PASSES_TD

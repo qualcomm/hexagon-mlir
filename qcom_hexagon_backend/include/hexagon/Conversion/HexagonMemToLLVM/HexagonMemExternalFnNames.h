@@ -16,9 +16,13 @@
 namespace mlir {
 namespace hexagonmem {
 
-std::string getAllocFnName();
-std::string getDeallocFnName();
-std::string getCopyFnName();
+std::string getAllocFnName(bool isCroutonType,
+                           const std::string &deviceType = "hexagon");
+std::string getDeallocFnName(bool isCroutonType,
+                             const std::string &deviceType = "hexagon");
+std::string getCopyFnName(const std::string &deviceType = "hexagon");
+std::string getMemrefToCroutonFnName(const std::string &deviceType = "hexagon");
+std::string getCroutonToMemrefFnName(const std::string &deviceType = "hexagon");
 
 } // namespace hexagonmem
 } // namespace mlir

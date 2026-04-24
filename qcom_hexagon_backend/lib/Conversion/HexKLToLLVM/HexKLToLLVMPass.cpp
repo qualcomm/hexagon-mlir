@@ -40,8 +40,9 @@
 using namespace mlir;
 using namespace mlir::hexkl;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_HEXKLTOLLVM
 #include "hexagon/Conversion/HexKLToLLVM/Passes.h.inc"
+#undef GEN_PASS_DEF_HEXKLTOLLVM
 
 namespace {
 
@@ -127,9 +128,9 @@ static Value castToI32(ConversionPatternRewriter &rewriter, Location loc,
   assert(intTy && "castToI32 expects an integer-typed value");
   unsigned w = intTy.getWidth();
   if (w > 32)
-    return rewriter.create<LLVM::TruncOp>(loc, i32Ty, v);
+    return LLVM::TruncOp::create(rewriter, loc, i32Ty, v);
   if (w < 32)
-    return rewriter.create<LLVM::ZExtOp>(loc, i32Ty, v);
+    return LLVM::ZExtOp::create(rewriter, loc, i32Ty, v);
   return v;
 }
 static FailureOr<LLVM::LLVMFuncOp>
@@ -249,6 +250,217 @@ getCopyF16ToF32SubmatrixFn(ModuleOp module,
                                 argTys, voidTy);
 }
 
+static FailureOr<LLVM::LLVMFuncOp>
+getMacroNoArgI32Fn(ModuleOp module, ConversionPatternRewriter &rewriter,
+                   StringRef name) {
+  SmallVector<Type, 0> argTys;
+  auto i32Ty = rewriter.getI32Type();
+  return LLVM::lookupOrCreateFn(rewriter, module, name, argTys, i32Ty);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getMacroRmToAhF16InplaceFn(ModuleOp module,
+                           ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 3> argTys{i32Ty, i32Ty, ptrTy};
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getMacroRmToAhF16InplaceFnName(), argTys, i32Ty);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getMacroAhToRmF16InplaceFn(ModuleOp module,
+                           ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 3> argTys{i32Ty, i32Ty, ptrTy};
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getMacroAhToRmF16InplaceFnName(), argTys, i32Ty);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getMacroMmF16Fn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 6> argTys{i32Ty, i32Ty, i32Ty, ptrTy, ptrTy, ptrTy};
+  return LLVM::lookupOrCreateFn(rewriter, module, hexkl::getMacroMmF16FnName(),
+                                argTys, i32Ty);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getQurtMemCacheCleanFn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 4> argTys{i32Ty, i32Ty, i32Ty, i32Ty};
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getQurtMemCacheCleanFnName(), argTys, i32Ty);
+}
+
+//===----------------------------------------------------------------------===//
+// Lower macro ops to extern calls
+//===----------------------------------------------------------------------===//
+
+struct LowerMacroInitialize
+    : public ConvertOpToLLVMPattern<hexkl::MacroInitializeOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MacroInitializeOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroInitializeOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn =
+        getMacroNoArgI32Fn(module, rewriter, hexkl::getMacroInitializeFnName());
+    if (failed(fn))
+      return failure();
+
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         ValueRange{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroFinalize
+    : public ConvertOpToLLVMPattern<hexkl::MacroFinalizeOp> {
+  using ConvertOpToLLVMPattern<hexkl::MacroFinalizeOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroFinalizeOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn =
+        getMacroNoArgI32Fn(module, rewriter, hexkl::getMacroFinalizeFnName());
+    if (failed(fn))
+      return failure();
+
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         ValueRange{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroLockHmx
+    : public ConvertOpToLLVMPattern<hexkl::MacroLockHmxOp> {
+  using ConvertOpToLLVMPattern<hexkl::MacroLockHmxOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroLockHmxOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn =
+        getMacroNoArgI32Fn(module, rewriter, hexkl::getMacroLockHmxFnName());
+    if (failed(fn))
+      return failure();
+
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         ValueRange{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroUnlockHmx
+    : public ConvertOpToLLVMPattern<hexkl::MacroUnlockHmxOp> {
+  using ConvertOpToLLVMPattern<hexkl::MacroUnlockHmxOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroUnlockHmxOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn =
+        getMacroNoArgI32Fn(module, rewriter, hexkl::getMacroUnlockHmxFnName());
+    if (failed(fn))
+      return failure();
+
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         ValueRange{});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroRmToAhF16Inplace
+    : public ConvertOpToLLVMPattern<hexkl::MacroRmToAhF16InplaceOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MacroRmToAhF16InplaceOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroRmToAhF16InplaceOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getMacroRmToAhF16InplaceFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value, 3> args{adaptor.getM(), adaptor.getK(),
+                               adaptor.getPtr()};
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroAhToRmF16Inplace
+    : public ConvertOpToLLVMPattern<hexkl::MacroAhToRmF16InplaceOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MacroAhToRmF16InplaceOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroAhToRmF16InplaceOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getMacroAhToRmF16InplaceFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value, 3> args{adaptor.getM(), adaptor.getN(),
+                               adaptor.getPtr()};
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerMacroMmF16 : public ConvertOpToLLVMPattern<hexkl::MacroMmF16Op> {
+  using ConvertOpToLLVMPattern<hexkl::MacroMmF16Op>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MacroMmF16Op op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getMacroMmF16Fn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value, 6> args{adaptor.getM(),      adaptor.getN(),
+                               adaptor.getK(),      adaptor.getOutPtr(),
+                               adaptor.getActPtr(), adaptor.getWgtPtr()};
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LowerQurtMemCacheClean
+    : public ConvertOpToLLVMPattern<hexkl::QurtMemCacheCleanOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::QurtMemCacheCleanOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::QurtMemCacheCleanOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getQurtMemCacheCleanFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value, 4> args{adaptor.getPtrI32(), adaptor.getSizeBytesI32(),
+                               adaptor.getOp(), adaptor.getCache()};
+    LLVM::CallOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), callee,
+                         args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Lower micro ops to extern calls
 //===----------------------------------------------------------------------===//
@@ -277,13 +489,12 @@ struct LowerSetupAccReadF16
     if (failed(cfgFn))
       return failure();
     auto cfgCallee = FlatSymbolRefAttr::get((*cfgFn).getOperation());
-    Value cfgSize = rewriter
-                        .create<LLVM::CallOp>(loc, rewriter.getI32Type(),
-                                              cfgCallee, ValueRange{})
+    Value cfgSize = LLVM::CallOp::create(rewriter, loc, rewriter.getI32Type(),
+                                         cfgCallee, ValueRange{})
                         .getResult();
 
     // hmx_config_offset = vtcm_size - config_size
-    Value cfgOffset = rewriter.create<LLVM::SubOp>(loc, vtcmSizeI32, cfgSize);
+    Value cfgOffset = LLVM::SubOp::create(rewriter, loc, vtcmSizeI32, cfgSize);
 
     // call setup_acc_read_f16(vtcm_base, hmx_config_offset)
     auto setupFn = getSetupAccReadF16Fn(module, rewriter);
@@ -338,12 +549,11 @@ struct LowerAccReadF16
     if (failed(cfgFn))
       return failure();
     auto cfgCallee = FlatSymbolRefAttr::get((*cfgFn).getOperation());
-    Value cfgSize = rewriter
-                        .create<LLVM::CallOp>(loc, rewriter.getI32Type(),
-                                              cfgCallee, ValueRange{})
+    Value cfgSize = LLVM::CallOp::create(rewriter, loc, rewriter.getI32Type(),
+                                         cfgCallee, ValueRange{})
                         .getResult();
 
-    Value cfgOffset = rewriter.create<LLVM::SubOp>(loc, vtcmSizeI32, cfgSize);
+    Value cfgOffset = LLVM::SubOp::create(rewriter, loc, vtcmSizeI32, cfgSize);
 
     Value outOffset = adaptor.getOutOffset();
     auto fn = getAccReadF16Fn(module, rewriter);
@@ -508,6 +718,14 @@ void populateHexKLToLLVMConversionPatterns(LLVMTypeConverter &converter,
                                            RewritePatternSet &patterns) {
   // Keep existing matmul lowering.
   patterns.add<LowerMatmul>(converter);
+
+  // Lower macro ops to externs.
+  patterns
+      .add<LowerMacroInitialize, LowerMacroFinalize, LowerMacroLockHmx,
+           LowerMacroUnlockHmx, LowerMacroRmToAhF16Inplace,
+           LowerMacroAhToRmF16Inplace, LowerMacroMmF16, LowerQurtMemCacheClean>(
+          converter);
+
   // Lower micro ops to externs.
   patterns.add<LowerSetupAccReadF16, LowerAccClearF16, LowerAccReadF16,
                LowerCopySubmatrixToF16, LowerRmToAhF16, LowerRmToWhF16,
@@ -515,7 +733,7 @@ void populateHexKLToLLVMConversionPatterns(LLVMTypeConverter &converter,
       converter);
 }
 
-struct HexKLToLLVMPass : public HexKLToLLVMBase<HexKLToLLVMPass> {
+struct HexKLToLLVMPass : public ::impl::HexKLToLLVMBase<HexKLToLLVMPass> {
   using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {

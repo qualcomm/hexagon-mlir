@@ -65,3 +65,43 @@ std::string hexkl::getHmxCopyF16ToF32SubmatrixFnName() {
   static const std::string fnName = "hexkl_micro_hmx_copy_f16_to_f32_submatrix";
   return fnName;
 }
+
+std::string hexkl::getMacroInitializeFnName() {
+  static const std::string fnName = "hexkl_macro_initialize";
+  return fnName;
+}
+
+std::string hexkl::getMacroFinalizeFnName() {
+  static const std::string fnName = "hexkl_macro_finalize";
+  return fnName;
+}
+
+std::string hexkl::getMacroLockHmxFnName() {
+  static const std::string fnName = "hexkl_macro_lock_hmx";
+  return fnName;
+}
+
+std::string hexkl::getMacroUnlockHmxFnName() {
+  static const std::string fnName = "hexkl_macro_unlock_hmx";
+  return fnName;
+}
+
+std::string hexkl::getMacroRmToAhF16InplaceFnName() {
+  static const std::string fnName = "hexkl_macro_rm_to_ah_f16_inplace";
+  return fnName;
+}
+
+std::string hexkl::getMacroAhToRmF16InplaceFnName() {
+  static const std::string fnName = "hexkl_macro_ah_to_rm_f16_inplace";
+  return fnName;
+}
+
+std::string hexkl::getMacroMmF16FnName() {
+  static const std::string fnName = "hexkl_macro_mm_f16";
+  return fnName;
+}
+
+std::string hexkl::getQurtMemCacheCleanFnName() {
+  static const std::string fnName = "qurt_mem_cache_clean";
+  return fnName;
+}

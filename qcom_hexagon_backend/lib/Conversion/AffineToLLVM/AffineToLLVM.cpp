@@ -18,5 +18,6 @@
 using namespace mlir;
 using namespace hexagon;
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_AFFINETOLLVM
 #include "hexagon/Conversion/AffineToLLVM/Passes.h.inc"
+#undef GEN_PASS_DEF_AFFINETOLLVMP

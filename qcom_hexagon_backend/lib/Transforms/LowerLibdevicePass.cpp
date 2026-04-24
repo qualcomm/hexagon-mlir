@@ -69,60 +69,57 @@ struct LowerLibdevicePattern final
                                       outTensorType.getElementType());
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
 
-    Value outputMemref = rewriter.create<memref::AllocOp>(loc, memrefType);
-    Value outputPtrIndex =
-        rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc,
-                                                                outputMemref);
+    Value outputMemref = memref::AllocOp::create(rewriter, loc, memrefType);
+    Value outputPtrIndex = memref::ExtractAlignedPointerAsIndexOp::create(
+        rewriter, loc, outputMemref);
     Value outputPtrInt =
-        rewriter.create<arith::IndexCastOp>(loc, i64Ty, outputPtrIndex);
+        arith::IndexCastOp::create(rewriter, loc, i64Ty, outputPtrIndex);
     Value outputPtr =
-        rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrTy, outputPtrInt)
+        LLVM::IntToPtrOp::create(rewriter, loc, llvmPtrTy, outputPtrInt)
             .getResult();
 
-    Value inputMemref = rewriter.create<bufferization::ToBufferOp>(
-        loc, memrefType, inputTensor);
-    Value inputPtrIndex =
-        rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc,
-                                                                inputMemref);
+    Value inputMemref = bufferization::ToBufferOp::create(
+        rewriter, loc, memrefType, inputTensor);
+    Value inputPtrIndex = memref::ExtractAlignedPointerAsIndexOp::create(
+        rewriter, loc, inputMemref);
     Value inputPtrInt =
-        rewriter.create<arith::IndexCastOp>(loc, i64Ty, inputPtrIndex);
+        arith::IndexCastOp::create(rewriter, loc, i64Ty, inputPtrIndex);
     Value inputPtr =
-        rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrTy, inputPtrInt)
+        LLVM::IntToPtrOp::create(rewriter, loc, llvmPtrTy, inputPtrInt)
             .getResult();
 
-    Value size = rewriter.create<arith::ConstantIntOp>(loc, numElems, 32);
+    Value size = arith::ConstantIntOp::create(rewriter, loc, numElems, 32);
     // Size should be uint32_t for libdevice functions (QHL)
     auto i32Ty = rewriter.getI32Type();
     if (size.getType() != i32Ty)
-      size = rewriter.create<arith::IndexCastUIOp>(loc, i32Ty, size);
+      size = arith::IndexCastUIOp::create(rewriter, loc, i32Ty, size);
 
     std::vector<Value> inputs = {inputPtr, outputPtr, size};
     mlir::ValueRange callOperands(inputs);
 
-    ModuleOp module = op.getOperation()->getParentOfType<ModuleOp>();
-    const std::string fName = op.getSymbol().str();
-    auto funcOp = module.lookupSymbol<func::FuncOp>(fName);
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    StringRef fName = op.getSymbol();
 
-    if (!funcOp) {
-      auto savedInsertionPoint = rewriter.saveInsertionPoint();
+    auto llvmFnTy = LLVM::LLVMFunctionType::get(
+        i32Ty, {llvmPtrTy, outputPtr.getType(), size.getType()},
+        /*isVarArg=*/false);
+
+    auto llvmFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(fName);
+    if (!llvmFunc) {
+      OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(module.getBody());
-      auto funcType = rewriter.getFunctionType(
-          {inputPtr.getType(), outputPtr.getType(), size.getType()},
-          rewriter.getI32Type());
-      funcOp = rewriter.create<func::FuncOp>(loc, fName, funcType);
-      funcOp.setPrivate();
 
-      rewriter.restoreInsertionPoint(savedInsertionPoint);
+      llvmFunc = LLVM::LLVMFuncOp::create(rewriter, loc, fName, llvmFnTy);
+      llvmFunc.setVisibility(SymbolTable::Visibility::Private);
     }
-
-    rewriter.create<func::CallOp>(loc, funcOp, callOperands);
-
-    Value res = rewriter.create<bufferization::ToTensorOp>(
-        loc, outTensorType, outputMemref, true /* restrict */,
+    rewriter.setInsertionPoint(op);
+    LLVM::CallOp::create(rewriter, loc, TypeRange{i32Ty},
+                         SymbolRefAttr::get(llvmFunc), callOperands);
+    Value res = bufferization::ToTensorOp::create(
+        rewriter, loc, outTensorType, outputMemref, true /* restrict */,
         true /* writable */);
 
     rewriter.replaceOp(op, res);
-
     return success();
   }
 };

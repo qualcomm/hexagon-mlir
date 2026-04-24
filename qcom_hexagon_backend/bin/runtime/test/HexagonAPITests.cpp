@@ -84,5 +84,11 @@ TEST_F(HexagonAPITest, copyVerification) {
   }
 }
 
-// Buffer alias test removed - CreateBufferAlias and GetOrigBufferFromAlias
-// functions no longer exist
+TEST_F(HexagonAPITest, bufferAlias) {
+  void *buf =
+      hexapi->Alloc(2 * 2048, 2048 /* alignment */, false /* isVtcm */); // int8
+  EXPECT_TRUE(buf != nullptr);
+  void *alias = hexapi->CreateBufferAlias(buf, 2 * 2048);
+  void *origBuffer = hexapi->GetOrigBufferFromAlias(alias);
+  EXPECT_EQ(origBuffer, buf);
+}

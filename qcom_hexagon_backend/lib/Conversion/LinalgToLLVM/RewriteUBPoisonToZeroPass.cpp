@@ -53,7 +53,7 @@ struct UBPoisonPaddingToZeroPattern
 
       // Create a constant zero of the same type as padding
       auto zeroConst =
-          rewriter.create<arith::ConstantOp>(op.getLoc(), padTy, zeroAttr);
+          arith::ConstantOp::create(rewriter, op.getLoc(), padTy, zeroAttr);
 
       // Replace the padding with the zero constant.
       rewriter.modifyOpInPlace(

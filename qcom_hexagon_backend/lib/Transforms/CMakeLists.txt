@@ -28,15 +28,28 @@ add_mlir_library(Transforms
   ConvertZeroSizeMemrefPass.cpp
   ConvertToHexagonmem.cpp
   LowerTPtr.cpp
+  SeedLayoutConversions.cpp
+  ForceHVXCrouton.cpp
   SmallExponentToMultiplyPass.cpp
   LinalgUtils.cpp
+  PackUnpackUtils.cpp
+  PreprocessTiledConv2D.cpp
+  InsertScratchArgPass.cpp
   MemoryOffsetsPass.cpp
   HexagonLWPInstrumentation.cpp
   LowerTmTensor.cpp
   LowerTTX.cpp
   ReduceContractionRankPass.cpp
+  FoldCastsIntoMatmul.cpp
   HoistScalarOps.cpp
   FoldMulFByZeroPass.cpp
+  FoldResourceTransposePass.cpp
+  LowerHexKLMatmulToMacroPass.cpp
+  PreprocessWeightsForHMXPass.cpp
+  FoldPackUnpackConstantsPass.cpp
+  EliminateRedundantUnpackPackPass.cpp
+  DivToMulOptimizationPass.cpp
+  SCFLoopUnrollPass.cpp
 
   DEPENDS
   TransformsPassIncGen

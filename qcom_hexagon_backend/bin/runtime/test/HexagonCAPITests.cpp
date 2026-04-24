@@ -19,7 +19,9 @@ TEST(HexagonCAPItest, test_flow) {
   size_t alignment_2d{2048};
   void *buf1 = hexagon_runtime_alloc_1d(bytes, alignment, false /* isVtcm */);
   void *buf2 = hexagon_runtime_alloc_1d(bytes, alignment, true /* isVtcm */);
-
+  void *croutonBuf1 = hexagon_runtime_build_crouton(buf1, bytes);
+  void *origBuf1 = hexagon_runtime_get_contiguous_memref(croutonBuf1);
+  EXPECT_EQ(origBuf1, buf1);
   hexagon_runtime_free_1d(buf1);
   hexagon_runtime_free_1d(buf2);
   buf1 = hexagon_runtime_alloc_2d(shape2d[0], bytes, alignment_2d,

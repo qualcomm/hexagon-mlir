@@ -26,6 +26,9 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
            "Rewrites the IR so that it is easier for one-shot bufferizer and"
            " eliminate empty-tensor to fold away unnecessary copying from"
            " local buffer to output buffer">,
+    Option<"enableMatmulToConv", "enableMatmulToConv", "bool",
+            /*default=*/"false",
+            "Lower matmul ops to conv ops">,
     Option<"fusion", "fusion", "bool",
            /*default=*/"true",
            "Attempt to fuse linalg generic ops">,
@@ -60,10 +63,14 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
            /*default=*/"true",
            "Configure HexagonTiling pass to enable split reduction, "
            " for reduction loops. ">,
+    Option<"enableSplitReduceGeneric", "enable-split-reduce-generic", "bool",
+           /*default=*/"false",
+           "Enable split-reduce-generic to convert linalg.generic [reduce] {..}"
+           "into a linalg.generic [reduce, parallel] {..} for vectorization, "
+           "followed by a final single reduction.">,
     Option<"enableSlicing", "enable-slicing", "bool",
            /*default=*/"false",
            "Flag to enable/disable operator slicing pass">,
-
     Option<"slicingFactor", "slicing-factor", "int",
            /*default=*/"1",
            "Operator slicing factor.">,
@@ -76,6 +83,12 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableVTCMTiling", "enable-vtcm-tiling", "bool",
           /*default=*/"true",
           "enable lowering linalg-on-tensors (DDR) to tiled-compute on VTCM">,
+    Option<"scratch", "scratch", "int64_t",
+          /*default=*/"0",
+          "per-instance VTCM scratch size in bytes (0 = disabled). When >0, "
+          "enables external VTCM flow: InsertScratchArg injects a "
+          "memref<Nxi8,1> {hexagon.scratch} arg, VTCMTilingPass tiles within "
+          "this budget, and MemoryOffsetsPass replaces allocs with views.">,
     Option<"tileSizes", "tile-sizes-override", "std::string",
            /*default=*/"",
            "override tile size.">,
@@ -88,6 +101,9 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableHexKL", "enable-hexkl", "bool",
           /*default=*/"false",
           "Enable linalg matmul to hexkl dialect lowering">,
+    Option<"hexKLMode", "hexkl-mode", "std::string",
+          /*default=*/"\"micro\"",
+          "HexKL API mode: 'micro' (default) or 'macro'">,
     Option<"enableCollapseAddressSpace", "enable-collapse-address-space", "bool",
           /*default=*/"true",
           "replace llvm.ptr<1> with llvm.ptr at last stage of convert-to-llvm">,
@@ -97,18 +113,15 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableBufferization", "enable-bufferization", "bool",
           /*default=*/"true",
           "enable bufferization passes; set to false for manual buffer management">,
+    Option<"enableSeedLayoutConversions", "enable-seed-layout-conversions", "bool",
+          /*default=*/"false",
+          "wraps HMX applicable convolutions with layout conversions">,
     Option<"enableConvTiling", "enable-conv-tiling", "bool",
           /*default=*/"false",
           "Tile the Convolution Op">,
-    Option<"convTilingFactor", "conv-tile-size", "int",
-          /*default=*/"-1",
-          "override tile size. Only intended for debugging.">,
-    Option<"convTileHeightDim", "conv-tile-height-dim", "bool",
-          /*default=*/"false",
-          "Only tile height dimension. Only intended for debugging">,
-    Option<"convTileOCDim", "conv-tile-oc-dim", "bool",
-           /*default=*/"false",
-           "Only tile OC dim. Only intended for debugging.">,
+    Option<"convTileSizes", "conv-tile-sizes", "std::string",
+          /*default=*/"",
+          "Provide the tile sizes in the following format: '<dim1>:<tilesize1>, <dim2>:<tilesize2>,...' ">,
     Option<"enableLWP", "enable-lwp", "bool",
            /*default=*/"false",
            "Flag to enable/disable lwp instrumentation">,
@@ -129,12 +142,24 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
            "Allow un-staging linalg ops that resolve to reduction "
            "generics even when it is possibly to pack those. This impacts "
            "both upper and lower frontier">,
+    Option<"device_type", "device-type", "std::string",
+	   /*default=*/"\"hexagon\"",
+           "Target device type for backend-specific lowering">,
     Option<"enableVectorization", "enable-vectorization", "bool",
           /*default=*/"true",
           "Enable vectorization for HVX">,
+    Option<"enableConversionToFp16", "enable-conversion-to-fp16", "bool",
+          /*default=*/"true",
+          "Enables the pass which converts fp64/fp32 operations to fp16">,
     Option<"enableHVXInlining", "enable-hvx-inlining", "bool",
-              /*default=*/"false",
-              "Enable aggressive inlining after linking runtime modules">
+          /*default=*/"false",
+          "Enable aggressive inlining after linking runtime modules">,
+    Option<"enableSCFLoopUnroll", "enable-scf-loop-unroll", "bool",
+          /*default=*/"false",
+          "Enable SCF loop unrolling optimization">,
+    Option<"forceHVXCroutonization", "force-hvx-croutonization", "bool",
+          /*default=*/"false",
+          "Force HVX croutonization pass">
    ];
 }
 
@@ -172,10 +197,32 @@ def FormVirtualThreads : Pass<"form-virtual-threads", "func::FuncOp"> {
 
 def HexmemCpyToDMA :
     InterfacePass<"hexmem-cpy-to-dma", "mlir::FunctionOpInterface"> {
-  let summary = "Pass to rewrite some hexagonmem.copy ops to memref.dma ops";
+  let summary = "Pass to rewrite hexagonmem.copy and memref.copy ops to memref.dma ops";
 
   let constructor =
        "hexagon::createHexmemCpyToDMAPass()";
+}
+
+def HexagonExtendPack:
+    InterfacePass<"extend-pack-frontier", "mlir::FunctionOpInterface"> {
+  let summary = "Extend pack and unpack frontier around linalg ops.";
+
+  let options = [
+    Option<"upperFrontier", "upper", "bool",
+           /*default=*/"true",
+           "Look for opportunities to extend linalg.pack frontiers.">,
+    Option<"lowerFrontier", "lower", "bool",
+           /*default=*/"true",
+           "Look for opportunities to extend linalg.unpack frontiers.">,
+    Option<"parallelsOnly", "parallels-only", "bool",
+           /*default=*/"true",
+           "Allow un-staging linalg ops that resolve to reduction "
+           "generics even when it is possibly to pack those. This impacts "
+           "both upper and lower frontier">
+  ];
+
+  let constructor =
+       "hexagon::createHexagonExtendPackPass()";
 }
 
 def HexagonFusion :
@@ -191,6 +238,27 @@ def HexagonFusion :
    ];
   let constructor =
        "hexagon::createHexagonFusionPass()";
+}
+
+def SplitReduceGeneric : Pass<"split-reduce-generic", "func::FuncOp"> {
+  let summary = "Split generic reduction operations for optimization";
+  let description = [{
+    This pass splits a linalg.generic [reduce] {..}into a
+    linalg.generic [reduce, parallel] {..} that can be more effectively
+    vectorized. That is followed by a final horizontal reduction.
+  }];
+  let constructor = "hexagon::createSplitReduceGenericPass()";
+}
+
+def EraseVectorToTensorWriteback : Pass<"erase-vector-to-tensor-writeback", "func::FuncOp"> {
+  let summary = "Erase unnecessary vector-to-tensor writeback in loops";
+  let description = [{
+    This pass optimizes IR where vectors are written back to tensors
+    and yielded in scf.for loops, only to be immediately read back
+    as vectors after the loop. When the tensor has no other uses,
+    the loop can directly yield the vector instead.
+  }];
+  let constructor = "hexagon::createEraseVectorToTensorWritebackPass()";
 }
 
 def HexagonSlicing :
@@ -235,8 +303,13 @@ def HexagonVectorization :
   let constructor = "hexagon::createHexagonVectorizationPass()";
 }
 
+def LowerPack : Pass<"lower-pack", "func::FuncOp"> {
+  let summary = "lower linalg.pack to simpler ops";
+  let constructor = "hexagon::createLowerPackPass()";
+}
+
 def LowerConstantsSeparately : Pass<"lower-constants-separately", "mlir::ModuleOp"> {
-  let summary = "Lowers constants separately from the code, possibly in multiple modules if above a certain threshold"; 
+  let summary = "Lowers constants separately from the code, possibly in multiple modules if above a certain threshold";
   let constructor = "hexagon::createLowerConstantsSeparatelyPass()";
 }
 
@@ -252,9 +325,27 @@ def VTCMTiling :
   let options = [
     Option<"tileSizes", "tile-size-override", "std::string",
            /*default=*/"",
-           "override tile size. Only intended for debugging.">
+           "override tile size. Only intended for debugging.">,
+    Option<"vtcmBudget", "vtcm-budget", "int64_t",
+           /*default=*/"0",
+           "per-instance VTCM budget in bytes for tile size computation. "
+           "0 = use default (vtcmSizeInBytes = 2 MB).">
   ];
   let constructor = "hexagon::createVTCMTilingPass()";
+}
+
+def ConversionToFp16 :
+    InterfacePass<"conversion-to-fp16", "mlir::FunctionOpInterface"> {
+  let summary =
+        "Pass to convert intermediate fp32 and fp64 operations to fp16 operations";
+  let constructor = "hexagon::createConversionToFp16Pass()";
+}
+
+def OptimizeExtfTruncfOp :
+    InterfacePass<"optimize-extf-truncf-op", "mlir::FunctionOpInterface"> {
+  let summary =
+        "Pass to optimize IR and remove redundant extf and truncf op";
+  let constructor = "hexagon::createOptimizeExtfTruncfOpPass()";
 }
 
 #endif

@@ -60,6 +60,16 @@ public:
     return false;
   }
 
+  // Query methods for diagnostics
+  size_t getTotalSize() const { return vtcmAllocatedSize_; }
+  size_t getTotalAllocated() const;
+  size_t getTotalFree() const;
+  size_t getLargestFreeBlock() const;
+  size_t getNumAllocations() const { return allocations_.size(); }
+  size_t getNumFreeBlocks() const { return free_.size(); }
+  float getFragmentationScore() const;
+  void printState() const;
+
 private:
   /// Total size of VTCM memory on device
   unsigned int vtcmDeviceSize_;
@@ -78,6 +88,23 @@ private:
 
   /// List of free segments
   std::vector<std::pair<char *, size_t>> free_;
+
+  /// Pointer to allocated VTCM (for offset calculations)
+  void *vtcmAllocatedPtr_{nullptr};
+
+  // Allocation helpers
+  char *tryAllocateFromEnd(size_t nbytes);
+  char *allocateBestFit(size_t nbytes);
+  void handleAllocationFailure(size_t nbytes);
+  void logAllocationSuccess(char *ptr, size_t nbytes);
+
+  // Free helpers
+  size_t coalesceAndAddToFreeList(char *ptr, size_t nbytes);
+  void logFreeSuccess(char *ptr, size_t nbytes, size_t numCoalesced);
+
+  // Validation (debug builds only)
+  void validateInvariants() const;
+  bool checkMemoryAccountedFor() const;
 
   /// Debug only dump of the state of the lists
   void DebugDump();

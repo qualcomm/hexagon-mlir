@@ -211,7 +211,7 @@ static LogicalResult sliceLinalgOp(linalg::LinalgOp op,
     auto concatType = cast<RankedTensorType>(output.getType());
     auto Slices = finalSlices[index];
     Value concatOp =
-        rewriter.create<tensor::ConcatOp>(loc, concatType, 0, Slices);
+        tensor::ConcatOp::create(rewriter, loc, concatType, 0, Slices);
     concatOps[index] = concatOp;
   }
 

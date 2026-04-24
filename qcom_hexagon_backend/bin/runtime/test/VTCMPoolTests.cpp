@@ -205,3 +205,52 @@ TEST_F(VtcmPoolTest, find_smallest_allocation_combinations) {
   ptr4 = vtcm_pool->Allocate(max_bytes);
   vtcm_pool->Free(ptr4, max_bytes);
 }
+
+TEST_F(VtcmPoolTest, dual_alignment) {
+  void *small = vtcm_pool->Allocate(min_bytes);
+  ASSERT_NE(small, nullptr);
+  vtcm_pool->Free(small, min_bytes);
+
+  void *large = vtcm_pool->Allocate(two_k_block);
+  ASSERT_NE(large, nullptr);
+  vtcm_pool->Free(large, two_k_block);
+}
+
+TEST_F(VtcmPoolTest, end_allocation_bug_fixed) {
+  void *x1 = vtcm_pool->Allocate(min_bytes);
+  void *x2 = vtcm_pool->Allocate(min_bytes);
+  vtcm_pool->Free(x1, min_bytes);
+
+  // This should work now (previously would fail with unaligned end allocation)
+  void *x3 = vtcm_pool->Allocate(256);
+  ASSERT_NE(x3, nullptr);
+
+  vtcm_pool->Free(x2, min_bytes);
+  vtcm_pool->Free(x3, 256);
+}
+
+TEST_F(VtcmPoolTest, edge_cases) {
+  // Zero-size allocation
+  void *zero = vtcm_pool->Allocate(0);
+  ASSERT_EQ(zero, nullptr);
+
+  // Null pointer free (should not crash)
+  vtcm_pool->Free(nullptr, min_bytes);
+
+  // Zero-size free (should not crash)
+  void *ptr = vtcm_pool->Allocate(min_bytes);
+  vtcm_pool->Free(ptr, 0);         // Won't actually free
+  vtcm_pool->Free(ptr, min_bytes); // Actual free
+}
+
+TEST_F(VtcmPoolTest, query_methods) {
+  size_t total = vtcm_pool->getTotalSize();
+  ASSERT_GT(total, 0);
+
+  void *ptr = vtcm_pool->Allocate(two_k_block);
+  ASSERT_EQ(vtcm_pool->getNumAllocations(), 1);
+  ASSERT_EQ(vtcm_pool->getTotalAllocated(), two_k_block);
+
+  vtcm_pool->Free(ptr, two_k_block);
+  ASSERT_EQ(vtcm_pool->getNumAllocations(), 0);
+}
