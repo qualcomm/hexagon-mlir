@@ -21,7 +21,7 @@ add_and_checkout() {
 	      local commit="$3"
 
   cd "${REPO_ROOT}"
-  if ! git submodule status "${name}" &>/dev/null; then
+  if [ ! -d "${REPO_ROOT}/${name}" ]; then
 	      echo "Adding submodule ${name}"
 	          git submodule add "${url}" "${name}"
 		    fi
