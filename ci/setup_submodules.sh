@@ -23,7 +23,7 @@ add_and_checkout() {
   cd "${REPO_ROOT}"
   if [ ! -d "${REPO_ROOT}/${name}" ]; then
 	      echo "Adding submodule ${name}"
-	          git submodule add "${url}" "${name}"
+	          git submodule add --force "${url}" "${name}"
 		    fi
 
   echo "Checking out ${name} at ${commit}"
