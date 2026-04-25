@@ -6,7 +6,6 @@
 #   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 #
 set -euo pipefail
-set -e
 
 echo "----------------------------------------------------"
 echo "Welcome to hexagon-mlir local building script ..    "
@@ -192,3 +191,5 @@ else
     echo "Triton build missing; skipping tests."
 fi
 echo "Local build script completed successfully."
+
+set +euo pipefail

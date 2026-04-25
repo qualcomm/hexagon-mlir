@@ -12,8 +12,6 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 echo "Configuring git submodules"
 cd "${REPO_ROOT}"
 
-# Ensure existing submodules are initialized
-git submodule update --init
 
 add_and_checkout() {
 	  local name="$1"
@@ -22,8 +20,8 @@ add_and_checkout() {
 
   cd "${REPO_ROOT}"
   if [ ! -d "${REPO_ROOT}/${name}" ]; then
-	      echo "Adding submodule ${name}"
-	          git submodule add --force "${url}" "${name}"
+	      echo "Cloning ${name}"
+	          git clone "${url}" "${name}"
 		    fi
 
   echo "Checking out ${name} at ${commit}"

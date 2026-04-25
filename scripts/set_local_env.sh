@@ -5,8 +5,8 @@
 # For more license information:
 #   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 #
-set -euo pipefail
-set -x
+
+set -euxo pipefail
 
 export HEXAGON_MLIR_ROOT=$PWD
 export TRITON_ROOT=$PWD/triton
@@ -30,3 +30,5 @@ export TRITON_HOME=$HEXAGON_MLIR_ROOT
 export TRITON_PLUGIN_DIRS="$HEXAGON_MLIR_ROOT/triton_shared;$HEXAGON_MLIR_ROOT/qcom_hexagon_backend"
 export PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/bin/:$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt:$PATH
 export PYTHONPATH=$TRITON_ROOT/python:${PYTHONPATH:-}
+
+set +euxo pipefail
