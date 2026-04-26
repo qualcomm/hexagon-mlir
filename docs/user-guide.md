@@ -91,11 +91,10 @@ If you don't have access to a Qualcomm NPU device you can still build and look a
 ## Building Hexagon-MLIR Compiler
 ###  Clone Repository
 ```bash
-# Clone the main repository with submodules
+# Clone the main repository.
 git clone https://github.com/qualcomm/hexagon-mlir.git
 cd hexagon-mlir
 export HEXAGON_MLIR_ROOT=$PWD
-export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 ```
 
 ### Script-based Build
@@ -114,7 +113,10 @@ To run the script, navigate to the root of the `hexagon-mlir` repository and exe
 bash ./scripts/build_hexagon_mlir.sh
 ```
 The script builds hexagon-mlir and runs the LIT tests for you to ensure the build succeeded.
-
+One the build script completes, you may want to source this script to set some useful environment variables for further tesing:
+```bash
+source ./scripts/set_local_env.sh
+```
 We highly recommend using the script. However, if you prefer to set up the environment manually, follow the steps below.
 
 ### Overview of the Manual Setup
