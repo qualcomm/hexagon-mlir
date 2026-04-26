@@ -113,7 +113,7 @@ To run the script, navigate to the root of the `hexagon-mlir` repository and exe
 bash ./scripts/build_hexagon_mlir.sh
 ```
 The script builds hexagon-mlir and runs the LIT tests for you to ensure the build succeeded.
-One the build script completes, you may want to source this script to set some useful environment variables for further tesing:
+Once the build script completes, you may want to source this script to set some useful environment variables for further tesing:
 ```bash
 source ./scripts/set_local_env.sh
 ```
