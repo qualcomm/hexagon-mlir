@@ -146,7 +146,7 @@ export CONDA_ENV=/path/to/your/python/env
 #### Installing Required Components
 
 ##### Triton and Triton_Shared
-Set up the triton, triton_shared, and apply Qualcomm specific patches. 
+Set up the triton and triton_shared components, including applying all required Qualcomm-specific patches to each component.
 
 ```bash
 bash ./ci/setup_submodules.sh
