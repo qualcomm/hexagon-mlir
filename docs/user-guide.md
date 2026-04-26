@@ -16,7 +16,7 @@
     - [Overview of the Manual Setup](#overview-of-the-manual-setup)
         - [Required Environment Variables](#required-environment-variables)
         - [Installing Required Components](#installing-required-components)
-            - [triton and triton_shared](#triton-and-triton_shared)
+            - [Triton and Triton_Shared](#Triton-and-Triton_Shared)
             - [Hexagon SDK](#hexagon-sdk)
             - [Hexagon Tools](#hexagon-tools)
             - [Hexagon Kernel Library (HexKL)](#hexagon-kernel-library-hexkl)
@@ -143,12 +143,11 @@ export CONDA_ENV=/path/to/your/python/env
 
 #### Installing Required Components
 
-##### triton and triton_shared
+##### Triton and Triton_Shared
 Set up the triton, triton_shared, and apply Qualcomm specific patches. 
 
 ```bash
 bash ./ci/setup_submodules.sh
-REPO_ROOT="$(git rev-parse --show-toplevel)"
 ```
 ##### Hexagon SDK
 
