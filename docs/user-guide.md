@@ -16,8 +16,7 @@
     - [Overview of the Manual Setup](#overview-of-the-manual-setup)
         - [Required Environment Variables](#required-environment-variables)
         - [Installing Required Components](#installing-required-components)
-            - [triton submodule](#triton-submodule)
-            - [triton_shared submodule](#triton_shared-submodule)
+            - [Triton and Triton_Shared](#Triton-and-Triton_Shared)
             - [Hexagon SDK](#hexagon-sdk)
             - [Hexagon Tools](#hexagon-tools)
             - [Hexagon Kernel Library (HexKL)](#hexagon-kernel-library-hexkl)
@@ -92,11 +91,10 @@ If you don't have access to a Qualcomm NPU device you can still build and look a
 ## Building Hexagon-MLIR Compiler
 ###  Clone Repository
 ```bash
-# Clone the main repository with submodules
-git clone https://github.com/qualcomm/hexagon-mlir.git --recurse-submodules
+# Clone the main repository.
+git clone https://github.com/qualcomm/hexagon-mlir.git
 cd hexagon-mlir
 export HEXAGON_MLIR_ROOT=$PWD
-export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
 ```
 
 ### Script-based Build
@@ -115,8 +113,11 @@ To run the script, navigate to the root of the `hexagon-mlir` repository and exe
 bash ./scripts/build_hexagon_mlir.sh
 ```
 The script builds hexagon-mlir and runs the LIT tests for you to ensure the build succeeded.
-
-However, if you prefer to set up the environment manually, follow the steps below.
+Once the build script completes, you may want to source this script to set some useful environment variables for further tesing:
+```bash
+source ./scripts/set_local_env.sh
+```
+We highly recommend using the script. However, if you prefer to set up the environment manually, follow the steps below.
 
 ### Overview of the Manual Setup
 
@@ -128,7 +129,7 @@ Local development requires downloading several components:
 * LLVM (Triton-compatible)
 * Python Virtual Environment
 * [triton](https://github.com/triton-lang/triton)
-* [triton-shared](https://github.com/microsoft/triton-shared)
+* [triton-shared](https://github.com/facebookincubator/triton-shared.git)
 
 #### Required Environment Variables
 
@@ -144,31 +145,12 @@ export CONDA_ENV=/path/to/your/python/env
 
 #### Installing Required Components
 
-##### triton submodule
-Set up the triton submodule and apply Qualcomm specific patches. 
+##### Triton and Triton_Shared
+Set up the triton and triton_shared components, including applying all required Qualcomm-specific patches to each component.
 
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "${REPO_ROOT}"
-git submodule add --force https://github.com/triton-lang/triton.git triton
-cd triton
-git checkout e44bd1c83c1c3e8deac7c4f02683cfb3cc395c8b
-git apply "${REPO_ROOT}/third_party_software/patches/triton/third_party_triton.patch"
+bash ./ci/setup_submodules.sh
 ```
-
-##### triton_shared submodule
-Set up the triton_shared submodule and apply Qualcomm specific patches.
-
-```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "${REPO_ROOT}"
-git submodule add --force https://github.com/microsoft/triton-shared triton_shared
-cd triton_shared
-git checkout 2b728ad97bc02af821a0805b09075838911d4c19
-git apply "${REPO_ROOT}/third_party_software/patches/triton_shared/max_with_nan_propagation.patch"
-git apply "${REPO_ROOT}/third_party_software/patches/triton_shared/tt_shared_split_dim.patch"
-```
-
 ##### Hexagon SDK
 
 ```bash 
