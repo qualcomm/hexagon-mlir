@@ -29,7 +29,7 @@ The Python Triton kernel undergoes a multi-stage compilation process.
 | Stage | Tool/Library | Description |
 |-------|-------------|-------------|
 | **1** | [triton-compiler](https://github.com/triton-lang/triton) | `Triton Kernel → Triton-IR` |
-| **2** | [triton-shared](https://github.com/microsoft/triton-shared) | `Triton IR → Linalg IR` |
+| **2** | [triton-shared](https://github.com/facebookincubator/triton-shared) | `Triton IR → Linalg IR` |
 | **3** | `linalg-hexagon-opt`/libcall | `Linalg IR → MLIR-LLVM` (ML lowering and opt) |
 | **4** | `linalg-hexagon-translate` | `MLIR-LLVM IR → Object Code` |
 | **5** | Linker | Create `libflash_attention_kernel.so` |
