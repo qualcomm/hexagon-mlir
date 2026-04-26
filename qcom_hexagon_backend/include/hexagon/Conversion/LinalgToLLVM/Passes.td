@@ -337,7 +337,7 @@ def VTCMTiling :
 def ConversionToFp16 :
     InterfacePass<"conversion-to-fp16", "mlir::FunctionOpInterface"> {
   let summary =
-        "Pass to convert intermediate fp32 and fp64 operations to fp16 operations";
+        "Pass to convert intermediate fp32/fp64 operations to fp16 operations";
   let constructor = "hexagon::createConversionToFp16Pass()";
 }
 
