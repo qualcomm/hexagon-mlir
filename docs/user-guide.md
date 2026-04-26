@@ -16,7 +16,7 @@
     - [Overview of the Manual Setup](#overview-of-the-manual-setup)
         - [Required Environment Variables](#required-environment-variables)
         - [Installing Required Components](#installing-required-components)
-            - [triton and triton_shared](#triton-and-triton-shared)
+            - [triton and triton_shared](#triton-and-triton_shared)
             - [Hexagon SDK](#hexagon-sdk)
             - [Hexagon Tools](#hexagon-tools)
             - [Hexagon Kernel Library (HexKL)](#hexagon-kernel-library-hexkl)
