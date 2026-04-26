@@ -91,4 +91,4 @@ The following Triton language features are currently **not supported**:
 - [OpenAI Triton](https://github.com/openai/triton) - Main Triton repository
 - [Triton Language Reference](https://triton-lang.org/main/python-api/triton.language.html) - Language documentation
 - [Triton Tutorials](https://triton-lang.org/main/getting-started/tutorials/index.html) - Learning resources
-- [Triton-Shared Middle Layer](https://github.com/microsoft/triton-shared) - Triton to Linalg toolchain
+- [Triton-Shared Middle Layer](https://github.com/facebookincubator/triton-shared.git) - Triton to Linalg toolchain
