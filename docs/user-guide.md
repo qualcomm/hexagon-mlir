@@ -16,8 +16,7 @@
     - [Overview of the Manual Setup](#overview-of-the-manual-setup)
         - [Required Environment Variables](#required-environment-variables)
         - [Installing Required Components](#installing-required-components)
-            - [triton submodule](#triton-submodule)
-            - [triton_shared submodule](#triton_shared-submodule)
+            - [triton and triton_shared](#triton-and-triton-shared)
             - [Hexagon SDK](#hexagon-sdk)
             - [Hexagon Tools](#hexagon-tools)
             - [Hexagon Kernel Library (HexKL)](#hexagon-kernel-library-hexkl)
@@ -144,31 +143,13 @@ export CONDA_ENV=/path/to/your/python/env
 
 #### Installing Required Components
 
-##### triton submodule
-Set up the triton submodule and apply Qualcomm specific patches. 
+##### triton and triton_shared
+Set up the triton, triton_shared, and apply Qualcomm specific patches. 
 
 ```bash
+bash ./ci/setup_submodules.sh
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "${REPO_ROOT}"
-git submodule add --force https://github.com/triton-lang/triton.git triton
-cd triton
-git checkout e44bd1c83c1c3e8deac7c4f02683cfb3cc395c8b
-git apply "${REPO_ROOT}/third_party_software/patches/triton/third_party_triton.patch"
 ```
-
-##### triton_shared submodule
-Set up the triton_shared submodule and apply Qualcomm specific patches.
-
-```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "${REPO_ROOT}"
-git submodule add --force https://github.com/microsoft/triton-shared triton_shared
-cd triton_shared
-git checkout 2b728ad97bc02af821a0805b09075838911d4c19
-git apply "${REPO_ROOT}/third_party_software/patches/triton_shared/max_with_nan_propagation.patch"
-git apply "${REPO_ROOT}/third_party_software/patches/triton_shared/tt_shared_split_dim.patch"
-```
-
 ##### Hexagon SDK
 
 ```bash 
