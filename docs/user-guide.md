@@ -93,7 +93,7 @@ If you don't have access to a Qualcomm NPU device you can still build and look a
 ###  Clone Repository
 ```bash
 # Clone the main repository with submodules
-git clone https://github.com/qualcomm/hexagon-mlir.git --recurse-submodules
+git clone https://github.com/qualcomm/hexagon-mlir.git
 cd hexagon-mlir
 export HEXAGON_MLIR_ROOT=$PWD
 export TRITON_ROOT=$HEXAGON_MLIR_ROOT/triton
@@ -116,7 +116,7 @@ bash ./scripts/build_hexagon_mlir.sh
 ```
 The script builds hexagon-mlir and runs the LIT tests for you to ensure the build succeeded.
 
-However, if you prefer to set up the environment manually, follow the steps below.
+We highly recommend using the script. However, if you prefer to set up the environment manually, follow the steps below.
 
 ### Overview of the Manual Setup
 
@@ -128,7 +128,7 @@ Local development requires downloading several components:
 * LLVM (Triton-compatible)
 * Python Virtual Environment
 * [triton](https://github.com/triton-lang/triton)
-* [triton-shared](https://github.com/microsoft/triton-shared)
+* [triton-shared](https://github.com/facebookincubator/triton-shared.git)
 
 #### Required Environment Variables
 
