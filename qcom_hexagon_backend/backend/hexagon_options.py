@@ -18,7 +18,10 @@ class HexagonOptions:
     allow_fp8e4nv: bool = False
     allowed_dot_input_precisions: Tuple[str] = ("ieee",)
     arch_triple: str = "hexagon"
-    arch_features: str = f'+hvxv{os.getenv("HEXAGON_ARCH_VERSION")},+hvx-length128b'
+    arch_features: str = (
+        f'+hvxv{os.getenv("HEXAGON_ARCH_VERSION")},+hvx-length128b'
+        + (",+hvx-ieee-fp" if int(os.getenv("HEXAGON_ARCH_VERSION", "0")) >= 79 else "")
+    )
     device_type: str = "hexagon"
     vectorize: int = 1
     vector_length: int = 32

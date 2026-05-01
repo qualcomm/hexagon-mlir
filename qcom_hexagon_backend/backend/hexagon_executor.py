@@ -22,6 +22,26 @@ from triton.backends.qcom_hexagon_backend.utils import (  # type: ignore
 )
 from triton.backends.qcom_hexagon_backend.hexagon_profiler import HexagonProfiler
 
+
+def _sdk_tool_version(q6_version: str) -> str:
+    """Return the SDK prebuilt tool version for the given Hexagon arch version.
+
+    v79+ devices require toolv88; older devices use toolv87.
+    """
+    return "v88" if int(q6_version.lstrip("v")) >= 79 else "v87"
+
+
+def _qhmath_sdk_path(q6_version: str) -> tuple:
+    """Tool/arch version for qhmath_hvx prebuilt libs.
+
+    v79 qhmath_hvx in SDK <= 6.4.0.0 is missing fp16 _ahf symbols;
+    fall back to v75 toolv87 libs until HSDK 6.6.0.
+    """
+    if int(q6_version.lstrip("v")) >= 79:
+        return ("v87", "75")
+    return (_sdk_tool_version(q6_version), q6_version)
+
+
 # This file is part of a small subset of python files that uses some type-annotations
 # and it passes type-verification with mypy (a type checker).
 # To typecheck this set of files, do:
@@ -31,7 +51,7 @@ from triton.backends.qcom_hexagon_backend.hexagon_profiler import HexagonProfile
 class HexagonExecutor:
     def __init__(
         self,
-        kernel_run_id,
+        kernel_run_id: str,
         enable_lwp=False,
         enable_etm=False,
         compile_only=False,
@@ -50,6 +70,11 @@ class HexagonExecutor:
                                  environment variables, tools paths, and Q6 version, set by
                                  calling the `get_config` method.
         """
+        if not compile_only:
+            if (not isinstance(kernel_run_id, str)) or (len(kernel_run_id) == 0):
+                raise ValueError(
+                    "kernel_run_id must be well-formed, non-empty string for execution via standalone launcher"
+                )
         self.exec_mode = get_exec_mode() if not compile_only else "compile_only"
         self.device_path = f"/data/local/tmp/{kernel_run_id}"
         self.lib_path = f"{self.device_path}/lib"
@@ -229,9 +254,11 @@ class HexagonExecutor:
             HEXAGON_SDK_ROOT=self.config.env_vars["HEXAGON_SDK_ROOT"],
             Q6_VERSION=self.config.Q6_VERSION,
         )
-        QHL_LINK_DIR = """{HEXAGON_SDK_ROOT}/libs/qhl_hvx/prebuilt/hexagon_toolv87_v{Q6_VERSION}""".format(
+        qhmath_tool_ver, qhmath_arch_ver = _qhmath_sdk_path(self.config.Q6_VERSION)
+        QHL_LINK_DIR = "{HEXAGON_SDK_ROOT}/libs/qhl_hvx/prebuilt/hexagon_tool{TOOL_VERSION}_v{Q6_VERSION}".format(
             HEXAGON_SDK_ROOT=self.config.env_vars["HEXAGON_SDK_ROOT"],
-            Q6_VERSION=self.config.Q6_VERSION,
+            TOOL_VERSION=qhmath_tool_ver,
+            Q6_VERSION=qhmath_arch_ver,
         )
 
         if not (
@@ -248,9 +275,10 @@ class HexagonExecutor:
             QHL_LINK_DIR,
         )
 
-        QHMATH_DIR = """{HEXAGON_SDK_ROOT}/libs/qhl/prebuilt/hexagon_toolv87_v{Q6_VERSION}""".format(
+        QHMATH_DIR = "{HEXAGON_SDK_ROOT}/libs/qhl/prebuilt/hexagon_tool{TOOL_VERSION}_v{Q6_VERSION}".format(
             HEXAGON_SDK_ROOT=self.config.env_vars["HEXAGON_SDK_ROOT"],
-            Q6_VERSION=self.config.Q6_VERSION,
+            TOOL_VERSION=qhmath_tool_ver,
+            Q6_VERSION=qhmath_arch_ver,
         )
         if os.path.exists(QHMATH_DIR) and os.path.exists(
             os.path.join(QHMATH_DIR, "libqhmath.a")
@@ -366,11 +394,10 @@ class HexagonExecutor:
         )
         librun_main_on_hexagon_skel_path = os.path.join(
             self.config.env_vars["HEXAGON_SDK_ROOT"],
-            "libs/run_main_on_hexagon/ship/hexagon_toolv87_v{}/librun_main_on_hexagon_skel.so".format(
-                self.config.Q6_VERSION
+            "libs/run_main_on_hexagon/ship/hexagon_tool{}_v{}/librun_main_on_hexagon_skel.so".format(
+                _sdk_tool_version(self.config.Q6_VERSION), self.config.Q6_VERSION
             ),
         )
-
         libcpp_path = os.path.join(
             self.config.env_vars["HEXAGON_TOOLS"],
             "target/hexagon/lib/v{}/G0/pic/libc++.so.1".format(self.config.Q6_VERSION),
@@ -378,6 +405,17 @@ class HexagonExecutor:
 
         if not os.path.exists(libcpp_path):
             print("Path does not exist:", libcpp_path)
+            sys.exit(1)
+
+        libcppabi_path = os.path.join(
+            self.config.env_vars["HEXAGON_TOOLS"],
+            "target/hexagon/lib/v{}/G0/pic/libc++abi.so.1".format(
+                self.config.Q6_VERSION
+            ),
+        )
+
+        if not os.path.exists(libcppabi_path):
+            print("Path does not exist:", libcppabi_path)
             sys.exit(1)
 
         # Construct all the paths to the shared libs on device, using the `device_path` and the name of the .so in the local folder
@@ -528,6 +566,16 @@ class HexagonExecutor:
                 ),
                 True,
             ),
+            # Push libc++abi.so.1 library specific to hexagon-tools and Q6 version
+            (
+                "adb {} -s {} push {} {}".format(
+                    self.config.env_vars["ANDROID_HOST"],
+                    self.config.env_vars["ANDROID_SERIAL"],
+                    libcppabi_path,
+                    self.lib_path,
+                ),
+                True,
+            ),
             # Cleanup and copy all the necessary files related to the test
             (
                 "mkdir -p {dir}/app_bins && cp {} {dir}/app_bins".format(
@@ -542,7 +590,7 @@ class HexagonExecutor:
             ),
             # Run the kernel using run_main_on_hexagon
             (
-                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; export ADSP_LIBRARY_PATH=\"{};/vendor/lib/rfsa/adsp/\" ; ./run_main_on_hexagon 3 {}'".format(
+                "adb {} -s {} shell 'cd {}; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf; export DSP_LIBRARY_PATH={}; export ADSP_LIBRARY_PATH=\"{};/vendor/lib/rfsa/adsp/\" ; ./run_main_on_hexagon 3 {}'".format(
                     self.config.env_vars["ANDROID_HOST"],
                     self.config.env_vars["ANDROID_SERIAL"],
                     self.device_path,
@@ -602,13 +650,11 @@ class HexagonExecutor:
 
         try:
             if self.enable_etm:
-                if "mlir_ciface" in principal_lib_without_ext:
-                    kernel_name = ""  # torch-mlir flow -> not just one kernel
-                else:
-                    kernel_name = principal_lib_without_ext[3:]  # remove lib prefix
-
                 hex_prof = HexagonProfiler(
-                    etm_local_dir, profiling_mode="etm", kernel_name=kernel_name
+                    etm_local_dir,
+                    profiling_mode="etm",
+                    device_lib_path=path_to_principal_lib_on_device,
+                    local_lib_filename=f"{principal_lib_without_ext}.so",
                 )
             for command, should_run in commands:
                 if not should_run:
@@ -724,16 +770,18 @@ class HexagonExecutor:
                     self.config.env_vars["HEXAGON_TOOLS"], SIM_Q6SS_PATH
                 )
             ),
-            ("{} -mv{} \
+            (
+                "{} -mv{} \
                 --usefs={}/../Tools/target/hexagon/lib/v{}/G0/pic \
                 --simulated_returnval \
                 --cosim_file {} \
                 --l2tcm_base 0xd800 \
                 --rtos {} \
                 {}/rtos/qurt/computev{}/sdksim_bin/runelf.pbn -- \
-                {}/libs/run_main_on_hexagon/ship/hexagon_toolv87_v{}/run_main_on_hexagon_sim \
+                {}/libs/run_main_on_hexagon/ship/hexagon_tool{}_v{}/run_main_on_hexagon_sim \
                 stack_size=0x400000 -- \
-                {}").format(
+                {}"
+            ).format(
                 self.config.HEX_TOOLS["hexagon-sim"],
                 self.config.Q6_VERSION,
                 self.config.env_vars["HEXAGON_TOOLS"],
@@ -743,6 +791,7 @@ class HexagonExecutor:
                 self.config.env_vars["HEXAGON_SDK_ROOT"],
                 self.config.Q6_VERSION,
                 self.config.env_vars["HEXAGON_SDK_ROOT"],
+                _sdk_tool_version(self.config.Q6_VERSION),
                 self.config.Q6_VERSION,
                 path_to_principal_lib_local,
             ),

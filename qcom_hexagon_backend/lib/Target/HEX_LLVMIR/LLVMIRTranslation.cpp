@@ -373,6 +373,7 @@ llvm_module_to_obj_string(std::unique_ptr<llvm::Module> &llvmModule) {
   initializeHexagonTarget();
 
   auto target_triple = llvmModule->getTargetTriple();
+
   std::unique_ptr<llvm::TargetMachine> targetMachine =
       create_target_machine(target_triple);
 

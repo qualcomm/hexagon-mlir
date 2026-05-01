@@ -53,12 +53,19 @@ set(DEVICE_PATH "/vendor/bin/${BENCHMARK}")
 set(Q6_VERSION "$ENV{HEXAGON_ARCH_VERSION}")
 set(DSP_STACK_SIZE "262144")
 
+# v79+ devices require toolv88; older devices use toolv87.
+if(Q6_VERSION GREATER_EQUAL 79)
+  set(HEXAGON_TOOL_VERSION "v88")
+else()
+  set(HEXAGON_TOOL_VERSION "v87")
+endif()
+
 # Generate the run_test.sh script to run the test
 # TODO: Add option to pass gtest args in commandline
 set(SHELL_SCRIPT_CONTENT "#!/bin/bash"
   "set -x"
   "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL push ${HEXAGON_SDK_ROOT}/libs/run_main_on_hexagon/ship/android_aarch64/run_main_on_hexagon ${DEVICE_PATH}/run_main_on_hexagon"
-  "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL push ${HEXAGON_SDK_ROOT}/libs/run_main_on_hexagon/ship/hexagon_toolv87_v${Q6_VERSION}/librun_main_on_hexagon_skel.so /vendor/lib/rfsa/adsp/"
+  "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL push ${HEXAGON_SDK_ROOT}/libs/run_main_on_hexagon/ship/hexagon_tool${HEXAGON_TOOL_VERSION}_v${Q6_VERSION}/librun_main_on_hexagon_skel.so /vendor/lib/rfsa/adsp/"
   "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL push ${TEST_PATH}/${BENCHMARK}.so ${DEVICE_PATH}"
   "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL shell 'cd ${DEVICE_PATH}\; touch /vendor/lib/rfsa/adsp/run_main_on_hexagon.farf\; ./run_main_on_hexagon 3 ${DEVICE_PATH}/${BENCHMARK}.so --gtest-args=\"\" stack_size=262144'"
   "adb -H \$ANDROID_HOST -s \$ANDROID_SERIAL pull ${DEVICE_PATH}/gtest_output.txt ."

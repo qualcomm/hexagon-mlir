@@ -49,6 +49,7 @@ set(HEXAGON_INCLUDES
     -I${HEXAGON_SDK_ROOT}/incs
     -I${HEXAGON_SDK_ROOT}/incs/stddef
     -I${HEXAGON_SDK_ROOT}/libs/qhl_hvx/inc
+    -I${HEXAGON_SDK_ROOT}/libs/qhl_hvx/inc/internal
     -I${HEXKL_ROOT}/include
     -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/posix
     -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/qurt
