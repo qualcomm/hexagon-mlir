@@ -25,15 +25,10 @@ export HEXAGON_SDK_VERSION=6.4.0.2
 export HEXAGON_SDK_ROOT=${BASE_DIR}/HEXAGON_SDK/Hexagon_SDK/$HEXAGON_SDK_VERSION
 export HEXKL_ROOT=${BASE_DIR}/HEXKL_DIR/hexkl_addon
 
-export HEXAGON_ARCH_VERSION=79
+export HEXAGON_ARCH_VERSION=75
 export TRITON_HOME=$HEXAGON_MLIR_ROOT
 export TRITON_PLUGIN_DIRS="$HEXAGON_MLIR_ROOT/triton_shared;$HEXAGON_MLIR_ROOT/qcom_hexagon_backend"
 export PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/bin/:$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt:$PATH
 export PYTHONPATH=$TRITON_ROOT/python:${PYTHONPATH:-}
-
-# Use locally downloaded libstdc++ (GCC 12) to satisfy GLIBCXX_3.4.30 requirement.
-# LD_PRELOAD is used instead of LD_LIBRARY_PATH because libtriton.so has an RPATH
-# pointing to miniconda's lib which would otherwise take precedence.
-export LD_PRELOAD="${BASE_DIR}/LIBSTDCXX/libstdc++.so.6:${LD_PRELOAD:-}"
 
 set +euxo pipefail

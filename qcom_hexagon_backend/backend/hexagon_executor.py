@@ -596,6 +596,7 @@ class HexagonExecutor:
                     self.device_path,
                     self.lib_path,
                     path_to_principal_lib_on_device,
+                    path_to_principal_lib_on_device,
                 ),
                 True,
             ),

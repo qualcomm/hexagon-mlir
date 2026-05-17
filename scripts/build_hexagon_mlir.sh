@@ -46,10 +46,25 @@ else
   echo "HOST_TOOLCHAIN already extracted. Skipping."
 fi
 
+# setup environment for test and execution.
+ENV_DIR="${BASE_DIR}/mlir-env"
+cd ${BASE_DIR}
+if [[ ! -d "$ENV_DIR" ]]; then
+  echo "Creating virtual environment in '$ENV_DIR'..."
+  python3 -m venv "$ENV_DIR"
+else
+  echo "Virtual environment directory '$ENV_DIR' already exists; skipping creation."
+fi
+# Activate it
+source "$ENV_DIR/bin/activate"
+
+# Set HOST_TOOLCHAIN paths after venv activation so they are not dropped
+# by venv re-activation (which restores PATH to its pre-activation state).
 export HOST_TOOLCHAIN=${BASE_DIR}/HOST_TOOLCHAIN
 export PATH="${HOST_TOOLCHAIN}/bin:${PATH}"
 export CC="${HOST_TOOLCHAIN}/bin/clang"
 export CXX="${HOST_TOOLCHAIN}/bin/clang++"
+export CONDA_ENV=${BASE_DIR}/mlir-env
 
 # Get HEXAGON_SDK
 cd ${BASE_DIR}
@@ -142,7 +157,7 @@ if [[ ! -f "${LLVM_PROJECT_BUILD_DIR}/bin/mlir-opt" ]]; then
   cd  ${LLVM_PROJECT_BUILD_DIR} 
   echo "Configuring CMake..."
   cmake \
-    -G "Unix Makefiles" \
+    -G "Ninja" \
     -S "${LLVM_SRC_DIR}/llvm" \
     -B "${LLVM_PROJECT_BUILD_DIR}" \
     -DLLVM_ENABLE_PROJECTS="llvm;mlir;lld" \
@@ -166,21 +181,6 @@ else
 fi
 
 export LLVM_PROJECT_BUILD_DIR=${LLVM_PROJECT_BUILD_DIR}
-
-# setup environment for test and execution.
-ENV_DIR="${BASE_DIR}/mlir-env"
-cd ${BASE_DIR}
-if [[ ! -d "$ENV_DIR" ]]; then
-  echo "Creating virtual environment in '$ENV_DIR'..."
-  python3 -m venv "$ENV_DIR"
-else
-  echo "Virtual environment directory '$ENV_DIR' already exists; skipping creation."
-fi
-# Activate it
-source "$ENV_DIR/bin/activate"
-
-
-export CONDA_ENV=${BASE_DIR}/mlir-env
 
 cd ${REPO_DIR}
 source scripts/build_triton.sh
