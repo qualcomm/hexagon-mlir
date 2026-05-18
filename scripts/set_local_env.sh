@@ -31,4 +31,17 @@ export TRITON_PLUGIN_DIRS="$HEXAGON_MLIR_ROOT/triton_shared;$HEXAGON_MLIR_ROOT/q
 export PATH=$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/qcom_hexagon_backend/bin/:$TRITON_ROOT/build/cmake.linux-x86_64-cpython-${PYTHON_VERSION}/third_party/triton_shared/tools/triton-shared-opt:$PATH
 export PYTHONPATH=$TRITON_ROOT/python:${PYTHONPATH:-}
 
+# libtriton.so requires GLIBCXX_3.4.30. Miniconda's Python binary has an
+# RPATH of $ORIGIN/../lib which causes its older libstdc++ to be resolved
+# before the system version, regardless of LD_LIBRARY_PATH. LD_PRELOAD
+# overrides RPATH. Use HOST_TOOLCHAIN's clang (the same compiler that built
+# libtriton.so) to locate the libstdc++ it linked against, without hardcoding
+# any system path.
+_HOST_TOOLCHAIN=${BASE_DIR}/HOST_TOOLCHAIN
+_LIBSTDCPP=$("${_HOST_TOOLCHAIN}/bin/clang" --print-file-name=libstdc++.so.6 2>/dev/null || true)
+if [[ -n "${_LIBSTDCPP}" && -f "${_LIBSTDCPP}" ]]; then
+    export LD_PRELOAD="${_LIBSTDCPP}${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+unset _HOST_TOOLCHAIN _LIBSTDCPP
+
 set +euxo pipefail
