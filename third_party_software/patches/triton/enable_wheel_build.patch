@@ -1,0 +1,203 @@
+diff --git a/python/triton/__init__.py b/python/triton/__init__.py
+index 48099be62e..118a225f05 100644
+--- a/python/triton/__init__.py
++++ b/python/triton/__init__.py
+@@ -1,6 +1,18 @@
+ """isort:skip_file"""
++import json
++from importlib import resources
++
+ __version__ = '3.7.0'
+ 
++
++def get_hexagon_mlir_build_metadata():
++    """Return Hexagon-MLIR dependency versions captured when the wheel was built."""
++    try:
++        metadata = resources.files(__package__) / "_hexagon_mlir_build_metadata.json"
++        return json.loads(metadata.read_text())
++    except FileNotFoundError:
++        return {}
++
+ # ---------------------------------------
+ # Note: import order is significant here.
+ 
+@@ -40,6 +52,7 @@ __all__ = [
+     "Config",
+     "constexpr_function",
+     "FutureKernel",
++    "get_hexagon_mlir_build_metadata",
+     "heuristics",
+     "InterpreterError",
+     "jit",
+diff --git a/setup.py b/setup.py
+index 9e5f0f8c21..8b76e7c533 100644
+--- a/setup.py
++++ b/setup.py
+@@ -1,3 +1,4 @@
++import json
+ import os
+ import platform
+ import re
+@@ -185,6 +186,38 @@ def update_symlink(link_path, source_path):
+     link_path.symlink_to(source_path.absolute(), target_is_directory=True)
+ 
+ 
++def copy_path(src: Path, dst: Path, *, ignore=None):
++    if dst.exists() or dst.is_symlink():
++        if dst.is_dir() and not dst.is_symlink():
++            shutil.rmtree(dst)
++        else:
++            dst.unlink()
++    if not src.exists():
++        raise FileNotFoundError(f"Required wheel artifact does not exist: {src}")
++    print(f"copying wheel artifact: {dst} <- {src}", file=sys.stderr)
++    if src.is_dir():
++        shutil.copytree(src, dst, symlinks=True, ignore=ignore)
++    else:
++        dst.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copy2(src, dst)
++
++
++def is_hexagon_mlir_wheel():
++    return check_env_flag("_HEXAGON_MLIR_BUILDING_WHEEL") and any(
++        backend.name == "qcom_hexagon_backend" for backend in backends)
++
++
++def get_build_dependency_metadata():
++    keys = ["HEXAGON_TOOLS_VERSION", "HEXAGON_ARCH_VERSION", "HEXAGON_SDK_VERSION"]
++    return {key: os.environ.get(key, "") for key in keys}
++
++
++def write_build_metadata(build_lib: str):
++    metadata_path = Path(build_lib) / "triton" / "_hexagon_mlir_build_metadata.json"
++    metadata_path.write_text(json.dumps(get_build_dependency_metadata(), indent=2, sort_keys=True) + "\n")
++    print(f"wrote Hexagon-MLIR wheel metadata: {metadata_path}", file=sys.stderr)
++
++
+ # ---- cmake extension ----
+ 
+ 
+@@ -199,7 +232,11 @@ class CMakeBuildPy(build_py):
+ 
+     def run(self) -> None:
+         self.run_command('build_ext')
+-        return super().run()
++        if is_hexagon_mlir_wheel():
++            copy_hexagon_mlir_artifacts()
++        super().run()
++        if is_hexagon_mlir_wheel():
++            write_build_metadata(self.build_lib)
+ 
+ 
+ class CMakeExtension(Extension):
+@@ -405,7 +442,14 @@ def get_packages():
+     yield from find_packages(where="python")
+ 
+     for backend in backends:
+-        yield f"triton.backends.{backend.name}"
++        backend_package = f"triton.backends.{backend.name}"
++        yield backend_package
++        for root, dirs, files in os.walk(backend.backend_dir):
++            dirs[:] = [d for d in dirs if d != "__pycache__"]
++            if root == backend.backend_dir or "__init__.py" not in files:
++                continue
++            rel_path = os.path.relpath(root, backend.backend_dir)
++            yield f"{backend_package}.{rel_path.replace(os.sep, '.')}"
+ 
+         if backend.language_dir:
+             # Install the contents of each backend's `language` directory into
+@@ -462,11 +506,39 @@ def add_links(external_only):
+         add_link_to_proton()
+ 
+ 
++def copy_hexagon_mlir_artifacts():
++    build_dir = Path(get_cmake_dir())
++    repo_root = Path(__file__).resolve().parent.parent
++    qcom_package_dir = Path(__file__).parent / "python" / "triton" / "backends" / "qcom_hexagon_backend"
++    staged_backend_dir = build_dir / "wheel-staging" / "backends" / "qcom_hexagon_backend"
++
++    copy_path(repo_root / "qcom_hexagon_backend" / "backend", staged_backend_dir,
++              ignore=shutil.ignore_patterns("bin", "hexagon_mlir_root", "__pycache__", "*.pyc", "*.pyo"))
++    update_symlink(qcom_package_dir, staged_backend_dir)
++
++    bin_dir = qcom_package_dir / "bin"
++    for tool in ["hexagon-mlir-lsp-server", "linalg-hexagon-opt", "linalg-hexagon-translate"]:
++        copy_path(build_dir / "third_party" / "qcom_hexagon_backend" / "bin" / tool, bin_dir / tool)
++    copy_path(build_dir / "third_party" / "triton_shared" / "tools" / "triton-shared-opt" / "triton-shared-opt",
++              bin_dir / "triton-shared-opt")
++    copy_path(build_dir / "third_party" / "triton_shared" / "tools" / "triton-shared-opt" / "triton-shared-lsp",
++              bin_dir / "triton-shared-lsp")
++    copy_path(build_dir / "third_party" / "qcom_hexagon_backend" / "bin" / "runtime", bin_dir / "runtime")
++
++    packaged_root = qcom_package_dir / "hexagon_mlir_root"
++    copy_path(repo_root / "test" / "utils" / "dsp" / "include", packaged_root / "test" / "utils" / "dsp" / "include")
++    copy_path(repo_root / "qcom_hexagon_backend" / "bin" / "runtime" / "profiler",
++              packaged_root / "qcom_hexagon_backend" / "bin" / "runtime" / "profiler")
++
++
+ class plugin_bdist_wheel(bdist_wheel):
+ 
+     def run(self):
+-        add_links(external_only=True)
+-        super().run()
++        try:
++            add_links(external_only=True)
++            super().run()
++        finally:
++            os.environ.pop("_HEXAGON_MLIR_BUILDING_WHEEL", None)
+ 
+ 
+ class plugin_develop(develop):
+@@ -570,6 +642,22 @@ PYTHON_CLASSIFIERS = [
+ ]
+ CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
+ 
++
++HEXAGON_MLIR_RUNTIME_REQUIREMENTS = [
++    "numpy",
++    "torch==2.10.0+cpu",
++]
++
++
++def get_install_requires():
++    requirements = [
++        "importlib-metadata; python_version < '3.10'",
++    ]
++    if is_hexagon_mlir_wheel():
++        requirements.extend(HEXAGON_MLIR_RUNTIME_REQUIREMENTS)
++    return requirements
++
++
+ setup(
+     name=os.environ.get("TRITON_WHEEL_NAME", "triton"),
+     version=TRITON_VERSION,
+@@ -578,13 +666,26 @@ setup(
+     description="A language and compiler for custom Deep Learning operations",
+     long_description="",
+     license="MIT",
+-    install_requires=[
+-        "importlib-metadata; python_version < '3.10'",
+-    ],
++    install_requires=get_install_requires(),
+     packages=list(get_packages()),
+     package_dir=dict(get_package_dirs()),
+     entry_points=get_entry_points(),
+     include_package_data=True,
++    package_data={
++        "triton": ["_hexagon_mlir_build_metadata.json"],
++        "triton.backends.qcom_hexagon_backend": [
++            "name.conf",
++            "bin/*",
++            "bin/runtime/*",
++            "bin/runtime/multithreading/*",
++            "hexagon_mlir_root/test/utils/dsp/include/*",
++            "hexagon_mlir_root/qcom_hexagon_backend/bin/runtime/profiler/*",
++        ],
++        "triton.backends.triton_shared": [
++            "name.conf",
++            "include/ExecutionEngine/*",
++        ],
++    },
+     exclude_package_data={"": [
+         "__pycache__",
+         "__pycache__/*",

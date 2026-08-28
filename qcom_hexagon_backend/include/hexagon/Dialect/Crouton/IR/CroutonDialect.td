@@ -34,7 +34,6 @@ def Crouton_Dialect : Dialect {
   }];
 
   let useDefaultTypePrinterParser = 1;
-  let usePropertiesForAttributes = 1;
 }
 
 #endif // HEXAGON_DIALECT_CROUTON_IR_CROUTON_DIALECT_TD

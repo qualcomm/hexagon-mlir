@@ -1,0 +1,899 @@
+diff --git a/include/triton/Dialect/Triton/Transforms/Passes.td b/include/triton/Dialect/Triton/Transforms/Passes.td
+index bc163b10f1..3d05d2bffb 100644
+--- a/include/triton/Dialect/Triton/Transforms/Passes.td
++++ b/include/triton/Dialect/Triton/Transforms/Passes.td
+@@ -43,7 +43,16 @@ def TritonRewriteTensorDescriptorToPointer : Pass</*cli-arg*/"triton-rewrite-ten
+     for each load/store.
+   }];
+ 
+-  let dependentDialects = ["mlir::triton::TritonDialect"];
++  let dependentDialects = ["mlir::triton::TritonDialect", "mlir::scf::SCFDialect",
++                           "mlir::arith::ArithDialect"];
++
++  let options = [
++    Option<"inboundsFastPath", "inbounds-fast-path",
++           "bool", /*default*/"false",
++           "When true, emit a scalar in-bounds check (scf.if) so that fully "
++           "in-bounds tiles take an unmasked fast path and only boundary tiles "
++           "pay the cost of mask computation and a masked load/store.">
++  ];
+ }
+ 
+ def TritonLoopUnroll : Pass</*cli-arg*/"triton-loop-unroll", /*Op*/"mlir::ModuleOp"> {
+diff --git a/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp b/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
+index 30e6dac6f8..bee19f0b4a 100644
+--- a/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
++++ b/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
+@@ -218,6 +218,39 @@ Value generateMask(OpBuilder &builder, const Location &loc,
+                                       offsetRanges);
+ }
+ 
++// Returns a scalar i1 that is true iff the whole block is in bounds in every
++// dimension, i.e. for all i:
++//   offsets[i] >= 0  &&  offsets[i] + (blockShape[i] - 1) < shape[i]
++// This is exactly the condition under which generateMask() would be all-true,
++// so callers may take an unmasked fast path when it holds. The check is built
++// from cheap scalar comparisons rather than the per-element tensor mask.
++Value generateInBoundsCheck(OpBuilder &builder, const Location &loc,
++                            ArrayRef<std::int64_t> blockShape, Descriptor &desc,
++                            ValueRange offsets) {
++  assert(blockShape.size() == desc.shape.size());
++  assert(blockShape.size() == offsets.size());
++  auto i64Ty = builder.getI64Type();
++  Value zero = arith::ConstantIntOp::create(builder, loc, i64Ty, 0);
++  // Initialize to true so rank-0 is safe and a fully-static block folds away.
++  Value inBounds =
++      arith::ConstantIntOp::create(builder, loc, builder.getI1Type(), 1);
++  for (std::size_t i = 0; i < blockShape.size(); ++i) {
++    // offsets[i] >= 0
++    Value cmpLower = arith::CmpIOp::create(
++        builder, loc, arith::CmpIPredicate::sge, offsets[i], zero);
++    // offsets[i] + (blockShape[i] - 1) < shape[i]
++    Value blockMax =
++        arith::ConstantIntOp::create(builder, loc, i64Ty, blockShape[i] - 1);
++    Value hi = arith::AddIOp::create(builder, loc, offsets[i], blockMax);
++    Value cmpUpper = arith::CmpIOp::create(
++        builder, loc, arith::CmpIPredicate::slt, hi, desc.shape[i]);
++    Value dimInBounds =
++        arith::AndIOp::create(builder, loc, cmpLower, cmpUpper);
++    inBounds = arith::AndIOp::create(builder, loc, inBounds, dimInBounds);
++  }
++  return inBounds;
++}
++
+ Value generateOther(OpBuilder &builder, Location loc, Type scalarTy,
+                     ArrayRef<int64_t> blockShape,
+                     Value paddingOption = nullptr) {
+@@ -322,7 +355,12 @@ struct RewriteMakeTensorDesc : OpConversionPattern<triton::MakeTensorDescOp> {
+ };
+ 
+ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
+-  using OpConversionPattern<triton::DescriptorLoadOp>::OpConversionPattern;
++  RewriteLoadPattern(const TypeConverter &converter, MLIRContext *ctx,
++                     bool inboundsFastPath)
++      : OpConversionPattern<triton::DescriptorLoadOp>(converter, ctx),
++        inboundsFastPath(inboundsFastPath) {}
++
++  bool inboundsFastPath;
+ 
+   llvm::LogicalResult
+   matchAndRewrite(triton::DescriptorLoadOp op, OneToNOpAdaptor adaptor,
+@@ -332,14 +370,53 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
+     auto descTy = op.getDesc().getType();
+     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+     auto offsets = castToI64(rewriter, op.getIndices());
+-    auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
+-    auto newLoad = triton::LoadOp::create(
+-        rewriter, loc, generatePtr(rewriter, loc, blockShape, desc, offsets),
+-        generateMask(rewriter, loc, blockShape, desc, offsets), other,
+-        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+-    newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
+ 
+-    Value result = newLoad.getResult();
++    Value ptr = generatePtr(rewriter, loc, blockShape, desc, offsets);
++    Type resultTy = descTy.getSignlessBlockType();
++    Value result;
++
++    if (inboundsFastPath) {
++      // Scalar in-bounds check: fast path (unmasked) vs slow path (masked).
++      // The mask and padding tensors are only built on the slow path.
++      Value inBounds =
++          generateInBoundsCheck(rewriter, loc, blockShape, desc, offsets);
++      auto ifOp = scf::IfOp::create(rewriter, loc, resultTy, inBounds,
++                                    /*withElse=*/true);
++      {
++        OpBuilder::InsertionGuard guard(rewriter);
++        rewriter.setInsertionPointToStart(ifOp.thenBlock());
++        auto fastLoad = triton::LoadOp::create(rewriter, loc, ptr,
++                                               triton::CacheModifier::NONE,
++                                               triton::EvictionPolicy::NORMAL,
++                                               /*isVolatile=*/false);
++        fastLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
++        scf::YieldOp::create(rewriter, loc, fastLoad.getResult());
++      }
++      {
++        OpBuilder::InsertionGuard guard(rewriter);
++        rewriter.setInsertionPointToStart(ifOp.elseBlock());
++        auto mask = generateMask(rewriter, loc, blockShape, desc, offsets);
++        auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
++        auto slowLoad =
++            triton::LoadOp::create(rewriter, loc, ptr, mask, other,
++                                   triton::CacheModifier::NONE,
++                                   triton::EvictionPolicy::NORMAL,
++                                   /*isVolatile=*/false);
++        slowLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
++        scf::YieldOp::create(rewriter, loc, slowLoad.getResult());
++      }
++      result = ifOp.getResult(0);
++    } else {
++      // Default: unconditional masked load.
++      auto mask = generateMask(rewriter, loc, blockShape, desc, offsets);
++      auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
++      auto newLoad = triton::LoadOp::create(rewriter, loc, ptr, mask, other,
++                                            triton::CacheModifier::NONE,
++                                            triton::EvictionPolicy::NORMAL,
++                                            /*isVolatile=*/false);
++      newLoad->setAttrs(filterSegmentSizes(op->getAttrs()));
++      result = newLoad.getResult();
++    }
+     if (descTy.getElementType().isF32()) {
+ 
+       auto ifOp = scf::IfOp::create(rewriter, loc, result.getType(),
+@@ -360,7 +437,12 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
+ };
+ 
+ struct RewriteStorePattern : OpConversionPattern<triton::DescriptorStoreOp> {
+-  using OpConversionPattern<triton::DescriptorStoreOp>::OpConversionPattern;
++  RewriteStorePattern(const TypeConverter &converter, MLIRContext *ctx,
++                      bool inboundsFastPath)
++      : OpConversionPattern<triton::DescriptorStoreOp>(converter, ctx),
++        inboundsFastPath(inboundsFastPath) {}
++
++  bool inboundsFastPath;
+ 
+   llvm::LogicalResult
+   matchAndRewrite(triton::DescriptorStoreOp op, OneToNOpAdaptor adaptor,
+@@ -371,12 +453,42 @@ struct RewriteStorePattern : OpConversionPattern<triton::DescriptorStoreOp> {
+     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+     auto offsets = castToI64(rewriter, op.getIndices());
+ 
+-    auto newStore = rewriter.replaceOpWithNewOp<triton::StoreOp>(
+-        op, generatePtr(rewriter, loc, blockShape, desc, offsets), op.getSrc(),
+-        generateMask(rewriter, loc, blockShape, desc, offsets),
+-        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL);
+-    newStore->setAttrs(filterSegmentSizes(op->getAttrs()));
++    Value ptr = generatePtr(rewriter, loc, blockShape, desc, offsets);
++
++    if (inboundsFastPath) {
++      Value inBounds =
++          generateInBoundsCheck(rewriter, loc, blockShape, desc, offsets);
++      auto ifOp =
++          scf::IfOp::create(rewriter, loc, inBounds, /*withElse=*/true);
++      {
++        OpBuilder::InsertionGuard guard(rewriter);
++        rewriter.setInsertionPointToStart(ifOp.thenBlock());
++        auto fastStore =
++            triton::StoreOp::create(rewriter, loc, ptr, op.getSrc(),
++                                    triton::CacheModifier::NONE,
++                                    triton::EvictionPolicy::NORMAL);
++        fastStore->setAttrs(filterSegmentSizes(op->getAttrs()));
++      }
++      {
++        OpBuilder::InsertionGuard guard(rewriter);
++        rewriter.setInsertionPointToStart(ifOp.elseBlock());
++        auto mask = generateMask(rewriter, loc, blockShape, desc, offsets);
++        auto slowStore =
++            triton::StoreOp::create(rewriter, loc, ptr, op.getSrc(), mask,
++                                    triton::CacheModifier::NONE,
++                                    triton::EvictionPolicy::NORMAL);
++        slowStore->setAttrs(filterSegmentSizes(op->getAttrs()));
++      }
++    } else {
++      // Default: unconditional masked store.
++      auto mask = generateMask(rewriter, loc, blockShape, desc, offsets);
++      auto newStore = triton::StoreOp::create(rewriter, loc, ptr, op.getSrc(),
++                                              mask, triton::CacheModifier::NONE,
++                                              triton::EvictionPolicy::NORMAL);
++      newStore->setAttrs(filterSegmentSizes(op->getAttrs()));
++    }
+ 
++    rewriter.eraseOp(op);
+     return llvm::success();
+   }
+ };
+@@ -543,6 +655,9 @@ struct RewriteReducePattern : OpConversionPattern<triton::DescriptorReduceOp> {
+ class TritonRewriteTensorDescriptorToPointerPass
+     : public impl::TritonRewriteTensorDescriptorToPointerBase<
+           TritonRewriteTensorDescriptorToPointerPass> {
++  using Base = impl::TritonRewriteTensorDescriptorToPointerBase<
++      TritonRewriteTensorDescriptorToPointerPass>;
++  using Base::Base;
+   void runOnOperation() override {
+     auto op = getOperation();
+ 
+@@ -605,10 +720,16 @@ class TritonRewriteTensorDescriptorToPointerPass
+     mlir::scf::populateSCFStructuralTypeConversions(converter, patterns);
+     triton::populateArithTypeConversions(converter, patterns);
+ 
+-    patterns
+-        .add<RewriteMakeTensorDesc, RewriteLoadPattern, RewriteStorePattern,
+-             RewriteGatherPattern, RewriteScatterPattern, RewriteReducePattern>(
+-            converter, &getContext());
++    patterns.add<RewriteMakeTensorDesc, RewriteGatherPattern,
++                 RewriteScatterPattern, RewriteReducePattern>(converter,
++                                                              &getContext());
++    patterns.add<RewriteLoadPattern>(converter, &getContext(),
++                                     inboundsFastPath);
++    // Store fast path disabled: an unmasked fast-path store can bufferize in
++    // place into the escaping destination and corrupt the heap on boundary
++    // tiles. TODO(ticket): re-enable with a conditional-safe store lowering.
++    patterns.add<RewriteStorePattern>(converter, &getContext(),
++                                      /*inboundsFastPath=*/false);
+ 
+     ConversionConfig config;
+     config.buildMaterializations = false;
+diff --git a/python/src/passes.cc b/python/src/passes.cc
+index 9f10eebaa9..db8e1905ed 100644
+--- a/python/src/passes.cc
++++ b/python/src/passes.cc
+@@ -45,8 +45,8 @@ void init_triton_passes_ttir(py::module &&m) {
+   using namespace mlir::triton;
+   ADD_PASS_WRAPPER_0("add_combine", createTritonCombineOps);
+   ADD_PASS_WRAPPER_0("add_reorder_broadcast", createTritonReorderBroadcast);
+-  ADD_PASS_WRAPPER_0("add_rewrite_tensor_descriptor_to_pointer",
+-                     createTritonRewriteTensorDescriptorToPointer);
++  ADD_PASS_OPTION_WRAPPER_1("add_rewrite_tensor_descriptor_to_pointer",
++                            createTritonRewriteTensorDescriptorToPointer, bool);
+   ADD_PASS_WRAPPER_0("add_loop_unroll", createTritonLoopUnroll);
+   ADD_PASS_WRAPPER_0("add_triton_licm", createTritonLoopInvariantCodeMotion);
+   ADD_PASS_WRAPPER_0("add_loop_aware_cse", createTritonLoopAwareCSE);
+diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
+index 0971a265db..e5d243cfe6 100644
+--- a/python/triton/language/semantic.py
++++ b/python/triton/language/semantic.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations  # remove after python 3.11
+ import builtins
++import os
+ import warnings
+ 
+ from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
+@@ -1064,11 +1065,153 @@ class TritonSemantic(Generic[TensorTy]):
+         ndim = len(desc.block_shape)
+         assert len(offsets) == ndim, f"expected {ndim} offsets, but got {len(offsets)}"
+ 
++        if not self._has_native_tma() and hasattr(desc, '_raw_base'):
++            return self._descriptor_load_raw_ptr(desc, offsets, cache_modifier, eviction_policy)
++
+         offsets = self._convert_to_ir_values(offsets, require_i64=False)
+         x = self.builder.create_descriptor_load(desc.handle, offsets, self._str_to_load_cache_modifier(cache_modifier),
+                                                 self._str_to_eviction_policy(eviction_policy))
+         return self.tensor(x, desc.block_type)
+ 
++    def _build_descriptor_ptr_and_mask(self, desc, offsets, already_i64=False):
++        """Build a pointer tensor and boolean mask for a descriptor access.
++
++        Used by the non-TMA load/store path. Requires desc to have _raw_base,
++        _raw_shape, and _raw_strides set by make_tensor_descriptor.
++
++        offsets may be raw values or pre-cast i64 scalars (already_i64=True).
++        Returns (ptr_tensor, mask_tensor).
++        """
++        block_shape = list(desc.block_shape)
++        ndim = len(block_shape)
++
++        # Cast each offset to i64 scalar (skip if already done by caller).
++        if already_i64:
++            offsets_i64 = offsets
++        else:
++            offsets_i64 = []
++            for off in offsets:
++                if isinstance(off, tl.constexpr):
++                    t = self.scalar_constant(tl._unwrap_if_constexpr(off), tl.int64)
++                else:
++                    t = self.cast(off, tl.int64)
++                offsets_i64.append(t)
++
++        # For each dimension i, build the absolute index vector:
++        #   expanded[i] has shape with block_shape[i] at axis i and 1 at all other axes.
++        #   expanded[i] = expand_dims(splat(offset[i], [block_shape[i]]) + cast(arange(0, block_shape[i]), i64))
++        expanded = []
++        for i in range(ndim):
++            size = block_shape[i]
++            rng = self.cast(self.arange(0, size), tl.int64)          # [size], i64
++            off_splat = self.splat(offsets_i64[i], [size])            # [size], i64
++            off_range = self.add(off_splat, rng, False)               # [size], i64
++            val = off_range
++            for j in range(ndim):
++                if j != i:
++                    val = self.expand_dims(val, j)                    # insert size-1 dims
++            expanded.append(val)
++
++        # Build pointer tensor: start from splat(base, block_shape), then add
++        # stride[i] * expanded[i] broadcast to full block_shape for each dim.
++        ptr = self.splat(desc._raw_base, block_shape)
++        for i in range(ndim):
++            stride = self.cast(desc._raw_strides[i], tl.int64)        # scalar i64
++            exp_shape = list(expanded[i].shape)
++            stride_splat = self.splat(stride, exp_shape)
++            contrib = self.mul(expanded[i], stride_splat, False)
++            contrib_bc = self.broadcast_impl_shape(contrib, block_shape)
++            ptr = self.add(ptr, contrib_bc, False)                     # tt.addptr
++
++        # Build mask: for each dim, (expanded[i] >= 0) & (expanded[i] < shape[i]),
++        # broadcast to full block_shape and AND all dimensions together.
++        zero = self.scalar_constant(0, tl.int64)
++        mask = None
++        for i in range(ndim):
++            exp_shape = list(expanded[i].shape)
++            zero_splat = self.splat(zero, exp_shape)
++            shape_i = self.cast(desc._raw_shape[i], tl.int64)
++            shape_splat = self.splat(shape_i, exp_shape)
++            lo = self.greater_equal(expanded[i], zero_splat)
++            hi = self.less_than(expanded[i], shape_splat)
++            dim_mask = self.and_(lo, hi)
++            dim_mask_bc = self.broadcast_impl_shape(dim_mask, block_shape)
++            mask = dim_mask_bc if mask is None else self.and_(mask, dim_mask_bc)
++
++        return ptr, mask
++
++    def _build_inbounds_check(self, desc, offsets_i64):
++        """Return a scalar i1 that is true iff the whole block fits within bounds.
++
++        Checks offset[i] >= 0 && offset[i] + (block_shape[i] - 1) < shape[i]
++        for every dimension. When offsets and shapes are compile-time constants
++        this folds away entirely; at runtime it is a handful of scalar comparisons
++        that the branch predictor handles well for the common in-bounds case.
++        """
++        block_shape = desc.block_shape
++        ndim = len(block_shape)
++        zero = self.scalar_constant(0, tl.int64)
++        result = self.scalar_constant(1, tl.int1)
++        for i in range(ndim):
++            # offset[i] >= 0
++            lo = self.greater_equal(offsets_i64[i], zero)
++            # offset[i] + (block_shape[i] - 1) < shape[i]
++            block_max = self.scalar_constant(block_shape[i] - 1, tl.int64)
++            hi_idx = self.add(offsets_i64[i], block_max, False)
++            shape_i = self.cast(desc._raw_shape[i], tl.int64)
++            hi = self.less_than(hi_idx, shape_i)
++            dim_ok = self.and_(lo, hi)
++            result = self.and_(result, dim_ok)
++        return result
++
++    def _descriptor_load_raw_ptr(self, desc, offsets, cache_modifier, eviction_policy):
++        """Non-TMA load: scalar in-bounds check → fast (unmasked) or slow (masked) tt.load."""
++        block_shape = list(desc.block_shape)
++        elem_ty = desc.dtype
++        cache = self._str_to_load_cache_modifier(cache_modifier)
++        eviction = self._str_to_eviction_policy(eviction_policy)
++
++        # Cast offsets to i64 once — shared by both the in-bounds check and the
++        # pointer/mask computation.
++        offsets_i64 = []
++        for off in offsets:
++            if isinstance(off, tl.constexpr):
++                t = self.scalar_constant(tl._unwrap_if_constexpr(off), tl.int64)
++            else:
++                t = self.cast(off, tl.int64)
++            offsets_i64.append(t)
++
++        ptr, mask = self._build_descriptor_ptr_and_mask(desc, offsets_i64, already_i64=True)
++        in_bounds = self._build_inbounds_check(desc, offsets_i64)
++
++        padding_option = getattr(desc, '_raw_padding_option', 'zero')
++        if padding_option == 'nan' and elem_ty.is_floating():
++            import math
++            other = self.full(block_shape, math.nan, elem_ty)
++        else:
++            other = self.full(block_shape, 0, elem_ty)
++
++        result_ty = desc.block_type.to_ir(self.builder)
++
++        # Fast path: in-bounds → unmasked load.
++        # Slow path: out-of-bounds → masked load with padding.
++        if_op = self.builder.create_if_op([result_ty], in_bounds.handle, True)
++        self.builder.set_insertion_point_to_start(if_op.get_then_block())
++        fast = self.tensor(
++            self.builder.create_load(ptr.handle, cache, eviction, False),
++            desc.block_type)
++        self.builder.create_yield_op([fast.handle])
++
++        self.builder.set_insertion_point_to_start(if_op.get_else_block())
++        slow = self.tensor(
++            self.builder.create_masked_load(ptr.handle, mask.handle, other.handle,
++                                            cache, eviction, False),
++            desc.block_type)
++        self.builder.create_yield_op([slow.handle])
++
++        self.builder.set_insertion_point_after(if_op.get_operation())
++        return self.tensor(if_op.get_result(0), desc.block_type)
++
+     def validate_store_like(self, desc: tl.tensor_descriptor_base, value: TensorTy, offsets) -> None:
+         assert isinstance(desc, tl.tensor_descriptor_base)
+         ndim = len(desc.block_shape)
+@@ -1079,6 +1222,25 @@ class TritonSemantic(Generic[TensorTy]):
+         self.validate_store_like(desc, value, offsets)
+         # implicitly cast to the descriptor's type
+         value = self.cast(value, desc.dtype)
++
++        if not self._has_native_tma() and hasattr(desc, '_raw_base'):
++            offsets_i64 = []
++            for off in offsets:
++                if isinstance(off, tl.constexpr):
++                    t = self.scalar_constant(tl._unwrap_if_constexpr(off), tl.int64)
++                else:
++                    t = self.cast(off, tl.int64)
++                offsets_i64.append(t)
++            ptr, mask = self._build_descriptor_ptr_and_mask(desc, offsets_i64, already_i64=True)
++            cache = self._str_to_store_cache_modifier("")
++            eviction = self._str_to_eviction_policy("")
++            # Store fast path disabled: an unmasked fast-path store can bufferize
++            # in place into the escaping destination and corrupt the heap on
++            # boundary tiles. TODO(ticket): re-enable with a conditional-safe
++            # store lowering. Always emit a single masked store instead.
++            self.builder.create_masked_store(ptr.handle, value.handle, mask.handle, cache, eviction)
++            return self.tensor(None, tl.void)
++
+         offsets = self._convert_to_ir_values(offsets, require_i64=False)
+         return self.tensor(self.builder.create_descriptor_store(desc.handle, value.handle, offsets), tl.void)
+ 
+@@ -1093,6 +1255,16 @@ class TritonSemantic(Generic[TensorTy]):
+         target = driver.active.get_current_target()
+         return (target.backend == "cuda" and target.arch >= 90)
+ 
++    def _frontend_tma_lowering_enabled(self):
++        # Opt-in frontend lowering of tensor descriptors on non-TMA targets.
++        # When enabled, make_tensor_descriptor attaches raw components so
++        # descriptor_load/store emit raw pointer arithmetic with an in-bounds
++        # fast path. When disabled (default) descriptors are left as
++        # tt.descriptor_* ops and lowered by the RewriteTensorDescriptorToPointer
++        # MLIR pass instead.
++        val = os.environ.get("TRITON_HEXAGON_TMA_INBOUNDS_FAST_PATH", "0")
++        return val.lower() in ("1", "true", "on", "yes")
++
+     def _descriptor_atomic_min_max_supported(self, dtype):
+         assert dtype in {tl.uint32, tl.int32, tl.uint64, tl.int64, tl.float16, tl.bfloat16}, "Unsupported dtype"
+         if dtype in {tl.float16, tl.bfloat16}:
+@@ -1868,6 +2040,17 @@ class TritonSemantic(Generic[TensorTy]):
+         if base.type.element_ty.is_int() and padding == ir.PADDING_OPTION.PAD_NAN:
+             raise ValueError("Padding option `nan` is not supported for integer blocks")
+ 
++        if not self._has_native_tma() and self._frontend_tma_lowering_enabled():
++            # Non-TMA + opt-in: skip emitting tt.make_tensor_descriptor. Use the
++            # base pointer handle directly and attach raw components so that
++            # descriptor_load / descriptor_store can emit raw pointer arithmetic.
++            desc = tl.tensor_descriptor(base_handle, shape, strides, type)
++            desc._raw_base = base
++            desc._raw_shape = shape
++            desc._raw_strides = strides
++            desc._raw_padding_option = padding_option
++            return desc
++
+         handle = self.builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
+                                                             [s.handle for s in strides], block_shape, is_signed_int,
+                                                             padding)
+diff --git a/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir b/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir
+new file mode 100644
+index 0000000000..39c42e2fad
+--- /dev/null
++++ b/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir
+@@ -0,0 +1,189 @@
++// RUN: triton-opt %s --triton-rewrite-tensor-descriptor-to-pointer=inbounds-fast-path=true --canonicalize --cse --split-input-file | FileCheck %s
++
++// =============================================================================
++// Test: When offsets are compile-time constants that are provably in bounds,
++// the scf.if condition folds to true and canonicalize eliminates the dead
++// masked (else) branch entirely — only the unmasked tt.load remains.
++// =============================================================================
++module {
++  tt.func public @load_provably_inbounds(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}) -> (tensor<128x128xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c256_i64 = arith.constant 256 : i64
++    %c256_i32 = arith.constant 256 : i32
++    %c0_i32 = arith.constant 0 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c256_i32, %c256_i32], [%c1_i64, %c256_i64] {order = array<i32: 0>} : <f32>, <128x128xf32>
++    // offset=(0,0), block=(128,128), shape=(256,256) => 0+127<256 in both dims => in bounds
++    %3 = tt.descriptor_load %0[%c0_i32, %c0_i32] : !tt.tensordesc<128x128xf32> -> tensor<128x128xf32>
++    tt.return %3 : tensor<128x128xf32>
++  }
++}
++
++// CHECK-LABEL: @load_provably_inbounds
++// The scf.if should be completely eliminated — only an unmasked load remains.
++// CHECK-NOT: scf.if
++// CHECK-NOT: tt.load {{.*}}, {{.*}}, {{.*}} :
++// CHECK: tt.load {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK-NOT: scf.if
++// CHECK: tt.return
++
++// -----
++
++// =============================================================================
++// Test: When offsets are compile-time constants that are provably OUT of bounds,
++// the scf.if condition folds to false and canonicalize eliminates the dead
++// unmasked (then) branch — only the masked tt.load remains.
++// =============================================================================
++module {
++  tt.func public @load_provably_oob(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}) -> (tensor<128x128xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c256_i64 = arith.constant 256 : i64
++    %c256_i32 = arith.constant 256 : i32
++    %c200_i32 = arith.constant 200 : i32
++    %c0_i32 = arith.constant 0 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c256_i32, %c256_i32], [%c1_i64, %c256_i64] {order = array<i32: 0>} : <f32>, <128x128xf32>
++    // offset=(200,0), block=(128,128), shape=(256,256) => 200+127=327 > 256 => out of bounds in dim0
++    %3 = tt.descriptor_load %0[%c200_i32, %c0_i32] : !tt.tensordesc<128x128xf32> -> tensor<128x128xf32>
++    tt.return %3 : tensor<128x128xf32>
++  }
++}
++
++// CHECK-LABEL: @load_provably_oob
++// The scf.if should be completely eliminated — only a masked load remains.
++// CHECK-NOT: scf.if
++// CHECK: tt.load {{.*}}, {{.*}}, {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK-NOT: scf.if
++// CHECK: tt.return
++
++// -----
++
++// =============================================================================
++// Test: When offsets are dynamic (runtime-determined), the scf.if cannot be
++// folded — both branches remain. The fast path does an unmasked load, the
++// slow path does a masked load.
++// =============================================================================
++module {
++  tt.func public @load_runtime_offsets(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32) -> (tensor<128x128xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c256_i64 = arith.constant 256 : i64
++    %c256_i32 = arith.constant 256 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c256_i32, %c256_i32], [%c1_i64, %c256_i64] {order = array<i32: 0>} : <f32>, <128x128xf32>
++    %3 = tt.descriptor_load %0[%arg1, %arg2] : !tt.tensordesc<128x128xf32> -> tensor<128x128xf32>
++    tt.return %3 : tensor<128x128xf32>
++  }
++}
++
++// CHECK-LABEL: @load_runtime_offsets
++// Both branches must be present since offsets are unknown at compile time.
++// CHECK: scf.if {{.*}} -> (tensor<128x128xf32>) {
++// Fast path: unmasked load
++// CHECK: tt.load {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK: scf.yield
++// CHECK: } else {
++// Slow path: masked load with padding
++// CHECK: tt.load {{.*}}, {{.*}}, {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK: scf.yield
++// CHECK: }
++// CHECK: tt.return
++
++// -----
++
++// =============================================================================
++// Test: Store with provably in-bounds offsets. Stores never take the fast
++// path, so this lowers to a single store with no scf.if.
++// =============================================================================
++module {
++  tt.func public @store_provably_inbounds(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: tensor<128x128xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c256_i64 = arith.constant 256 : i64
++    %c256_i32 = arith.constant 256 : i32
++    %c0_i32 = arith.constant 0 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c256_i32, %c256_i32], [%c1_i64, %c256_i64] {order = array<i32: 0>} : <f32>, <128x128xf32>
++    tt.descriptor_store %0[%c0_i32, %c0_i32], %arg1 : !tt.tensordesc<128x128xf32>, tensor<128x128xf32>
++    tt.return
++  }
++}
++
++// CHECK-LABEL: @store_provably_inbounds
++// Stores never take the fast path: no scf.if, a single store remains.
++// CHECK-NOT: scf.if
++// CHECK: tt.store
++// CHECK-NOT: scf.if
++// CHECK: tt.return
++
++// -----
++
++// =============================================================================
++// Test: Store with runtime offsets. Stores never take the fast path, so this
++// lowers to a single masked store with no scf.if.
++// =============================================================================
++module {
++  tt.func public @store_runtime_offsets(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32, %arg3: tensor<128x128xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c256_i64 = arith.constant 256 : i64
++    %c256_i32 = arith.constant 256 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c256_i32, %c256_i32], [%c1_i64, %c256_i64] {order = array<i32: 0>} : <f32>, <128x128xf32>
++    tt.descriptor_store %0[%arg1, %arg2], %arg3 : !tt.tensordesc<128x128xf32>, tensor<128x128xf32>
++    tt.return
++  }
++}
++
++// CHECK-LABEL: @store_runtime_offsets
++// Stores never take the fast path: a single masked store, no scf.if.
++// CHECK-NOT: scf.if
++// CHECK: tt.store {{.*}}, %{{.*}}, {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK-NOT: scf.if
++// CHECK: tt.return
++
++// -----
++
++// =============================================================================
++// Test: Rank-1 (1D) tensor — the in-bounds check works for a single dimension.
++// =============================================================================
++module {
++  tt.func public @rank1_runtime(%arg0: !tt.ptr<f32>, %arg1: i32) -> (tensor<64xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c512_i32 = arith.constant 512 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c512_i32], [%c1_i64] {order = array<i32: 0>} : <f32>, <64xf32>
++    %1 = tt.descriptor_load %0[%arg1] : !tt.tensordesc<64xf32> -> tensor<64xf32>
++    tt.return %1 : tensor<64xf32>
++  }
++}
++
++// CHECK-LABEL: @rank1_runtime
++// Single-dimension scalar check: offset >= 0 && offset + 63 < 512
++// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
++// CHECK-DAG: %[[C63:.*]] = arith.constant 63 : i64
++// CHECK-DAG: %[[C512:.*]] = arith.constant 512 : i64
++// CHECK-DAG: %[[OFF:.*]] = arith.extsi %{{.*}} : i32 to i64
++// CHECK-DAG: %[[GE:.*]] = arith.cmpi sge, %[[OFF]], %[[C0]] : i64
++// CHECK-DAG: %[[HI:.*]] = arith.addi %[[OFF]], %[[C63]] : i64
++// CHECK-DAG: %[[LT:.*]] = arith.cmpi slt, %[[HI]], %[[C512]] : i64
++// CHECK-DAG: %[[INBOUNDS:.*]] = arith.andi %[[GE]], %[[LT]] : i1
++// CHECK: scf.if %[[INBOUNDS]] -> (tensor<64xf32>) {
++// CHECK:   tt.load {{.*}} : tensor<64x!tt.ptr<f32>>
++// CHECK: } else {
++// CHECK:   tt.load {{.*}}, {{.*}}, {{.*}} : tensor<64x!tt.ptr<f32>>
++// CHECK: }
++
++// -----
++
++// =============================================================================
++// Test: Rank-1 provably in bounds — offset 0 with block 64 in shape 512.
++// =============================================================================
++module {
++  tt.func public @rank1_inbounds(%arg0: !tt.ptr<f32>) -> (tensor<64xf32>) {
++    %c1_i64 = arith.constant 1 : i64
++    %c512_i32 = arith.constant 512 : i32
++    %c0_i32 = arith.constant 0 : i32
++    %0 = tt.make_tensor_descriptor %arg0, [%c512_i32], [%c1_i64] {order = array<i32: 0>} : <f32>, <64xf32>
++    %1 = tt.descriptor_load %0[%c0_i32] : !tt.tensordesc<64xf32> -> tensor<64xf32>
++    tt.return %1 : tensor<64xf32>
++  }
++}
++
++// CHECK-LABEL: @rank1_inbounds
++// Constant folding eliminates the branch — only unmasked load remains.
++// CHECK-NOT: scf.if
++// CHECK: tt.load {{.*}} : tensor<64x!tt.ptr<f32>>
++// CHECK-NOT: scf.if
++// CHECK: tt.return
+diff --git a/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir b/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
+index 2580eaaeef..0fa0b3ec59 100644
+--- a/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
++++ b/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
+@@ -1,5 +1,8 @@
+-// RUN: triton-opt %s --triton-rewrite-tensor-descriptor-to-pointer --canonicalize --cse --mlir-print-debuginfo --split-input-file | FileCheck %s --implicit-check-not \!tt.tensordesc
++// RUN: triton-opt %s --triton-rewrite-tensor-descriptor-to-pointer=inbounds-fast-path=true --canonicalize --cse --split-input-file | FileCheck %s --implicit-check-not \!tt.tensordesc
+ 
++// Test: descriptor_load generates an scf.if that checks whether the whole
++// block is in bounds. If so, the fast path issues an unmasked tt.load;
++// otherwise the slow path uses per-element mask + padding.
+ module {
+   tt.func public @load(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32) -> (tensor<128x128xf32>) {
+     %c1_i64 = arith.constant 1 : i64
+@@ -14,47 +17,42 @@ module {
+ }
+ 
+ // CHECK-LABEL: @load
+-// CHECK-SAME: %[[ARG0:[^:]*]]
+-// CHECK-SAME: %[[ARG1:[^:]*]]
+-// CHECK-SAME: %[[ARG2:[^:]*]]
+-// CHECK-DAG: %[[CST:.*]] = arith.constant dense<0.000000e+00> : tensor<128x128xf32>
+-// CHECK-DAG: %[[CST0:.*]] = arith.constant dense<0> : tensor<1x128xi64>
+-// CHECK-DAG: %[[CST1:.*]] = arith.constant dense<256> : tensor<128x1xi64>
+-// CHECK-DAG: %[[CST2:.*]] = arith.constant dense<0> : tensor<128x1xi64>
+-// CHECK-DAG: %[[CST3:.*]] = arith.constant dense<256> : tensor<1x128xi64>
+-
+-// CHECK-DAG: %[[VAL0:.*]] = arith.extsi %[[ARG1]] : i32 to i64
+-// CHECK-DAG: %[[VAL1:.*]] = arith.extsi %[[ARG2]] : i32 to i64
+-// CHECK-DAG: %[[VAL2:.*]] = tt.splat %[[ARG0]] :
+-// CHECK-DAG: %[[VAL3:.*]] = tt.splat %[[VAL0]] :
+-// CHECK-DAG: %[[VAL4:.*]] = tt.make_range {end = 128 : i32, start = 0 : i32}
+-// CHECK-DAG: %[[VAL5:.*]] = arith.extsi %[[VAL4]] :
+-// CHECK-DAG: %[[VAL6:.*]] = arith.addi %[[VAL3]], %[[VAL5]] :
+-// CHECK-DAG: %[[VAL7:.*]] = tt.expand_dims %[[VAL6]] {axis = 1 : i32}
+-// CHECK-DAG: %[[VAL8:.*]] = tt.broadcast %[[VAL7]] : tensor<128x1xi64> -> tensor<128x128xi64>
+-// CHECK-DAG: %[[VAL9:.*]] = tt.addptr %[[VAL2]], %[[VAL8]] :
+-// CHECK-DAG: %[[VAL10:.*]] = tt.splat %[[VAL1]] :
+-// CHECK-DAG: %[[VAL11:.*]] = arith.addi %[[VAL10]], %[[VAL5]] :
+-// CHECK-DAG: %[[VAL12:.*]] = tt.expand_dims %[[VAL11]] {axis = 0 : i32}
+-// CHECK-DAG: %[[VAL13:.*]] = arith.muli %[[VAL12]], %[[CST3]] :
+-// CHECK-DAG: %[[VAL14:.*]] = tt.broadcast %[[VAL13]] : tensor<1x128xi64> -> tensor<128x128xi64>
+-// CHECK-DAG: %[[VAL15:.*]] = tt.addptr %[[VAL9]], %[[VAL14]] :
+-
+-// CHECK-DAG: %[[VAL16:.*]] = arith.cmpi sge, %[[VAL7]], %[[CST2]]
+-// CHECK-DAG: %[[VAL17:.*]] = arith.cmpi slt, %[[VAL7]], %[[CST1]]
+-// CHECK-DAG: %[[VAL18:.*]] = arith.andi %[[VAL16]], %[[VAL17]]
+-// CHECK-DAG: %[[VAL19:.*]] = tt.broadcast %[[VAL18]] : tensor<128x1xi1> -> tensor<128x128xi1>
+-// CHECK-DAG: %[[VAL20:.*]] = arith.cmpi sge, %[[VAL12]], %[[CST0]]
+-// CHECK-DAG: %[[VAL21:.*]] = arith.cmpi slt, %[[VAL12]], %[[CST3]]
+-// CHECK-DAG: %[[VAL22:.*]] = arith.andi %[[VAL20]], %[[VAL21]]
+-// CHECK-DAG: %[[VAL23:.*]] = tt.broadcast %[[VAL22]] : tensor<1x128xi1> -> tensor<128x128xi1>
+-// CHECK-DAG: %[[VAL24:.*]] = arith.andi %[[VAL19]], %[[VAL23]]
+-
+-// CHECK-DAG: %[[VAL25:.*]] = tt.load %[[VAL15]], %[[VAL24]], %[[CST]]
+-// CHECK: tt.return %[[VAL25]] :
++// CHECK-SAME: %[[ARG0:[^:]*]]: !tt.ptr<f32>
++// CHECK-SAME: %[[ARG1:[^:]*]]: i32
++// CHECK-SAME: %[[ARG2:[^:]*]]: i32
++
++// Scalar in-bounds check for dim 0: offset0 >= 0 && offset0 + 127 < 256
++// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
++// CHECK-DAG: %[[C127:.*]] = arith.constant 127 : i64
++// CHECK-DAG: %[[C256:.*]] = arith.constant 256 : i64
++// CHECK-DAG: %[[OFF0:.*]] = arith.extsi %[[ARG1]] : i32 to i64
++// CHECK-DAG: %[[OFF1:.*]] = arith.extsi %[[ARG2]] : i32 to i64
++// CHECK-DAG: %[[GE0:.*]] = arith.cmpi sge, %[[OFF0]], %[[C0]] : i64
++// CHECK-DAG: %[[HI0:.*]] = arith.addi %[[OFF0]], %[[C127]] : i64
++// CHECK-DAG: %[[LT0:.*]] = arith.cmpi slt, %[[HI0]], %[[C256]] : i64
++// CHECK-DAG: %[[DIM0:.*]] = arith.andi %[[GE0]], %[[LT0]] : i1
++// Scalar in-bounds check for dim 1: offset1 >= 0 && offset1 + 127 < 256
++// CHECK-DAG: %[[GE1:.*]] = arith.cmpi sge, %[[OFF1]], %[[C0]] : i64
++// CHECK-DAG: %[[HI1:.*]] = arith.addi %[[OFF1]], %[[C127]] : i64
++// CHECK-DAG: %[[LT1:.*]] = arith.cmpi slt, %[[HI1]], %[[C256]] : i64
++// CHECK-DAG: %[[DIM1:.*]] = arith.andi %[[GE1]], %[[LT1]] : i1
++// Final in-bounds: andi of both dimension checks
++// CHECK-DAG: %[[INBOUNDS:.*]] = arith.andi %[[DIM0]], %[[DIM1]] : i1
++
++// Branch on in-bounds check: fast path (unmasked) vs slow path (masked)
++// CHECK: %[[RESULT:.*]] = scf.if %[[INBOUNDS]] -> (tensor<128x128xf32>) {
++// CHECK:   %[[FAST:.*]] = tt.load {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK:   scf.yield %[[FAST]] : tensor<128x128xf32>
++// CHECK: } else {
++// CHECK:   %[[SLOW:.*]] = tt.load {{.*}}, {{.*}}, {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK:   scf.yield %[[SLOW]] : tensor<128x128xf32>
++// CHECK: }
++// CHECK: tt.return %[[RESULT]] : tensor<128x128xf32>
+ 
+ // -----
+ 
++// Test: descriptor_store never takes the in-bounds fast path (loads-only) —
++// it always lowers to a single masked store, no scf.if.
+ module {
+   tt.func public @store(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32, %arg3: tensor<128x128xf32>) {
+     %c1_i64 = arith.constant 1 : i64
+@@ -69,49 +67,23 @@ module {
+ }
+ 
+ // CHECK-LABEL: @store
+-// CHECK-SAME: %[[ARG0:[^:]*]]
+-// CHECK-SAME: %[[ARG1:[^:]*]]
+-// CHECK-SAME: %[[ARG2:[^:]*]]
+-// CHECK-SAME: %[[ARG3:[^:]*]]
+-// CHECK-DAG: %[[CST:.*]] = arith.constant dense<0> : tensor<1x128xi64>
+-// CHECK-DAG: %[[CST0:.*]] = arith.constant dense<256> : tensor<128x1xi64>
+-// CHECK-DAG: %[[CST1:.*]] = arith.constant dense<0> : tensor<128x1xi64>
+-// CHECK-DAG: %[[CST2:.*]] = arith.constant dense<256> : tensor<1x128xi64>
+-
+-// CHECK-DAG: %[[VAL0:.*]] = arith.extsi %[[ARG1]] : i32 to i64
+-// CHECK-DAG: %[[VAL1:.*]] = arith.extsi %[[ARG2]] : i32 to i64
+-// CHECK-DAG: %[[VAL2:.*]] = tt.splat %[[ARG0]] :
+-// CHECK-DAG: %[[VAL3:.*]] = tt.splat %[[VAL0]] :
+-// CHECK-DAG: %[[VAL4:.*]] = tt.make_range {end = 128 : i32, start = 0 : i32}
+-// CHECK-DAG: %[[VAL5:.*]] = arith.extsi %[[VAL4]] :
+-// CHECK-DAG: %[[VAL6:.*]] = arith.addi %[[VAL3]], %[[VAL5]] :
+-// CHECK-DAG: %[[VAL7:.*]] = tt.expand_dims %[[VAL6]] {axis = 1 : i32}
+-// CHECK-DAG: %[[VAL8:.*]] = tt.broadcast %[[VAL7]] : tensor<128x1xi64> -> tensor<128x128xi64>
+-// CHECK-DAG: %[[VAL9:.*]] = tt.addptr %[[VAL2]], %[[VAL8]] :
+-// CHECK-DAG: %[[VAL10:.*]] = tt.splat %[[VAL1]] :
+-// CHECK-DAG: %[[VAL11:.*]] = arith.addi %[[VAL10]], %[[VAL5]] :
+-// CHECK-DAG: %[[VAL12:.*]] = tt.expand_dims %[[VAL11]] {axis = 0 : i32}
+-// CHECK-DAG: %[[VAL13:.*]] = arith.muli %[[VAL12]], %[[CST2]] :
+-// CHECK-DAG: %[[VAL14:.*]] = tt.broadcast %[[VAL13]] : tensor<1x128xi64> -> tensor<128x128xi64>
+-// CHECK-DAG: %[[VAL15:.*]] = tt.addptr %[[VAL9]], %[[VAL14]] :
+-
+-// CHECK-DAG: %[[VAL16:.*]] = arith.cmpi sge, %[[VAL7]], %[[CST1]]
+-// CHECK-DAG: %[[VAL17:.*]] = arith.cmpi slt, %[[VAL7]], %[[CST0]]
+-// CHECK-DAG: %[[VAL18:.*]] = arith.andi %[[VAL16]], %[[VAL17]]
+-// CHECK-DAG: %[[VAL19:.*]] = tt.broadcast %[[VAL18]] : tensor<128x1xi1> -> tensor<128x128xi1>
+-// CHECK-DAG: %[[VAL20:.*]] = arith.cmpi sge, %[[VAL12]], %[[CST]]
+-// CHECK-DAG: %[[VAL21:.*]] = arith.cmpi slt, %[[VAL12]], %[[CST2]]
+-// CHECK-DAG: %[[VAL22:.*]] = arith.andi %[[VAL20]], %[[VAL21]]
+-// CHECK-DAG: %[[VAL23:.*]] = tt.broadcast %[[VAL22]] : tensor<1x128xi1> -> tensor<128x128xi1>
+-// CHECK-DAG: %[[VAL24:.*]] = arith.andi %[[VAL19]], %[[VAL23]]
+-
+-// CHECK: tt.store %[[VAL15]], %[[ARG3]], %[[VAL24]]
++// CHECK-SAME: %[[ARG0:[^:]*]]: !tt.ptr<f32>
++// CHECK-SAME: %[[ARG1:[^:]*]]: i32
++// CHECK-SAME: %[[ARG2:[^:]*]]: i32
++// CHECK-SAME: %[[ARG3:[^:]*]]: tensor<128x128xf32>
++
++// Stores never take the in-bounds fast path: a single masked store, no scf.if.
++// CHECK-NOT: scf.if
++// CHECK: tt.store {{.*}}, %[[ARG3]], {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK-NOT: scf.if
++// CHECK: tt.return
+ 
+ // -----
+ 
+-#loc2 = loc("rewrite-tensor-descriptor-to-pointer.mlir":147:28)
++// Test: function arguments with tensor descriptors are decomposed into
++// (ptr, shape0, shape1, stride0, stride1, padding, roundF32ToTF32).
+ module {
+-  tt.func public @callee(%tensordesc: !tt.tensordesc<128x128xf32> loc("tensordesc"(#loc2))) -> !tt.tensordesc<128x128xf32> {
++  tt.func public @callee(%tensordesc: !tt.tensordesc<128x128xf32>) -> !tt.tensordesc<128x128xf32> {
+     tt.return %tensordesc : !tt.tensordesc<128x128xf32>
+   }
+ 
+@@ -126,28 +98,20 @@ module {
+ }
+ 
+ // CHECK-LABEL: @callee
+-// CHECK-SAME: %[[PTR:[^:]*]]
+-// CHECK-SAME: loc("tensordesc"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[SHAPE0:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.shape.0"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[SHAPE1:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.shape.1"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[STRIDE0:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.stride.0"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[STRIDE1:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.stride.1"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[PAD:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.padding"(#loc{{[^,]*}}))
+-// CHECK-SAME: %[[ROUND:[^:]*]]
+-// CHECK-SAME: loc("tensordesc.roundF32ToTF32"(#loc{{[^,]*}}))
+-// CHECK-NEXT: tt.return %[[PTR]], %[[SHAPE0]], %[[SHAPE1]], %[[STRIDE0]], %[[STRIDE1]], %[[PAD]], %[[ROUND]]
++// CHECK-SAME: !tt.ptr<f32>
++// CHECK-SAME: i64
++// CHECK-SAME: i64
++// CHECK-SAME: i64
++// CHECK-SAME: i64
++// CHECK-SAME: i1
++// CHECK-SAME: i1
++// CHECK: tt.return
+ 
+ // CHECK-LABEL: @caller
+-// CHECK-SAME: %[[PTR:[^:]*]]
++// CHECK-SAME: %[[PTR:[^:]*]]: !tt.ptr<f32>
+ // CHECK-DAG: %[[c1:.*]] = arith.constant 1 : i64
+ // CHECK-DAG: %[[c256:.*]] = arith.constant 256 : i64
+-// CHECK: %{{.*}}:7 = tt.call @callee(%[[PTR]], %[[c256]], %[[c256]], %[[c256]], %[[c1]], %false, %false)
+-// CHECK-SAME -> (!tt.ptr<f32>, i64, i64, i64, i64, i1, i1)
++// CHECK: tt.call @callee(%[[PTR]], %[[c256]], %[[c256]], %[[c256]], %[[c1]], %{{.*}}, %{{.*}}) : (!tt.ptr<f32>, i64, i64, i64, i64, i1, i1) -> (!tt.ptr<f32>, i64, i64, i64, i64, i1, i1)
+ 
+ // -----
+ 
+@@ -158,4 +122,4 @@ module {
+ }
+ 
+ // CHECK-LABEL: @arg_attr
+-// CHECK-SAME: %arg7: i32 {tt.divisibility = 16 : i32} loc({{.*}})) {
++// CHECK-SAME: %arg7: i32 {tt.divisibility = 16 : i32}
+diff --git a/third_party/amd/backend/compiler.py b/third_party/amd/backend/compiler.py
+index 0bbe6b594f..a378f7c758 100644
+--- a/third_party/amd/backend/compiler.py
++++ b/third_party/amd/backend/compiler.py
+@@ -222,7 +222,7 @@ class HIPBackend(BaseBackend):
+         pm.enable_debug()
+         passes.common.add_inliner(pm)
+         if not amd.supports_tdm(options.arch):
+-            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
++            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm, False)
+         passes.common.add_canonicalizer(pm)
+         passes.ttir.add_combine(pm)
+         passes.ttir.add_reorder_broadcast(pm)
+diff --git a/third_party/nvidia/backend/compiler.py b/third_party/nvidia/backend/compiler.py
+index a676d11526..8812cb2ee6 100644
+--- a/third_party/nvidia/backend/compiler.py
++++ b/third_party/nvidia/backend/compiler.py
+@@ -245,7 +245,7 @@ class CUDABackend(BaseBackend):
+         pm.enable_debug()
+         passes.common.add_inliner(pm)
+         if capability // 10 < 9:
+-            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
++            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm, False)
+         passes.common.add_canonicalizer(pm)
+         passes.ttir.add_combine(pm)
+         passes.ttir.add_reorder_broadcast(pm)

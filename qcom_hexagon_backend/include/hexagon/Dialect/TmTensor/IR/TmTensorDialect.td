@@ -33,7 +33,6 @@ def TmTensor_Dialect : Dialect {
     void registerOperations();
   }];
 
-  let usePropertiesForAttributes = 1;
 }
 
 #endif // HEXAGON_DIALECT_TMTENSOR_IR_TMTENSOR_DIALECT_TD

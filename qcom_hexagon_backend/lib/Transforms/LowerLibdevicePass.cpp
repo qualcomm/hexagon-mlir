@@ -14,18 +14,22 @@
 
 #include "hexagon/Transforms/Transforms.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/TransformOps/TensorTransformOps.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 using namespace mlir;
 using namespace hexagon;

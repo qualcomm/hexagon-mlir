@@ -24,7 +24,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/PassRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
@@ -42,6 +44,8 @@ namespace hexagon {
 void cond_run_inliner(std::unique_ptr<llvm::Module> &llvmModule,
                       bool enableInlining) {
   if (enableInlining) {
+    llvm::PassRegistry *registry = llvm::PassRegistry::getPassRegistry();
+    initializeAlwaysInlinerLegacyPassPass(*registry);
     llvm::legacy::PassManager inlinerPM;
     inlinerPM.add(llvm::createAlwaysInlinerLegacyPass());
     inlinerPM.run(*llvmModule);

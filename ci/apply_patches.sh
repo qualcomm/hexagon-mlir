@@ -62,29 +62,37 @@ apply_patch_if_needed() {
 # -----------------------------------------------------------------------------
 # triton_shared patches
 # -----------------------------------------------------------------------------
-# Triton shared patch to update the API for compatibility with the latest LLVM
-TRITON_SHARED_API_UPDATE_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_3_6_triton.patch"
-apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_API_UPDATE_PATCH_FILE"
+# Triton shared patch: default the arith-to-linalg pass to transposeReduceToRank0=false so
+# reductions are lowered without the legacy transpose. The reduction-lowering patch below relies
+# on this default.
+TRITON_SHARED_REMOVE_TRANSPOSED_REDUCTION_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_remove_tranposed_reduction.patch"
+apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_REMOVE_TRANSPOSED_REDUCTION_PATCH_FILE"
 
-# Triton shared patch on Pointer Analysis
-TRITON_SHARED_POINTER_ANALYSIS_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_ptr_analysis.patch"
-apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_POINTER_ANALYSIS_PATCH_FILE"
-
-# Triton shared patch on split pointers
-TRITON_SHARED_SPLIT_DIM_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_split_dim.patch"
-apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_SPLIT_DIM_PATCH_FILE"
-
-# Triton shared patch to handle canonicalization pattern of Max with NaN propagation
-TRITON_SHARED_MAX_NAN_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_max_nan.patch"
-apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_MAX_NAN_PATCH_FILE"
+# Triton shared patch for multi-result tt.reduce lowering (fused sum/sum-sq, etc). Rewrites
+# convertToLinalgReduce and relies on the transposeReduceToRank0=false default set above, so it
+# must apply after the remove-transposed patch.
+TRITON_SHARED_MULTI_RESULT_REDUCTION_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton_shared/triton_shared_multi_result_reduction.patch"
+apply_patch_if_needed "$HEXAGON_MLIR_ROOT/triton_shared" "$TRITON_SHARED_MULTI_RESULT_REDUCTION_PATCH_FILE"
 
 # -----------------------------------------------------------------------------
-# Triton patches (build third-party backends + NVVM ReductionKind compatibility)
+# Triton patches
 # -----------------------------------------------------------------------------
-# Triton patch to get around NVVM ReductionKind compatibility issue
-TRITON_NVVM_COMPATIBILITY_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton/nvvm_reduction_kind_compatibility.patch"
-apply_patch_if_needed "$TRITON_ROOT" "$TRITON_NVVM_COMPATIBILITY_PATCH_FILE"
-
 # Add libdevice sigmoid support to triton
 TRITON_LIBDEVICE_SIGMOID_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton/libdevice_sigmoid.patch"
 apply_patch_if_needed "$TRITON_ROOT" "$TRITON_LIBDEVICE_SIGMOID_PATCH_FILE"
+
+TRITON_ALIGNMENT_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton/pass_alignment_info_to_kernel.patch"
+apply_patch_if_needed "$TRITON_ROOT" "$TRITON_ALIGNMENT_PATCH_FILE"
+
+# Triton patch adding an in-bounds fast-path for tensor-descriptor accesses.
+# RewriteTensorDescriptorToPointer gains an `inbounds-fast-path` option that
+# guards the lowered load/store with a scalar in-bounds check, so fully
+# in-bounds tiles take an unmasked fast path and only boundary tiles pay for
+# mask computation. Also bundles the env-gated frontend TMA lowering
+# (TRITON_HEXAGON_TMA_INBOUNDS_FAST_PATH) in semantic.py as a default-off
+# alternative.
+TRITON_REWRITE_DESCRIPTOR_INBOUNDS_FAST_PATH_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton/rewrite_descriptor_inbounds_fast_path.patch"
+apply_patch_if_needed "$TRITON_ROOT" "$TRITON_REWRITE_DESCRIPTOR_INBOUNDS_FAST_PATH_PATCH_FILE"
+
+TRITON_WHL_BUILD_PATCH_FILE="$HEXAGON_MLIR_ROOT/third_party_software/patches/triton/enable_wheel_build.patch"
+apply_patch_if_needed "$TRITON_ROOT" "$TRITON_WHL_BUILD_PATCH_FILE"

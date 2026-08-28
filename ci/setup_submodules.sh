@@ -33,12 +33,12 @@ add_and_checkout() {
 add_and_checkout \
 	  triton \
 	    https://github.com/triton-lang/triton.git \
-	      df38505e451a1541555379bcf378be9e8c00545c
+	      a9ced836206b1495b31d9519d86077b5152572ea
 	      
 add_and_checkout \
 	  triton_shared \
 	    https://github.com/facebookincubator/triton-shared.git \
-	      0614763d270ec0eacba9d5d8283cdff6bedb03c8
+	      f2eb8c5eda10f3c8aec11c72d4d4d0f6346ec89d
 	      
 cd "${REPO_ROOT}"
 echo "Applying qcom specific patches to triton_shared"

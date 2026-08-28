@@ -33,7 +33,6 @@ def TTX_Dialect : Dialect {
     void registerOperations();
   }];
 
-  let usePropertiesForAttributes = 1;
 }
 
 #endif // HEXAGON_DIALECT_TTX_IR_TTX_DIALECT_TD

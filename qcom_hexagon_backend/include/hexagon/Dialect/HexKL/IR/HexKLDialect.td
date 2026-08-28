@@ -34,7 +34,6 @@ def HexKL_Dialect : Dialect {
     void registerOperations();
   }];
 
-  let usePropertiesForAttributes = 1;
 }
 
 #endif // HEXAGON_DIALECT_HEXKL_IR_HEXKL_DIALECT_TD

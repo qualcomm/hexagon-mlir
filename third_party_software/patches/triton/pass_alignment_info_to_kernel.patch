@@ -1,0 +1,36 @@
+diff --git a/python/triton/backends/compiler.py b/python/triton/backends/compiler.py
+index 10754e715..565348f4b 100644
+--- a/python/triton/backends/compiler.py
++++ b/python/triton/backends/compiler.py
+@@ -72,21 +72,27 @@ class BaseBackend(metaclass=ABCMeta):
+         raise NotImplementedError
+ 
+     @staticmethod
+-    def parse_attr(desc):
++    def parse_attr(desc, dtype=None):
+         assert isinstance(desc, str)
+         ret = []
+-        if "D" in desc:
++        if "D128" in desc:
++            ret += [["tt.divisibility", 128]]
++        elif "D" in desc:
+             ret += [["tt.divisibility", 16]]
+         return ret
+ 
+     @staticmethod
+     def get_int_specialization(arg, **kwargs):
+-        if arg % 16 == 0 and kwargs.get("align", False):
++        if arg % 128 == 0 and kwargs.get("align", False):
++            return "D128"
++        elif arg % 16 == 0 and kwargs.get("align", False):
+             return "D"
+         return ""
+ 
+     @staticmethod
+     def get_tensor_specialization(arg, **kwargs):
+-        if arg.data_ptr() % 16 == 0 and kwargs.get("align", False):
++        if arg.data_ptr() % 128 == 0 and kwargs.get("align", False):
++            return "D128"
++        elif arg.data_ptr() % 16 == 0 and kwargs.get("align", False):
+             return "D"
+         return ""

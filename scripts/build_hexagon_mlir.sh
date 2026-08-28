@@ -160,7 +160,7 @@ if [[ ! -f "${LLVM_PROJECT_BUILD_DIR}/bin/mlir-opt" ]]; then
     -G "Ninja" \
     -S "${LLVM_SRC_DIR}/llvm" \
     -B "${LLVM_PROJECT_BUILD_DIR}" \
-    -DLLVM_ENABLE_PROJECTS="llvm;mlir;lld" \
+    -DLLVM_ENABLE_PROJECTS="llvm;mlir;lld;clang" \
     -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_TARGETS_TO_BUILD="AMDGPU;NVPTX;X86;Hexagon" \
     -DCMAKE_BUILD_TYPE="RelWithDebInfo" \

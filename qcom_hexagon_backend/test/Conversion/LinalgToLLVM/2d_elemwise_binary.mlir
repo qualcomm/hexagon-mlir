@@ -35,10 +35,10 @@ func.func @kernel(%x: memref<1024x256xf32>, %y: memref<1024x256xf32>, %z: memref
 // CHECK:      {{.*}} = phi
 // CHECK-NEXT: {{.*}} = shl
 // CHECK-NEXT: {{.*}} = trunc
-// CHECK-NEXT: [[GEP_X:%.+]] = getelementptr float, ptr [[VTCM_X]]
+// CHECK-NEXT: [[GEP_X:%.+]] = getelementptr [4 x i8], ptr [[VTCM_X]]
 // CHECK-NEXT: [[LOAD_X:%.+]] = load <32 x float>, ptr [[GEP_X]]
-// CHECK-NEXT: [[GEP_Y:%.+]] = getelementptr float, ptr [[VTCM_Y]]
+// CHECK-NEXT: [[GEP_Y:%.+]] = getelementptr [4 x i8], ptr [[VTCM_Y]]
 // CHECK-NEXT: [[LOAD_Y:%.+]] = load <32 x float>, ptr [[GEP_Y]]
 // CHECK-NEXT: [[SUB:%.+]] = fsub {{(fast)?}} <32 x float> [[LOAD_X]], [[LOAD_Y]]
-// CHECK-NEXT: [[GEP_Z:%.+]]  = getelementptr float, ptr
+// CHECK-NEXT: [[GEP_Z:%.+]]  = getelementptr [4 x i8], ptr
 // CHECK-NEXT: store <32 x float> [[SUB]], ptr [[GEP_Z]]

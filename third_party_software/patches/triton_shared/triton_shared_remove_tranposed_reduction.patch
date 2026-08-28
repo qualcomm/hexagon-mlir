@@ -1,0 +1,13 @@
+diff --git a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+index 5402f68..77e5649 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+@@ -62,7 +62,7 @@ public:
+     pm.addPass(createCanonicalizerPass());
+
+     pm.addPass(createTritonToUnstructuredPass());
+-    pm.addPass(createTritonArithToLinalgPass(/*tensorPtrToLinalg=*/true));
++    pm.addPass(createTritonArithToLinalgPass(/*tensorPtrToLinalg=*/true, /*transposeReduceToRank0*/false));
+
+     pm.addPass(createStructuredToMemrefPass());
+     pm.addPass(createUnstructuredToMemrefPass());

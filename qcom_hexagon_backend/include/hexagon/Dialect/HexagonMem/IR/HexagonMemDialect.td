@@ -35,7 +35,6 @@ def HexagonMem_Dialect : Dialect {
     void registerOperations();
   }];
 
-  let usePropertiesForAttributes = 1;
 }
 
 #endif // HEXAGON_DIALECT_HEXAGONMEM_IR_HEXAGONMEM_DIALECT_TD

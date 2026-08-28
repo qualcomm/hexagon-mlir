@@ -702,7 +702,8 @@ struct HexagonMemToLLVMPass
 
 /// Implement the interface to convert HexagonMem to LLVM.
 struct HexagonMemToLLVMDialectInterface : public ConvertToLLVMPatternInterface {
-  using ConvertToLLVMPatternInterface::ConvertToLLVMPatternInterface;
+  HexagonMemToLLVMDialectInterface(mlir::Dialect *dialect)
+      : ConvertToLLVMPatternInterface(dialect) {}
   void loadDependentDialects(MLIRContext *context) const final {
     context->loadDialect<mlir::crouton::CroutonDialect>();
     context->loadDialect<LLVM::LLVMDialect>();
