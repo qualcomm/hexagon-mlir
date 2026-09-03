@@ -19,6 +19,5 @@ jobs:
         enable-dependency-review: true
         enable-repolinter-check: true
         enable-copyright-license-check: true
-        enable-commit-email-check: true        
-    secrets:
-      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        enable-commit-email-check: true
+        
