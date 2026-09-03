@@ -15,10 +15,10 @@ jobs:
     uses: qualcomm/qcom-reusable-workflows/.github/workflows/reusable-qcom-preflight-checks-orchestrator.yml@v2.0.10
     with:
         # ✅ Preflight Checkers
-        repolinter: true                   # default: true
-        semgrep: true                      # default: true
-        copyright-license-detector: true   # default: true
-        pr-check-emails: true              # default: true
-        dependency-review: true            # default: true
+        enable-semgrep-scan: true
+        enable-dependency-review: true
+        enable-repolinter-check: true
+        enable-copyright-license-check: true
+        enable-commit-email-check: true        
     secrets:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
