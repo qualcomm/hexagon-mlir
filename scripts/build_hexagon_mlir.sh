@@ -110,15 +110,14 @@ cd ${BASE_DIR}
 mkdir -p HEXKL_DIR
 cd HEXKL_DIR
 
-if [[ ! -f Hexagon_KL.Core.1.0.0.Linux-Any.zip ]]; then
+if [[ ! -f hexkl-1.0-beta.2.zip ]]; then
   echo "Downloading Hexagon_KL..."
-  wget https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/1.0.0/Hexagon_KL.Core.1.0.0.Linux-Any.zip
+  wget https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/Debian/1.0.0-beta2/hexkl-1.0-beta.2.zip
 fi
 
 if [[ ! -d hexkl_addon ]]; then
   echo "Extracting Hexagon_KL..."
-  unzip -q Hexagon_KL.Core.1.0.0.Linux-Any.zip
-  unzip -q hexkl-1.0.0-beta1-6.4.0.0.zip
+  unzip -q hexkl-1.0-beta.2.zip
 else
   echo "Hexagon_KL already extracted. Skipping."
 fi

@@ -46,24 +46,21 @@ tar -xzf "${INSTALL_DIR}/${TOOLCHAIN_TAR}" -C "${INSTALL_DIR}"
 export HEXAGON_TOOLS="${INSTALL_DIR}/Tools"
 echo "Setting HEXAGON_TOOLS to ${HEXAGON_TOOLS}"
 
-# HexKL 
-KL_VERSION="1.0.0"
-KL_OUTER_ZIP="Hexagon_KL.Core.${KL_VERSION}.Linux-Any.zip"
-KL_URL="https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/${KL_VERSION}/${KL_OUTER_ZIP}"
+# HexKL
+KL_VERSION="1.0.0-beta2"
+KL_ZIP="hexkl-1.0-beta.2.zip"
+KL_URL="https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/Debian/${KL_VERSION}/${KL_ZIP}"
 
 KL_BASE="${INSTALL_DIR}/Hexagon_KL"
 KL_DIR="${KL_BASE}/${KL_VERSION}"
 
-mkdir -p "${KL_BASE}"
+mkdir -p "${KL_DIR}"
 echo "Downloading Hexagon KL version ${KL_VERSION}..."
 
-wget -q --show-progress "${KL_URL}" -O "${KL_BASE}/${KL_OUTER_ZIP}"
+wget -q --show-progress "${KL_URL}" -O "${KL_BASE}/${KL_ZIP}"
 
-INNER_ZIP="hexkl-1.0.0-beta1-6.4.0.0.zip"
-# Make sure inner zip exists inside the outer zip
-unzip -q -j "${KL_BASE}/${KL_OUTER_ZIP}" "${INNER_ZIP}" -d "${KL_BASE}"
 echo "Extracting Hexagon KL..."
-unzip -q "${KL_BASE}/${INNER_ZIP}" -d "${KL_DIR}"
+unzip -q "${KL_BASE}/${KL_ZIP}" -d "${KL_DIR}"
 
 # Locate hexkl_addon directory 
 HEXKL_ADDON_DIR=$(find "${KL_DIR}" -type d -name "hexkl_addon" | head -n 1)
