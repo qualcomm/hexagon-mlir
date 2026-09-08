@@ -298,14 +298,25 @@ class HexagonExecutor:
             HEXKL_ROOT=self.config.env_vars["HEXKL_ROOT"],
             Q6_VERSION=self.config.Q6_VERSION,
         )
-        if (
-            self.enable_hexkl
-            and os.path.exists(hexkl_dir)
-            and os.path.exists(os.path.join(hexkl_dir, "libhexkl_micro.a"))
-            and os.path.exists(os.path.join(hexkl_dir, "libhexkl_macro.a"))
-        ):
+        if self.enable_hexkl:
             hexkl_micro_a = os.path.join(hexkl_dir, "libhexkl_micro.a")
             hexkl_macro_a = os.path.join(hexkl_dir, "libhexkl_macro.a")
+            missing_hexkl_libs = [
+                path
+                for path in (hexkl_micro_a, hexkl_macro_a)
+                if not os.path.isfile(path)
+            ]
+            if missing_hexkl_libs:
+                missing_paths = "\n".join(f"  - {path}" for path in missing_hexkl_libs)
+                raise FileNotFoundError(
+                    "HexKL is enabled, but required HexKL libraries were not "
+                    "found.\n"
+                    f"Expected HexKL library directory: {hexkl_dir}\n"
+                    f"Missing libraries:\n{missing_paths}\n"
+                    "Set HEXKL_ROOT to a valid HexKL installation or disable "
+                    "HexKL for this compilation."
+                )
+
             runtime_libs.append(hexkl_micro_a)
             runtime_libs.append(hexkl_macro_a)
 
@@ -777,7 +788,8 @@ class HexagonExecutor:
                     self.config.env_vars["HEXAGON_TOOLS"], SIM_Q6SS_PATH
                 )
             ),
-            ("{} -mv{} \
+            (
+                "{} -mv{} \
                 --usefs={}/../Tools/target/hexagon/lib/v{}/G0/pic \
                 --simulated_returnval \
                 --cosim_file {} \
@@ -786,7 +798,8 @@ class HexagonExecutor:
                 {}/rtos/qurt/computev{}/sdksim_bin/runelf.pbn -- \
                 {}/libs/run_main_on_hexagon/ship/hexagon_tool{}_v{}/run_main_on_hexagon_sim \
                 stack_size=0x400000 -- \
-                {}").format(
+                {}"
+            ).format(
                 self.config.HEX_TOOLS["hexagon-sim"],
                 self.config.Q6_VERSION,
                 self.config.env_vars["HEXAGON_TOOLS"],
