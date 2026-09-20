@@ -72,18 +72,18 @@ echo "extracting HEXAGON_SDK..."
 mkdir -p HEXAGON_SDK
 cd HEXAGON_SDK/
 
-if [[ ! -f Hexagon_SDK_lnx.zip ]]; then
+if [[ ! -f Hexagon_SDK_Linux.zip ]]; then
   echo "Downloading HEXAGON_SDK..."
-  wget https://softwarecenter.qualcomm.com/api/download/software/sdks/Hexagon_SDK/Linux/Debian/6.4.0.2/Hexagon_SDK_lnx.zip
+  wget https://softwarecenter.qualcomm.com/api/download/software/sdks/Hexagon_SDK/Linux/Debian/6.6.0.0/Hexagon_SDK_Linux.zip
 fi
 
 if [[ ! -d Hexagon_SDK ]]; then
   echo "Extracting HEXAGON_SDK..."
-  unzip Hexagon_SDK_lnx.zip
+  unzip Hexagon_SDK_Linux.zip
 else
   echo "HEXAGON_SDK already extracted. Skipping."
 fi
-export HEXAGON_SDK_ROOT=${BASE_DIR}/HEXAGON_SDK/Hexagon_SDK/6.4.0.2/
+export HEXAGON_SDK_ROOT=${BASE_DIR}/HEXAGON_SDK/Hexagon_SDK/6.6.0.0/
 
 # Get HEXAGON_TOOLS
 cd ${BASE_DIR}
@@ -110,15 +110,14 @@ cd ${BASE_DIR}
 mkdir -p HEXKL_DIR
 cd HEXKL_DIR
 
-if [[ ! -f Hexagon_KL.Core.1.0.0.Linux-Any.zip ]]; then
+if [[ ! -f hexkl-1.0-beta.2.zip ]]; then
   echo "Downloading Hexagon_KL..."
-  wget https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/1.0.0/Hexagon_KL.Core.1.0.0.Linux-Any.zip
+  wget https://softwarecenter.qualcomm.com/api/download/software/tools/Hexagon_KL/Linux/Debian/1.0.0-beta2/hexkl-1.0-beta.2.zip
 fi
 
 if [[ ! -d hexkl_addon ]]; then
   echo "Extracting Hexagon_KL..."
-  unzip -q Hexagon_KL.Core.1.0.0.Linux-Any.zip
-  unzip -q hexkl-1.0.0-beta1-6.4.0.0.zip
+  unzip -q hexkl-1.0-beta.2.zip
 else
   echo "Hexagon_KL already extracted. Skipping."
 fi

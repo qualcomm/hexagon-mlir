@@ -28,13 +28,12 @@ def _sdk_tool_version(q6_version: str) -> str:
 
     v81+ devices use toolv19; v79-v80 devices use toolv88; older devices use toolv87.
     """
-    v = int(q6_version.lstrip("v"))
-    if v >= 81:
+    arch_num = int(q6_version.lstrip("v"))
+    if arch_num >= 81:
         return "v19"
-    elif v >= 79:
+    if arch_num >= 79:
         return "v88"
-    else:
-        return "v87"
+    return "v87"
 
 
 def _qhmath_sdk_path(q6_version: str) -> tuple:
@@ -294,8 +293,9 @@ class HexagonExecutor:
         else:
             print(f"Warning: QHMATH library not found at {QHMATH_DIR}")
 
-        hexkl_dir = """{HEXKL_ROOT}/lib/hexagon_toolv19_v{Q6_VERSION}""".format(
+        hexkl_dir = """{HEXKL_ROOT}/lib/{SDK_VERSION}/hexagon_toolv19_v{Q6_VERSION}""".format(
             HEXKL_ROOT=self.config.env_vars["HEXKL_ROOT"],
+            SDK_VERSION=os.environ.get("HEXAGON_SDK_VERSION", "6.4.0.2"),
             Q6_VERSION=self.config.Q6_VERSION,
         )
         if (
@@ -308,6 +308,7 @@ class HexagonExecutor:
             hexkl_macro_a = os.path.join(hexkl_dir, "libhexkl_macro.a")
             runtime_libs.append(hexkl_micro_a)
             runtime_libs.append(hexkl_macro_a)
+            LINK_DIRS += f" -L{hexkl_dir}"
 
         # Check if HEXAGON_RUNTIME_LIBS_DIR + "/multithreading exists and "libhexagon_mlir_async_runtime.a" inside it
         multithreading_dir = os.path.join(
