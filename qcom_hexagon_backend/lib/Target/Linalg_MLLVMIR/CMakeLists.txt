@@ -8,4 +8,6 @@ add_mlir_translation_library(TritonLinalgLLVM
         MLIRIR
         MLIRSupport
         MLIRTargetLLVMIRExport
+        # MLLVMIRTranslation.cpp calls hexagon::createLinalgToLLVMPass()
+        LinalgToLLVM
         )

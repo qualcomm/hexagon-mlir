@@ -13,6 +13,7 @@
 #ifndef HEXAGON_BIN_RUNTIME_INC_HEXAGONBUFFER_H_
 #define HEXAGON_BIN_RUNTIME_INC_HEXAGONBUFFER_H_
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
@@ -81,6 +82,37 @@ public:
 
   size_t GetNdim() const { return ndim_; }
 
+  /// The construction parameters that determine a buffer's memory footprint.
+  /// Two buffers with equal keys hold interchangeable storage: same block count,
+  /// per-block request, requested alignment and storage scope, so the runtime may
+  /// hand one back in place of the other (BufferManager's free cache). Alignment
+  /// is part of the key even when the pool would round two requests to the same
+  /// block size, because different requested alignments mean different valid
+  /// layouts and must never be conflated.
+  struct CacheKey {
+    size_t numAllocations;     // 1 for 1-D, the block count for 2-D
+    size_t bytesPerAllocation; // requested bytes per block (pre-rounding)
+    size_t alignment;          // requested alignment
+    bool isVtcm;               // storage scope
+    bool operator==(const CacheKey &other) const {
+      return numAllocations == other.numAllocations &&
+             bytesPerAllocation == other.bytesPerAllocation &&
+             alignment == other.alignment && isVtcm == other.isVtcm;
+    }
+  };
+
+  /// Key for this buffer's construction parameters.
+  CacheKey GetCacheKey() const;
+
+  /// Bytes actually reserved from the backing store (the aligned sizes for a VTCM
+  /// buffer, the requested size for DDR). This is what the free cache's byte
+  /// budget is charged against, so it matches the pool's accounting.
+  size_t GetAllocatedBytes() const;
+
+  /// False when the backing allocation is missing (VTCM exhaustion). The runtime
+  /// uses this to drop its free cache and retry once before reporting failure.
+  bool HasValidAllocation() const;
+
 private:
   /// Assign a storage scope to the buffer.
   void SetStorageScope(bool isVtcm);
@@ -93,6 +125,7 @@ private:
   /// The underlying storage type in which the allocation resides.
   size_t ndim_;
   size_t nbytesPerAllocation_;
+  size_t alignment_;
   StorageScope storageScope_;
 };
 

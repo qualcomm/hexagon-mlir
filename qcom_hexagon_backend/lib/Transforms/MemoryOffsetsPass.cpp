@@ -87,6 +87,14 @@ llvm::SmallVector<AllocInfo, 8> collectAllocInfos(mlir::func::FuncOp func) {
   func.walk([&](mlir::Operation *op) {
     if (!isa<memref::AllocOp, hexagonmem::AllocOp>(op))
       return;
+    // Resident buffers are not per-instance scratch: they are pinned for the
+    // life of the process by the runtime's resident pool, so they must not be
+    // rewritten into a view of the per-instance buffer. This covers the weight
+    // path and the per-launch workspace that opted into the same residency
+    // (hmx-workspace-resident).
+    if (op->hasAttr("hmx.weight_resident") ||
+        op->hasAttr("hmx.workspace_resident"))
+      return;
     if (auto memRefType =
             llvm::dyn_cast<mlir::MemRefType>(op->getResult(0).getType()))
       tryCollect(op, memRefType);

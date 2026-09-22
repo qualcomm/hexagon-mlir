@@ -83,6 +83,7 @@
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Conversion/LinalgToLLVM/VTCMTilingOptions.h"
+#include "hexagon/Dialect/Hmx/IR/HmxDialect.h"
 #include "hexagon/Transforms/OptionsParsing.h"
 
 #define DEBUG_TYPE "vtcm-tiling"
@@ -221,6 +222,13 @@ void copyResultsToDDR(IRRewriter &rewriter, GenericOp op,
     auto operandIdx = op.getNumDpsInputs() + idx;
     if (prefetch[operandIdx]) {
       Value resultTensor = op.getResult(idx);
+      // A crouton result read by `hmx.matmul` must keep its VTCM buffer: the
+      // engine reads a crouton, and the DDR copy would hand `hmx.mma` a space-0
+      // buffer, which the op verifier rejects.
+      if (llvm::any_of(resultTensor.getUsers(), [](Operation *user) {
+            return isa<hmx::MatmulOp>(user);
+          }))
+        continue;
       auto newTensor = copyToDDR(rewriter, resultTensor, op.getLoc());
       rewriter.replaceAllUsesExcept(resultTensor, newTensor,
                                     newTensor.getDefiningOp());
@@ -228,11 +236,65 @@ void copyResultsToDDR(IRRewriter &rewriter, GenericOp op,
   }
 }
 
+/// Does `v` (transitively) reach an `scf.yield`? Staging such a result makes the
+/// enclosing loop's init_arg and yielded value disagree on the memory space, and
+/// one-shot-bufferize rejects that outright:
+///   'scf.for' op init_arg and yielded value bufferize to inconsistent memory spaces
+/// A loop-carried tensor read elementwise in the body (a state vector such as the
+/// key sum of a chunked linear attention, or a running mean) hits exactly this.
+static bool reachesYield(Value v, unsigned depth = 0) {
+  if (depth > 8)
+    return false;
+  for (Operation *user : v.getUsers()) {
+    if (isa<scf::YieldOp>(user))
+      return true;
+    if (user->getBlock() != v.getParentBlock())
+      continue; // only follow within the same region
+    for (Value r : user->getResults())
+      if (reachesYield(r, depth + 1))
+        return true;
+  }
+  return false;
+}
+
+/// A generic that accumulates in place into a loop-carried block argument.
+static bool accumulatesIntoLoopCarry(linalg::GenericOp op) {
+  for (Value out : op.getDpsInits())
+    if (auto arg = dyn_cast<BlockArgument>(out))
+      if (isa_and_nonnull<scf::ForOp>(arg.getOwner()->getParentOp()))
+        return true;
+  return false;
+}
+
 void VTCMTilingPass::runOnOperation() {
   auto userProvidedTileSizes = parseTileSizes(tileSizes);
   auto funcOp = getOperation();
 
   funcOp.walk([&](linalg::GenericOp op) {
+    // Staging a tile through VTCM only pays off when the tile is *reused*. A
+    // generic whose iteration space is all-parallel and whose operands are each
+    // read exactly once (identity maps) streams straight through DDR, and putting
+    // it through VTCM costs an extra round trip plus allocation churn in the
+    // runtime pool. Measured on device: 34x on a plain 131072-element add
+    // (4320 -> 128 us) and 6.9x on silu (773 -> 112 us).
+    const bool streaming =
+        llvm::all_of(op.getIteratorTypesArray(), [](utils::IteratorType t) {
+          return t == utils::IteratorType::parallel;
+        }) &&
+        llvm::all_of(op.getIndexingMapsArray(),
+                     [](AffineMap m) { return m.isIdentity(); });
+    // Staging a generic whose result feeds a loop's yielded value (or which
+    // accumulates into a loop-carried argument) leaves the loop's init_arg in DDR
+    // and the yielded value in VTCM, which bufferization rejects. Skipping it only
+    // costs the staging, never correctness, and it unblocks every state-vector
+    // kernel (chunked linear attention, running statistics).
+    const bool loopCarry =
+        llvm::any_of(op->getResults(),
+                     [](Value r) { return reachesYield(r); }) ||
+        accumulatesIntoLoopCarry(op);
+    if (streaming || loopCarry)
+      return WalkResult::advance();
+
     IRRewriter rewriter(op.getContext());
     SmallVector<bool> prefetch(op.getNumOperands(), false);
     FailureOr<linalg::LinalgTilingOptions> vtcmTilingOptions =

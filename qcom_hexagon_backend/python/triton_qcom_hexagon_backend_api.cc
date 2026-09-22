@@ -11,7 +11,10 @@
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
+#include "hexagon/Dialect/Hmx/IR/HmxDialect.h"
+#include "hexagon/Dialect/Hvx/IR/HvxDialect.h"
 #include "hexagon/Dialect/HexKL/Transforms/BufferizableOpInterfaceImpl.h"
+#include "hexagon/Dialect/Hmx/Transforms/BufferizableOpInterfaceImpl.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 #include "hexagon/Dialect/HexagonTPtr/IR/HexagonTPtrDialect.h"
 #include "hexagon/Dialect/TTX/IR/TTXDialect.h"
@@ -352,12 +355,15 @@ void loadDialects(mlir::MLIRContext &context) {
   registry.insert<mlir::crouton::CroutonDialect>();
   registry.insert<mlir::hexagonmem::HexagonMemDialect>();
   registry.insert<mlir::hexkl::HexKLDialect>();
+  registry.insert<mlir::hmx::HmxDialect>();
+  registry.insert<mlir::hvx::HvxDialect>();
   registry.insert<mlir::tm_tensor::TmTensorDialect>();
   registry.insert<mlir::ttx::TTXDialect>();
   registry.insert<mlir::tptr::HexagonTPtrDialect>();
 
   // Register all external models.
   mlir::hexkl::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::hmx::registerBufferizableOpInterfaceExternalModels(registry);
 
   context.appendDialectRegistry(registry);
   context.loadDialect<mlir::triton::TritonDialect>();
@@ -384,7 +390,8 @@ mlir::ModuleOp parseMlirFromString(const std::string &src,
 
 std::vector<std::vector<char>> translateLinalgToObj(
     mlir::ModuleOp &linalg_module,
-    const std::unordered_map<std::string, std::string> &options_map) {
+    const std::unordered_map<std::string, std::string> &options_map,
+    std::string *outWeightPrepack) {
   // The collection of object codes (each seen as a sequence of
   // bytes/char) that will be produced
   std::vector<std::vector<char>> mods_object_codes_as_bytes;
@@ -419,6 +426,28 @@ std::vector<std::vector<char>> translateLinalgToObj(
   DBG("There are a total of " << mods.size()
                               << " modules, including the main (code) one"
                               << "\n");
+
+  // The weight-residency contract, if the pipeline published one: the host
+  // pre-packer needs it and it only exists inside the compiled module, so it is
+  // handed back alongside the object bytes. Shape: a JSON object
+  // {"layout": <coeff map or null>, "weights": [ ... ]}.
+  if (outWeightPrepack) {
+    auto attr = mods.empty()
+                    ? mlir::StringAttr()
+                    : mods[0]->getAttrOfType<mlir::StringAttr>(
+                          "hmx.weight_prepack");
+    auto layout = mods.empty()
+                      ? mlir::StringAttr()
+                      : mods[0]->getAttrOfType<mlir::StringAttr>(
+                            "hmx.weight_prepack_layout");
+    std::string json = "{\"layout\":";
+    json += layout ? layout.getValue().str() : "null";
+    json += ",\"weights\":";
+    json += attr ? attr.getValue().str() : "[]";
+    json += "}";
+    *outWeightPrepack = json;
+  }
+
   // Iterating through each LLVM/MLIR module that has been produced
   int module_id = -1; // current module being treated
   for (mlir::ModuleOp current_mlir_mod : mods) {

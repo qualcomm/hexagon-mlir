@@ -84,7 +84,7 @@ Allocator<HexagonBuffer::StorageScope::kVTCM>(size_t nbytes, size_t alignment) {
 }
 
 HexagonBuffer::HexagonBuffer(size_t nbytes, size_t alignment, bool isVtcm)
-    : ndim_(1), nbytesPerAllocation_(nbytes) {
+    : ndim_(1), nbytesPerAllocation_(nbytes), alignment_(alignment) {
   SetStorageScope(isVtcm);
 
   std::unique_ptr<Allocation> alloca = nullptr;
@@ -100,7 +100,7 @@ HexagonBuffer::HexagonBuffer(size_t nbytes, size_t alignment, bool isVtcm)
 
 HexagonBuffer::HexagonBuffer(size_t nallocs, size_t nbytes, size_t alignment,
                              bool isVtcm)
-    : ndim_(2), nbytesPerAllocation_(nbytes) {
+    : ndim_(2), nbytesPerAllocation_(nbytes), alignment_(alignment) {
   SetStorageScope(isVtcm);
 
   size_t nbytesAligned = ((nbytes + (alignment - 1)) / alignment) * alignment;
@@ -140,6 +140,27 @@ void *HexagonBuffer::GetPointer() {
 
 HexagonBuffer::StorageScope HexagonBuffer::GetStorageScope() const {
   return storageScope_;
+}
+
+HexagonBuffer::CacheKey HexagonBuffer::GetCacheKey() const {
+  return CacheKey{allocations_.size(), nbytesPerAllocation_, alignment_,
+                  storageScope_ == StorageScope::kVTCM};
+}
+
+size_t HexagonBuffer::GetAllocatedBytes() const {
+  size_t total = 0;
+  for (const auto &allocation : managedAllocations_)
+    total += allocation->allocatedBytes_;
+  return total;
+}
+
+bool HexagonBuffer::HasValidAllocation() const {
+  if (managedAllocations_.empty())
+    return false;
+  for (const auto &allocation : managedAllocations_)
+    if (allocation->data_ == nullptr)
+      return false;
+  return true;
 }
 
 void HexagonBuffer::SetStorageScope(bool isVtcm) {

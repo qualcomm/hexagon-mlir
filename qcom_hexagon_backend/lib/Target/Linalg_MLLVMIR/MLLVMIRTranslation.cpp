@@ -86,6 +86,12 @@ void setLinalgToLLVMOptions(
       !arch_kwargs.at("enableBufferization").compare(TRUE);
   options.enableSeedLayoutConversions =
       !arch_kwargs.at("enableSeedLayoutConversions").compare(TRUE);
+  options.extendPackUpperFrontier =
+      !arch_kwargs.at("extendPackUpperFrontier").compare(TRUE);
+  options.extendPackLowerFrontier =
+      !arch_kwargs.at("extendPackLowerFrontier").compare(TRUE);
+  options.forceHVXCroutonization =
+      !arch_kwargs.at("forceHVXCroutonization").compare(TRUE);
   options.enableSplitReduction =
       !arch_kwargs.at("enableSplitReduction").compare(TRUE);
   options.enableConvTiling = !arch_kwargs.at("enableConvTiling").compare(TRUE);
@@ -108,6 +114,30 @@ void setLinalgToLLVMOptions(
       !arch_kwargs.at("enableSCFLoopUnroll").compare(TRUE);
   options.enableConversionToFp16 =
       !arch_kwargs.at("enableConversionToFp16").compare(TRUE);
+  // Tolerant read: several probe scripts build a partial options map, and a new
+  // gate must not turn their missing key into a throw. Absent = off.
+  auto weightResident = arch_kwargs.find("enableWeightResident");
+  options.enableWeightResident =
+      weightResident != arch_kwargs.end() &&
+      !weightResident->second.compare(TRUE);
+  // Tolerant read for the same reason: absent = 0 (auto).
+  auto hmxPipelineDepth = arch_kwargs.find("enableHmxPipelineDepth");
+  options.enableHmxPipelineDepth =
+      hmxPipelineDepth != arch_kwargs.end()
+          ? std::stoll(hmxPipelineDepth->second)
+          : 0;
+  // Per-launch VTCM workspace residency. Tolerant read: absent = off, so a
+  // partial options map never throws.
+  auto workspaceResident = arch_kwargs.find("enableWorkspaceResident");
+  options.enableWorkspaceResident =
+      workspaceResident != arch_kwargs.end() &&
+      !workspaceResident->second.compare(TRUE);
+  // Row reductions as vector fold + hvx.vror butterfly. Tolerant read for the
+  // same reason: absent = off.
+  auto vectorRowReduce = arch_kwargs.find("enableVectorRowReduce");
+  options.enableVectorRowReduce =
+      vectorRowReduce != arch_kwargs.end() &&
+      !vectorRowReduce->second.compare(TRUE);
 }
 
 namespace mlir {

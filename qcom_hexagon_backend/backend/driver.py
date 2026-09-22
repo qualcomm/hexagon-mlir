@@ -15,6 +15,7 @@ from triton.backends.qcom_hexagon_backend.triton_hexagon_launcher import (
     HexagonUtils,
 )
 from triton.backends.qcom_hexagon_backend.utils import make_profiled_return
+from triton.backends.qcom_hexagon_backend.utils import require_pack_metadata
 
 
 def getHexagonLauncherClass(device_type="dsp"):
@@ -37,25 +38,25 @@ def getHexagonLauncherClass(device_type="dsp"):
             #         CompiledKernel.launch_enter_hook,
             #         self.CompiledKernel.launch_exit_hook, *args
             kernel_llir = args[4]
-            pack_metadata = args[5]
-            unstructured_return_types = pack_metadata[7]
+            # Validated once, then read by name: a positional tuple made every
+            # appended field shift these indices silently, and `len(x) > i`
+            # turned a stale cached JSON into "treat the feature as off".
+            pack_metadata = require_pack_metadata(args[5])
+            unstructured_return_types = pack_metadata["return_types"]
             return_profs = [
                 make_profiled_return(ret) for ret in unstructured_return_types
             ]
-            # Extract metadata["name"] field which has the function name.
+            # Extract the "name" field which has the function name.
             # Add "_mlir_ciface_" prefix if kernel has >0 returns (this changes the calling conv.)
-            func_name = (
-                "_mlir_ciface_" if len(return_profs) > 0 else ""
-            ) + pack_metadata[6]
-            iterations = pack_metadata[8]
-            compiled_scratch = pack_metadata[9] if len(pack_metadata) > 9 else None
-            compiled_enable_multithreading = (
-                pack_metadata[10] if len(pack_metadata) > 10 else None
-            )
-            compiled_enable_threaded_dispatch = (
-                pack_metadata[11] if len(pack_metadata) > 11 else None
-            )
-            compiled_enable_lwp = pack_metadata[12] if len(pack_metadata) > 12 else None
+            func_name = ("_mlir_ciface_" if len(return_profs) > 0 else "") + pack_metadata[
+                "name"
+            ]
+            iterations = pack_metadata["iterations"]
+            compiled_scratch = pack_metadata["scratch"]
+            compiled_enable_multithreading = pack_metadata["enableMultiThreading"]
+            compiled_enable_threaded_dispatch = pack_metadata["enableThreadedDispatch"]
+            compiled_enable_lwp = pack_metadata["enableLWP"]
+            weight_prepack = pack_metadata["weight_prepack"]
             num_fixed_args = 9
             inputs_with_constants = list(args[num_fixed_args:])
             inputs = [
@@ -83,6 +84,7 @@ def getHexagonLauncherClass(device_type="dsp"):
                 compiled_enable_multithreading=compiled_enable_multithreading,
                 compiled_enable_threaded_dispatch=compiled_enable_threaded_dispatch,
                 compiled_enable_lwp=compiled_enable_lwp,
+                weight_prepack=weight_prepack,
                 runtime_options=kwargs,
             )
             # TODO: There seems to be no way to propogate the call returns upward, because

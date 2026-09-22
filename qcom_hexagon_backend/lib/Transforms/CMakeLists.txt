@@ -67,4 +67,9 @@ add_mlir_library(Transforms
   MLIRTransforms
   MLIRMathTransforms
   MLIRSupport
+  # Transforms.cpp uses hexagon::createDMAStartOp()/createNumElements()
+  HexagonCommon
+  # MatmulToHmxPass.cpp creates hmx.matmul and VTCM-placement allocations
+  Hmx
+  MLIRBufferizationDialect
 )

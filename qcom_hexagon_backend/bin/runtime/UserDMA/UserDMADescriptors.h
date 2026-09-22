@@ -14,11 +14,35 @@
 #ifndef HEXAGONBACKEND_BIN_RUNTIME_USERDMA_DESCRIPTORS_H
 #define HEXAGONBACKEND_BIN_RUNTIME_USERDMA_DESCRIPTORS_H
 
+#include <cstdint>
+
 namespace hexagon {
 namespace userdma {
 
 // NOTE: Using 2D descriptor size even for 1D descriptors
 #define DMA_DESC_2D_SIZE 32
+
+// The 2D descriptor below is the v75+ 24-bit layout, not the pre-v75 16-bit one.
+// The 16-bit layout split row/strides into 16-bit halves and selected the mode
+// through word1[25:24] ("desc_type" 0/1). The v75+ layout is wider and selects
+// the mode with word4[7:0] = 9:
+//
+//   word1[23:0]  dst_stride
+//   word1[25:24] desc_size   (0 = 1D, 1 = 2D)
+//   word4[7:0]   desc_type   (9 for the 24-bit 2D layout)
+//   word5[23:0]  row_size
+//   word5[31:24] nrows_lo
+//   word6[7:0]   nrows_hi
+//   word6[31:8]  src_stride
+//   word7[23:0]  offset
+//
+// The 16-bit layout silently truncated strides to 16 bits: on v79 a src_stride
+// of 65600 was lowered as 64 and the engine copied the wrong rows with no error
+// (logs/dma2d_probe/REPORT.txt). There is deliberately no 16-bit fallback here;
+// this runtime targets v75+ (v79 in this repo). If this header is ever built for
+// a pre-v75 target the layout must be restored behind a version check.
+//
+// Reference implementation: llama.cpp htp/dma-queue.h dma_descriptor_2d.
 
 // DMA State
 // desc[0][3:0]
@@ -33,15 +57,17 @@ namespace userdma {
 #define DESC_NEXT_MASK 0xFFFFFFF0
 #define DESC_NEXT_SHIFT 0
 
-// desc[1][23:0]
+// desc[1][23:0]: 1D transfer length, or 2D destination stride.
 #define DESC_LENGTH_MASK 0x00FFFFFF
 #define DESC_LENGTH_SHIFT 0
+#define DESC_DSTSTRIDE_MASK 0x00FFFFFF
+#define DESC_DSTSTRIDE_SHIFT 0
 
-// desc[1][25:24]
-#define DESC_DESCTYPE_MASK 0x03000000
-#define DESC_DESCTYPE_SHIFT 24
-#define DESC_DESCTYPE_1D 0
-#define DESC_DESCTYPE_2D 1
+// desc[1][25:24]: descriptor size (0 = 1D, 1 = 2D), not the v75+ mode selector.
+#define DESC_DESCSIZE_MASK 0x03000000
+#define DESC_DESCSIZE_SHIFT 24
+#define DESC_DESCSIZE_1D 0
+#define DESC_DESCSIZE_2D 1
 
 // TODO: Definition?  Not in the spec.
 // desc[1][26]
@@ -82,42 +108,36 @@ namespace userdma {
 #define DESC_DST_MASK 0xFFFFFFFF
 #define DESC_DST_SHIFT 0
 
-// desc[4][25:24]
-#define DESC_CACHEALLOC_MASK 0x03000000
-#define DESC_CACHEALLOC_SHIFT 24
-#define DESC_CACHEALLOC_NONE 0
-#define DESC_CACHEALLOC_WRITEONLY 1
-#define DESC_CACHEALLOC_READONLY 2
-#define DESC_CACHEALLOC_READWRITE 3
+// desc[4][7:0]: 24-bit 2D descriptor type. 9 selects the v75+ layout.
+#define DESC_TYPE_MASK 0x000000FF
+#define DESC_TYPE_SHIFT 0
+#define DESC_TYPE_2D_24BIT 9
 
-// TODO: Definition?  Not in the spec.
-// desc[4][31:28]
-#define DESC_PADDING_MASK 0xF0000000
-#define DESC_PADDING_SHIFT 28
+// desc[5][23:0]
+#define DESC_ROWSIZE_MASK 0x00FFFFFF
+#define DESC_ROWSIZE_SHIFT 0
 
-// desc[5][15:0]
-#define DESC_ROIWIDTH_MASK 0x0000FFFF
-#define DESC_ROIWIDTH_SHIFT 0
+// desc[5][31:24]
+#define DESC_NROWSLO_MASK 0xFF000000
+#define DESC_NROWSLO_SHIFT 24
 
-// desc[5][31:16]
-#define DESC_ROIHEIGHT_MASK 0xFFFF0000
-#define DESC_ROIHEIGHT_SHIFT 16
+// desc[6][7:0]
+#define DESC_NROWSHI_MASK 0x000000FF
+#define DESC_NROWSHI_SHIFT 0
 
-// desc[6][15:0]
-#define DESC_SRCSTRIDE_MASK 0x0000FFFF
-#define DESC_SRCSTRIDE_SHIFT 0
+// desc[6][31:8]
+#define DESC_SRCSTRIDE_MASK 0xFFFFFF00
+#define DESC_SRCSTRIDE_SHIFT 8
 
-// desc[6][31:16]
-#define DESC_DSTSTRIDE_MASK 0xFFFF0000
-#define DESC_DSTSTRIDE_SHIFT 16
+// desc[7][23:0]
+#define DESC_OFFSET_MASK 0x00FFFFFF
+#define DESC_OFFSET_SHIFT 0
 
-// desc[7][15:0]
-#define DESC_SRCWIDTHOFFSET_MASK 0x0000FFFF
-#define DESC_SRCWIDTHOFFSET_SHIFT 0
-
-// desc[7][31:16]
-#define DESC_DSTWIDTHOFFSET_MASK 0xFFFF0000
-#define DESC_DSTWIDTHOFFSET_SHIFT 16
+// Largest value each 2D geometry field can hold. nrows spans word5[31:24] and
+// word6[7:0], i.e. 16 bits total; the rest are 24 bits.
+#define DESC_STRIDE_MAX 0x00FFFFFF
+#define DESC_ROWSIZE_MAX 0x00FFFFFF
+#define DESC_NROWS_MAX 0x0000FFFF
 
 #define DMA_NULL_PTR 0
 
@@ -125,197 +145,194 @@ namespace userdma {
 /* 1D (linear) descriptor */
 /**************************/
 struct DMADesc1D {
-  unsigned int nextState;
-  unsigned int doneOrderBypassCompDescTypeLength;
-  unsigned int src;
-  unsigned int dst;
+  uint32_t nextState;
+  uint32_t lengthDescSizeDoneOrderBypassComp;
+  uint32_t src;
+  uint32_t dst;
 };
 
 /***********************/
 /* 2D (box) descriptor */
 /***********************/
 struct DMADesc2D {
-  unsigned int nextState;
-  unsigned int doneOrderBypassCompDescTypeLength;
-  unsigned int src;
-  unsigned int dst;
-  unsigned int allocationPadding;
-  unsigned int roiHeightROIWidth;
-  unsigned int dstStrideSrcStride;
-  unsigned int dstWidthOffsetSrcWidthOffset;
+  uint32_t nextState;
+  uint32_t dstStrideDescSizeDoneOrderBypassComp;
+  uint32_t src;
+  uint32_t dst;
+  uint32_t descType;
+  uint32_t rowSizeNrowsLo;
+  uint32_t nrowsHiSrcStride;
+  uint32_t offset;
 };
 
+static_assert(sizeof(DMADesc2D) == DMA_DESC_2D_SIZE,
+              "2D DMA descriptor must be 32 bytes");
+
 // desc[0][3:0]
-inline void dmaDescSetState(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetState(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
   (dmaDesc1DPtr->nextState) &= ~DESC_STATE_MASK;
   (dmaDesc1DPtr->nextState) |= ((v << DESC_STATE_SHIFT) & DESC_STATE_MASK);
 }
 
 // desc[0][31:4]
-inline void dmaDescSetNext(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetNext(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
   (dmaDesc1DPtr->nextState) &= ~DESC_NEXT_MASK;
   (dmaDesc1DPtr->nextState) |= ((v << DESC_NEXT_SHIFT) & DESC_NEXT_MASK);
 }
 
 // desc[1][23:0]
-inline void dmaDescSetLength(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetLength(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_LENGTH_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_LENGTH_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_LENGTH_SHIFT) & DESC_LENGTH_MASK);
 }
 
-// desc[1][25:24]
-inline void dmaDescSetDescType(void *dmaDescPtr, unsigned int v) {
+// desc[1][25:24]. Formerly (mis)named dmaDescSetDescType; these bits are
+// desc_size, while the v75+ mode selector is dmaDescSetDescType below.
+inline void dmaDescSetDescSize(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_DESCTYPE_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
-      ((v << DESC_DESCTYPE_SHIFT) & DESC_DESCTYPE_MASK);
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_DESCSIZE_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
+      ((v << DESC_DESCSIZE_SHIFT) & DESC_DESCSIZE_MASK);
 }
 
 // TODO: Definition?  Not in the spec.
 // desc[1][26]
-inline void dmaDescSetDstComp(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetDstComp(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_DSTCOMP_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_DSTCOMP_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_DSTCOMP_SHIFT) & DESC_DSTCOMP_MASK);
 }
 
 // TODO: Definition?  Not in the spec.
 // desc[1][27]
-inline void dmaDescSetSrcComp(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetSrcComp(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_SRCCOMP_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_SRCCOMP_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_SRCCOMP_SHIFT) & DESC_SRCCOMP_MASK);
 }
 
 // desc[1][28]
-inline void dmaDescSetBypassDst(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetBypassDst(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_BYPASSDST_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_BYPASSDST_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_BYPASSDST_SHIFT) & DESC_BYPASSDST_MASK);
 }
 
 // desc[1][29]
-inline void dmaDescSetBypassSrc(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetBypassSrc(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_BYPASSSRC_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_BYPASSSRC_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_BYPASSSRC_SHIFT) & DESC_BYPASSSRC_MASK);
 }
 
 // desc[1][30]
-inline void dmaDescSetOrder(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetOrder(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_ORDER_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_ORDER_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_ORDER_SHIFT) & DESC_ORDER_MASK);
 }
 
 // desc[1][31]
-inline void dmaDescSetDone(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetDone(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) &= ~DESC_DONE_MASK;
-  (dmaDesc1DPtr->doneOrderBypassCompDescTypeLength) |=
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) &= ~DESC_DONE_MASK;
+  (dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp) |=
       ((v << DESC_DONE_SHIFT) & DESC_DONE_MASK);
 }
 
 // desc[1][31]
-inline unsigned int dmaDescGetDone(void *dmaDescPtr) {
+inline uint32_t dmaDescGetDone(void *dmaDescPtr) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
-  volatile unsigned int *doneAsVolatile = static_cast<volatile unsigned int *>(
-      &(dmaDesc1DPtr->doneOrderBypassCompDescTypeLength));
+  volatile uint32_t *doneAsVolatile = static_cast<volatile uint32_t *>(
+      &(dmaDesc1DPtr->lengthDescSizeDoneOrderBypassComp));
   // Descriptor can be modified by DMA engine as well, make sure we see the
   // updated value.
   // The volatile read prevents compiler optimizations that treat the read
   // as an invariant, or move side-effect ops across the volatile read.
-  unsigned int doneVal = *doneAsVolatile;
+  uint32_t doneVal = *doneAsVolatile;
   return ((doneVal & DESC_DONE_MASK) >> DESC_DONE_SHIFT);
 }
 
 // desc[2]
-inline void dmaDescSetSrc(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetSrc(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
   (dmaDesc1DPtr->src) &= ~DESC_SRC_MASK;
   (dmaDesc1DPtr->src) |= ((v << DESC_SRC_SHIFT) & DESC_SRC_MASK);
 }
 
 // desc[3]
-inline void dmaDescSetDst(void *dmaDescPtr, unsigned int v) {
+inline void dmaDescSetDst(void *dmaDescPtr, uint32_t v) {
   DMADesc1D *dmaDesc1DPtr = reinterpret_cast<DMADesc1D *>(dmaDescPtr);
   (dmaDesc1DPtr->dst) &= ~DESC_DST_MASK;
   (dmaDesc1DPtr->dst) |= ((v << DESC_DST_SHIFT) & DESC_DST_MASK);
 }
 
-// desc[4][25:24]
-inline void dmaDescSetCacheAlloc(void *dmaDescPtr, unsigned int v) {
+// desc[1][23:0]: 2D destination stride. Shares word1 with the 1D length field.
+inline void dmaDescSetDstStride(void *dmaDescPtr, uint32_t v) {
   DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->allocationPadding) &= ~DESC_CACHEALLOC_MASK;
-  (dmaDesc2DPtr->allocationPadding) |=
-      ((v << DESC_CACHEALLOC_SHIFT) & DESC_CACHEALLOC_MASK);
-}
-
-// TODO: Definition?  Not in the spec.
-// desc[4][31:28]
-inline void dmaDescSetPadding(void *dmaDescPtr, unsigned int v) {
-  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->allocationPadding) &= ~DESC_PADDING_MASK;
-  (dmaDesc2DPtr->allocationPadding) |=
-      ((v << DESC_PADDING_SHIFT) & DESC_PADDING_MASK);
-}
-
-// desc[5][15:0]
-inline void dmaDescSetROIWidth(void *dmaDescPtr, unsigned int v) {
-  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->roiHeightROIWidth) &= ~DESC_ROIWIDTH_MASK;
-  (dmaDesc2DPtr->roiHeightROIWidth) |=
-      ((v << DESC_ROIWIDTH_SHIFT) & DESC_ROIWIDTH_MASK);
-}
-
-// desc[5][31:16]
-inline void dmaDescSetROIHeight(void *dmaDescPtr, unsigned int v) {
-  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->roiHeightROIWidth) &= ~DESC_ROIHEIGHT_MASK;
-  (dmaDesc2DPtr->roiHeightROIWidth) |=
-      ((v << DESC_ROIHEIGHT_SHIFT) & DESC_ROIHEIGHT_MASK);
-}
-
-// desc[6][15:0]
-inline void dmaDescSetSrcStride(void *dmaDescPtr, unsigned int v) {
-  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->dstStrideSrcStride) &= ~DESC_SRCSTRIDE_MASK;
-  (dmaDesc2DPtr->dstStrideSrcStride) |=
-      ((v << DESC_SRCSTRIDE_SHIFT) & DESC_SRCSTRIDE_MASK);
-}
-
-// desc[6][31:16]
-inline void dmaDescSetDstStride(void *dmaDescPtr, unsigned int v) {
-  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->dstStrideSrcStride) &= ~DESC_DSTSTRIDE_MASK;
-  (dmaDesc2DPtr->dstStrideSrcStride) |=
+  (dmaDesc2DPtr->dstStrideDescSizeDoneOrderBypassComp) &= ~DESC_DSTSTRIDE_MASK;
+  (dmaDesc2DPtr->dstStrideDescSizeDoneOrderBypassComp) |=
       ((v << DESC_DSTSTRIDE_SHIFT) & DESC_DSTSTRIDE_MASK);
 }
 
-// desc[7][15:0]
-inline void dmaDescSetSrcWidthOffset(void *dmaDescPtr, unsigned int v) {
+// desc[4][7:0]: 24-bit 2D mode selector (9).
+inline void dmaDescSetDescType(void *dmaDescPtr, uint32_t v) {
   DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->dstWidthOffsetSrcWidthOffset) &= ~DESC_SRCWIDTHOFFSET_MASK;
-  (dmaDesc2DPtr->dstWidthOffsetSrcWidthOffset) |=
-      ((v << DESC_SRCWIDTHOFFSET_SHIFT) & DESC_SRCWIDTHOFFSET_MASK);
+  (dmaDesc2DPtr->descType) &= ~DESC_TYPE_MASK;
+  (dmaDesc2DPtr->descType) |= ((v << DESC_TYPE_SHIFT) & DESC_TYPE_MASK);
 }
 
-// desc[7][31:16]
-inline void dmaDescSetDstWidthOffset(void *dmaDescPtr, unsigned int v) {
+// desc[5][23:0]
+inline void dmaDescSetRowSize(void *dmaDescPtr, uint32_t v) {
   DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
-  (dmaDesc2DPtr->dstWidthOffsetSrcWidthOffset) &= ~DESC_DSTWIDTHOFFSET_MASK;
-  (dmaDesc2DPtr->dstWidthOffsetSrcWidthOffset) |=
-      ((v << DESC_DSTWIDTHOFFSET_SHIFT) & DESC_DSTWIDTHOFFSET_MASK);
+  (dmaDesc2DPtr->rowSizeNrowsLo) &= ~DESC_ROWSIZE_MASK;
+  (dmaDesc2DPtr->rowSizeNrowsLo) |=
+      ((v << DESC_ROWSIZE_SHIFT) & DESC_ROWSIZE_MASK);
 }
+
+// desc[5][31:24] (low 8 bits) + desc[6][7:0] (high 8 bits)
+inline void dmaDescSetNrows(void *dmaDescPtr, uint32_t v) {
+  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
+  (dmaDesc2DPtr->rowSizeNrowsLo) &= ~DESC_NROWSLO_MASK;
+  (dmaDesc2DPtr->rowSizeNrowsLo) |=
+      ((v << DESC_NROWSLO_SHIFT) & DESC_NROWSLO_MASK);
+  (dmaDesc2DPtr->nrowsHiSrcStride) &= ~DESC_NROWSHI_MASK;
+  (dmaDesc2DPtr->nrowsHiSrcStride) |= ((v >> 8) & DESC_NROWSHI_MASK);
+}
+
+// desc[6][31:8]
+inline void dmaDescSetSrcStride(void *dmaDescPtr, uint32_t v) {
+  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
+  (dmaDesc2DPtr->nrowsHiSrcStride) &= ~DESC_SRCSTRIDE_MASK;
+  (dmaDesc2DPtr->nrowsHiSrcStride) |=
+      ((v << DESC_SRCSTRIDE_SHIFT) & DESC_SRCSTRIDE_MASK);
+}
+
+// desc[7][23:0]
+inline void dmaDescSetOffset(void *dmaDescPtr, uint32_t v) {
+  DMADesc2D *dmaDesc2DPtr = reinterpret_cast<DMADesc2D *>(dmaDescPtr);
+  (dmaDesc2DPtr->offset) &= ~DESC_OFFSET_MASK;
+  (dmaDesc2DPtr->offset) |= ((v << DESC_OFFSET_SHIFT) & DESC_OFFSET_MASK);
+}
+
+// True if every 2D geometry field fits its descriptor bit width. Callers must
+// check this before programming the setters: the setters only mask, so an
+// out-of-range value would be truncated silently.
+inline bool dma2DGeometryFits(uint32_t width, uint32_t height,
+                              uint32_t srcStride, uint32_t dstStride) {
+  return width <= DESC_ROWSIZE_MAX && height <= DESC_NROWS_MAX &&
+         srcStride <= DESC_STRIDE_MAX && dstStride <= DESC_STRIDE_MAX;
+}
+
 } // namespace userdma
 } // namespace hexagon
 

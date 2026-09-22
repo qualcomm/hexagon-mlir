@@ -16,21 +16,55 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
 namespace hexagon {
 
+// Does the generic body carry an exp-family transcendental?
+//
+// This gates the i1 handling below, and it is deliberately narrow. A tensor of
+// i1 is a predicate (mask), not data, so its 1-byte storage must not drive the
+// vector width: counting it makes computeDataTileSize return 128 for an f32
+// loop of 64, and perfectlyVectorizable then demands `tile == innerLoop`
+// (128 != 64) and blocks vectorization of the entire chain. When that chain is
+// a masked feature map -- compare + select around a `math.exp` -- the exp never
+// reaches a native-width vector and hexagon-clang later scalarizes it into
+// per-element `call expf` plus soft f16<->f32 conversions (`llvm.exp` on
+// <32 x float> has no Hexagon lowering; only `llvm.exp2` does).
+//
+// Other i1-consuming chains (e.g. the causal mask / sum chains of chunked
+// linear attention) are *not* stalled this way -- they vectorize fine once the
+// surrounding tiling is left alone -- so opening the door for them changes
+// their shape for no gain. Gate on the exp family to fix exactly the chain the
+// mechanism actually blocks. See hexagon-mlir-local.patch.
+static bool bodyHasExpFamilyOp(Operation *op) {
+  auto genericOp = dyn_cast_or_null<linalg::GenericOp>(op);
+  if (!genericOp)
+    return false;
+  return llvm::any_of(genericOp.getBody()->getOperations(), [](Operation &op) {
+    return isa<math::ExpOp, math::Exp2Op, math::ExpM1Op>(&op);
+  });
+}
+
 std::optional<unsigned> computeSmallestOperandTypeSize(Operation *op) {
   // Returns the size of the smallest input operand's type.
   // Choosing the smallest-sized elements results in the largest tile size,
   // which aligns better with Hexagon. We prefer breaking large vectors
   // into multiple vectors over dealing with partial vectors.
+  //
+  // i1 (mask) operands/results are skipped, but only for the exp-family
+  // generics described above; every other op keeps the original behaviour.
+  const bool skipMaskElements = bodyHasExpFamilyOp(op);
+
   unsigned int minElemSize = maxElemSizeInByte + 1;
   for (OpOperand &opOperand : op->getOpOperands()) {
     Type operandType = opOperand.get().getType();
     if (auto type = dyn_cast<RankedTensorType>(operandType)) {
+      if (skipMaskElements && type.getElementType().isInteger(1))
+        continue;
       auto operandSize = getElementSizeInBytes(type);
       if (operandSize) {
         minElemSize = std::min(minElemSize, *operandSize);
@@ -43,6 +77,9 @@ std::optional<unsigned> computeSmallestOperandTypeSize(Operation *op) {
     for (Operation &op : genericOp.getBody()->getOperations()) {
       if (op.hasTrait<OpTrait::Vectorizable>()) {
         for (auto res : op.getResults()) {
+          if (skipMaskElements &&
+              getElementType(res.getType()).isInteger(1))
+            continue;
           auto resSize = getElementSizeInBytes(res.getType());
           if (resSize)
             minElemSize = std::min(minElemSize, *resSize);

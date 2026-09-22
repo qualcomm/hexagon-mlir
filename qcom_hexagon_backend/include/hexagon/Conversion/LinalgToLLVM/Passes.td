@@ -60,7 +60,7 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
           "instead of padding, when dealing with loops "
           "which are not  perfectly tileable.">,
     Option<"enableSplitReduction", "enable-split-reduction", "bool",
-           /*default=*/"true",
+           /*default=*/"false",
            "Configure HexagonTiling pass to enable split reduction, "
            " for reduction loops. ">,
     Option<"enableSplitReduceGeneric", "enable-split-reduce-generic", "bool",
@@ -149,7 +149,7 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
           /*default=*/"true",
           "Enable vectorization for HVX">,
     Option<"enableConversionToFp16", "enable-conversion-to-fp16", "bool",
-          /*default=*/"true",
+          /*default=*/"false",
           "Enables the pass which converts fp64/fp32 operations to fp16">,
     Option<"enableHVXInlining", "enable-hvx-inlining", "bool",
           /*default=*/"false",
@@ -159,11 +159,56 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
           "Enable SCF loop unrolling optimization">,
     Option<"forceHVXCroutonization", "force-hvx-croutonization", "bool",
           /*default=*/"false",
-          "Force HVX croutonization pass">
+          "Force HVX croutonization pass">,
+    Option<"enableWeightResident", "enable-weight-resident", "bool",
+          /*default=*/"true",
+          "Host pre-packs runtime weights; the kernel drops their per-launch "
+          "pack bridge and reads them from a resident VTCM buffer. On by "
+          "default: the generated launcher always pre-packs, and only a "
+          "caller that honours hmx.weight_prepack can run this kernel.">,
+    Option<"enableHmxPipelineDepth", "enable-hmx-pipeline-depth", "int64_t",
+          /*default=*/"0",
+          "HMX tile-level staging ring depth (hmx-partition): 0 = auto, "
+          "1 = force the serial ring, 2 = request double buffering, 3 = skip "
+          "staging (emit the unstaged serial tile loop).">,
+    Option<"enableWorkspaceResident", "enable-workspace-resident", "bool",
+          /*default=*/"false",
+          "Make every per-launch VTCM workspace of an HMX kernel a "
+          "process-resident buffer (hmx-workspace-resident). Off by default: "
+          "only correct for single-instance execution, since a grid>1 launch "
+          "would run several instances over the same resident buffers.">,
+    Option<"enableVectorRowReduce", "enable-vector-row-reduce", "bool",
+          /*default=*/"false",
+          "Lower 2-D last-dim linalg.reduce (f16/f32 max/add) to per-vector "
+          "elementwise folding plus an hvx.vror butterfly, instead of letting "
+          "ConvertLinalgToLoops scalarize it into a per-lane serial chain that "
+          "the Hexagon backend cannot revectorize (only VECREDUCE_ADD gets an "
+          "HVX DAG combine). Off by default.">
    ];
 }
 
 // --- Supporting passes ---
+
+def VectorRowReduce : Pass<"vector-row-reduce", "func::FuncOp"> {
+  let summary = "Lower 2-D last-dim reductions to vector fold + vror butterfly";
+  let description = [{
+    Matches `linalg.reduce` along dim 1 of a static-shape 2-D memref whose row
+    byte width is a multiple of 128 (one or more whole HVX vectors per row),
+    whose body is a single maxnumf/addf fold of the two block args, and whose
+    element type is f16 or f32. Replaces it with explicit vector IR: each row's
+    128-byte chunks are folded elementwise, then a vror butterfly
+    (log2(128/elemBytes) rotate+fold steps, llama.cpp hvx-reduce.h style) leaves
+    every lane holding the row's reduction; the original outs init is folded in
+    and lane 0 is stored back, so the scalar semantics of the reduce are
+    preserved exactly (barring float reassociation, which fastmath already
+    grants).
+
+    Everything else -- dynamic shapes, non-contiguous rows, other element
+    types, other reduction kinds -- is left untouched for the scalar path.
+  }];
+
+  let constructor = "hexagon::createVectorRowReducePass()";
+}
 
 def FormAsyncThreads : Pass<"form-async-threads", "func::FuncOp"> {
   let summary = "Rewrite scf::forall as async threads";

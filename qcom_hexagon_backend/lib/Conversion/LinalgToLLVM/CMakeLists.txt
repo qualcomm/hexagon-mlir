@@ -9,6 +9,7 @@ add_mlir_conversion_library(LinalgToLLVM
   HexmemCpyToDMA.cpp
   FusionPass.cpp
   SplitReduceGenericPass.cpp
+  VectorRowReducePass.cpp
   EraseVectorToTensorWritebackPass.cpp
   SlicingPass.cpp
   TilingPass.cpp
@@ -41,4 +42,15 @@ add_mlir_conversion_library(LinalgToLLVM
   MLIRRegisterAllExtensions
 
   Transforms
+  # LinalgToLLVMPass.cpp calls into the HMX dialect transforms (attribution,
+  # tile level, weight residency) and these conversion passes
+  HmxTransforms
+  HexagonMemToLLVM
+  HmxToLLVM
+  HexKLToLLVM
+  DMAToLLVM
+  # the vector-row-reduce pass emits hvx.vror; the pipeline lowers it via
+  # HvxToLLVM
+  Hvx
+  HvxToLLVM
 )

@@ -54,6 +54,9 @@ set(HEXAGON_INCLUDES
     -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/posix
     -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/qurt
     -I${CMAKE_CURRENT_SOURCE_DIR}/include
+    # HMX/HVX intrinsics headers (hmx_hexagon_protos.h) live in the toolchain's
+    # target include dir, which is not a default include for this build.
+    -I${HEXAGON_TOOLCHAIN}/Tools/target/hexagon/include
     # -I${HEXAGON_TOOLCHAIN}/Tools/target/hexagon/include/c++/v1
 )
 
@@ -66,6 +69,36 @@ else()
   set(BITCODE_ARCH ${Q6_VERSION})
 endif()
 set(HEXAGON_FLAGS -O2 -Wall -mv${BITCODE_ARCH} -mhvx -mhvx-qfloat)
+
+# TEMPORARY A/B KNOBS (delete with the causal-split scaffold). The DSP-side
+# runtime cannot be steered by environment variables (the FastRPC user PD does
+# not inherit the launching shell's env -- verified on device), so the causal
+# split is done at build level. Pass a comma list of the two disable defines:
+#   -DHEXMLIR_AB_DISABLE=NO_POWER_VOTE           -> power vote compiled out
+#   -DHEXMLIR_AB_DISABLE=NO_POWER_VOTE,NO_VTCM_CACHE -> both out
+if(HEXMLIR_AB_DISABLE)
+  foreach(_ab ${HEXMLIR_AB_DISABLE})
+    string(REPLACE "," ";" _ab_list "${_ab}")
+    foreach(_name ${_ab_list})
+      list(APPEND HEXAGON_FLAGS "-DHEXMLIR_AB_${_name}")
+    endforeach()
+  endforeach()
+  message(STATUS "A/B disable defines: ${HEXAGON_FLAGS}")
+endif()
+# BRINGUP probe (exp/hmx/bringup_probe): record per-step timings of the one-shot
+# HexagonAPI bring-up. Off by default so the shipping runtime bitcode is
+# unchanged; build the probe with -DHEXMLIR_BRINGUP_PROBE=ON. The probe wrapper
+# reads the recording through hexagon_runtime_bringup_report().
+option(HEXMLIR_BRINGUP_PROBE "Record per-step runtime bring-up timings" OFF)
+if(HEXMLIR_BRINGUP_PROBE)
+  list(APPEND HEXAGON_FLAGS -DHEXMLIR_RUNTIME_BRINGUP_PROBE)
+  message(STATUS "BRINGUP probe enabled: ${HEXAGON_FLAGS}")
+endif()
+
+# NOTE: the HMX leaves (src/HMXAPI.c, src/HMXLayout.c) are NOT built as bitcode
+# candidates: they use llvm.hexagon.M8.* intrinsics, which only Qualcomm's clang
+# lowers, and this build links its bitcode into a module that OUR LLVM compiles.
+# They are built into a static library by the SDK toolchain instead (see below).
 
 ###############################################################################
 # Build a library of runtime linked modules
@@ -112,6 +145,40 @@ foreach (i IN LISTS HEXAGON_RUNTIME_SRC)
 endforeach()
 
 ###############################################################################
+# HMX leaves -> a static library built by the SDK toolchain
+###############################################################################
+# NOT bitcode candidates: they use llvm.hexagon.M8.* intrinsics, which only
+# Qualcomm's clang lowers. Linking that bitcode into the kernel module (which the
+# project's own LLVM compiles) would leave undefined `llvm.hexagon.M8.*` calls and
+# the final .so would fail to load. A prebuilt .a is resolved at .so link time by
+# the SDK clang++, exactly like qhmath / hexkl_micro.
+#
+# Sources live under hmx/ (their own module dir); the archive keeps landing in
+# this directory's binary dir, which is where the executor looks for it.
+set(HEXAGON_HMX_SRC
+    hmx/src/HMXAPI.c
+    hmx/src/HMXLayout.c
+)
+set(HEXAGON_HMX_OBJS "")
+foreach (i IN LISTS HEXAGON_HMX_SRC)
+    get_filename_component(src_name ${i} NAME_WE)
+    set(HMX_OBJ ${CMAKE_CURRENT_BINARY_DIR}/${src_name}.o)
+    add_custom_command(OUTPUT ${HMX_OBJ}
+        COMMAND env CPLUS_INCLUDE_PATH="" ${HEXAGON_C_COMPILER} ${HEXAGON_INCLUDES} ${HEXAGON_FLAGS}
+                -I${CMAKE_CURRENT_SOURCE_DIR}/hmx/include
+                -mhmx -fPIC -fvisibility=default -c ${CMAKE_CURRENT_SOURCE_DIR}/${i} -o ${HMX_OBJ}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${i}
+        VERBATIM)
+    list(APPEND HEXAGON_HMX_OBJS ${HMX_OBJ})
+endforeach()
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libhmxapi.a
+    COMMAND ${HEXAGON_AR} rcs ${CMAKE_CURRENT_BINARY_DIR}/libhmxapi.a ${HEXAGON_HMX_OBJS}
+    DEPENDS ${HEXAGON_HMX_OBJS}
+    VERBATIM)
+add_custom_target(hexagon_hmx_runtime ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libhmxapi.a)
+
+###############################################################################
 # Build tests as an external project to use the hexagon toolchain compiler
 ###############################################################################
 
@@ -123,6 +190,11 @@ string(REPLACE ";" " " HEXAGON_INCLUDES_STR "${HEXAGON_INCLUDES}")
 #to interface headers
 set(RUNTIME_UNIT_TEST_INCLUDES_STR -I${CMAKE_CURRENT_SOURCE_DIR}/UserDMA)
 string(REPLACE ";" " " HEXAGON_RUNTIME_SRC_STR "${HEXAGON_RUNTIME_SRC}")
+
+# The device runtime gtest suite needs the SDK's vendored googletest, which the
+# community SDK does not ship. It is not needed to run kernels, so it is off by default.
+option(HEXAGON_MLIR_BUILD_RUNTIME_TESTS "Build the device runtime gtest suite" OFF)
+if(HEXAGON_MLIR_BUILD_RUNTIME_TESTS)
 
 include(ExternalProject)
 
@@ -155,3 +227,5 @@ ExternalProject_Add(
     CMAKE_ARGS ${CMAKE_ARGS_LIST}
     BUILD_ALWAYS 1
 )
+
+endif()

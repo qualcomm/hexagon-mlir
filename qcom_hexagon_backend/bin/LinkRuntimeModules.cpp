@@ -69,6 +69,12 @@ INIT_MODULE(HexagonBuffer);
 INIT_MODULE(HexagonBufferAlias);
 INIT_MODULE(HexagonCAPI);
 INIT_MODULE(HexKLAPI);
+// NOTE: HMXAPI/HMXLayout are deliberately NOT registered as link-time bitcode
+// candidates. They contain llvm.hexagon.M8.* intrinsics, which only Qualcomm's
+// clang knows; linking that bitcode into the kernel module makes OUR LLVM emit
+// calls to undefined `llvm.hexagon.M8.*` symbols and the final .so fails to
+// load. HMX leaves must ship as a prebuilt static library compiled by the SDK
+// clang instead (the same mechanism qhmath/hexkl_micro already use).
 INIT_MODULE(RuntimeDMA);
 INIT_MODULE(UserDMA);
 

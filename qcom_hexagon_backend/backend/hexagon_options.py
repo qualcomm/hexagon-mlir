@@ -27,7 +27,13 @@ class HexagonOptions:
         "e-m:e-p:32:32:32-a:0-n16:32-i64:64:64-i32:32:32-i16:16:16-i1:8:8-f32:32:"
         "32-f64:64:64-v32:32:32-v64:64:64-v512:512:512-v1024:1024:1024-v2048:2048:2048"
     )
-    # TODO: Next 7 options not used currently but kept to be consistent with other backends, remove later if not required
+    # Part of the launch-option contract with Triton core, not tuning knobs of
+    # this backend: JITFunction._pack_args (triton/python/triton/runtime/jit.py)
+    # raises KeyError for any launch kwarg that is absent from
+    # `options.__dict__`, and core injects these as launch defaults. Deleting
+    # them here (they are never branched on locally) makes every launch die with
+    # "Keyword argument <name> was specified but unrecognised" -- measured on
+    # device: all 7 tests failed in <2s each. Keep them.
     num_warps: int = 1
     num_stages: int = 1
     num_ctas: int = 1
@@ -36,8 +42,9 @@ class HexagonOptions:
     supported_fp8_dtypes: Tuple[str, ...] = ()
     sanitize_overflow: bool = True
     debug: bool = False
-    # TODO: Currently set name here temporarily. Need to set correctly to the name of the compiled kernel
-    # when driver code is completed.
+    # Fallback only: a real compilation overwrites metadata["name"] with the
+    # function name extracted from the MLIR module (backend/compiler.py), and
+    # that is the symbol pack_metadata() hands to the launcher.
     name: str = "Hexagon"
     instrumentation_mode: str = ""
     htp_kernel_gen: bool = False
@@ -81,11 +88,54 @@ class HexagonOptions:
     enableSCFLoopUnroll: bool = False
     enableConversionToFp16: bool = False
 
-    # This option enables 'seeding' of layout conversion ops around conv2d ops.
-    # This introduces some builtin.unrealized_conversion_cast ops, that are expected
-    # to be eliminated by conv -> hmx.conv2d pass. Till then, this pass could be
-    # disabled (or there will be errors).
+    # Runtime-weight residency (P2). When on, the compiler drops a runtime
+    # weight's per-launch `hmx.pack_weight` bridge and instead reads it from a
+    # resident VTCM buffer; the launcher pre-packs the weight once per process
+    # using the module's `hmx.weight_prepack` metadata. On by default: the
+    # generated launcher always pre-packs, and a weight the pass cannot prove
+    # dense (a dynamic-offset N-split view) keeps its old bridge rather than
+    # being mis-packed. Measured at steady state: S1 -8.5%, S2 -19.8%, S3 -25.0%.
+    enableWeightResident: bool = True
+
+    # 2-D last-dim linalg.reduce (f16/f32 max/add) lowered to per-vector
+    # elementwise folding plus an hvx.vror butterfly (vector-row-reduce pass)
+    # instead of the scalarized per-lane chain the Hexagon backend produces for
+    # vector.reduce.fmax. Off by default: the device A/B switch.
+    enableVectorRowReduce: bool = False
+
+    # HMX tile-level software-pipeline depth (hmx-partition). 0 = auto (the
+    # deepest activation-staging ring the VTCM budget and the tile count allow),
+    # 1 = force the serial ring, 2 = request the double ring (narrowed to the
+    # deepest ring that fits, with a remark, when the budget cannot pay for it),
+    # 3 = skip staging and emit the unstaged serial tile loop (the third A/B arm:
+    # no hmx.stage/hmx.await, the activation bridge is kept).
+    enableHmxPipelineDepth: int = 0
+
+    # Per-launch VTCM workspace residency (hmx-workspace-resident). When on, the
+    # crouton arrays, conversion state, staging ring/scratch and statuses of an
+    # HMX kernel are allocated once per process and reused by every launch
+    # instead of being allocated/freed per launch. Off by default: a resident
+    # buffer is shared by all launches in the process, which is only correct for
+    # single-instance execution -- a grid>1 launch would run several kernel
+    # instances over the same buffers.
+    enableWorkspaceResident: bool = False
+
+    # Unit-test-only: seeds layout conversion ops around conv2d ops, which
+    # introduces builtin.unrealized_conversion_cast ops. It is wired behind
+    # `enableMatmulToConv && enableSeedLayoutConversions` in
+    # LinalgToLLVMPass.cpp, and `enableMatmulToConv` has no field here, so from
+    # this backend the option alone is a no-op (it does not error). Nothing
+    # eliminates those casts either: the hmx dialect declares matmul-to-hmx /
+    # hmx-partition / weight-resident / hmx-workspace-resident only -- there is
+    # no conv -> hmx pass yet.
     enableSeedLayoutConversions: bool = False
+
+    # Upstream crouton/pack machinery. The pack frontier extension is on by
+    # default upstream; the HVX croutonization pass is not, and it is what turns
+    # a crouton layout conversion into HVX permutes instead of element-wise moves.
+    extendPackUpperFrontier: bool = True
+    extendPackLowerFrontier: bool = True
+    forceHVXCroutonization: bool = False
 
     tileSizes: str = ""  # User defined tile sizes - for debugging purposes
 

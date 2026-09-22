@@ -13,47 +13,81 @@ import os
 import json
 from pathlib import Path
 
+_REQUIRED_ENV_VARS = (
+    "ANDROID_HOST",
+    "ANDROID_SERIAL",
+    "HEXAGON_ARCH_VERSION",
+    "PYETM",
+    "CDSP_PATH",
+    "HEXAGON_SDK_ROOT",
+)
+
+
+def _require_env(env, *names):
+    """Fetch required environment variables, failing fast and readably.
+
+    Raises RuntimeError naming *every* missing variable and how to set it,
+    instead of letting a bare KeyError escape from a dict subscript (whose
+    message says nothing about which variable is missing or where it comes
+    from). No default values: a profiler configured with invented values is
+    worse than a clear early failure.
+    """
+    missing = [name for name in names if name not in env]
+    if missing:
+        raise RuntimeError(
+            f"Missing required environment variable(s): {', '.join(missing)}. "
+            "Set them by sourcing the project environment: "
+            "source tools/hexmlir/env.sh"
+        )
+    return [env[name] for name in names]
+
 
 class HexagonProfiler:
     """Hexagon Profiler"""
 
     def __init__(self, etm_local_dir, profiling_mode=None, kernel_name=""):
+        """Pure initialization: construction issues no device commands.
+
+        Device bring-up (reboot, ETM trace enable, etm prep) happens only
+        when start() is called explicitly, so merely instantiating
+        HexagonProfiler is side-effect free.
+        """
         if profiling_mode not in ["etm"]:
             raise RuntimeError("Profiling mode was not set or was not a valid one.")
 
         self.env_vars = os.environ.copy()
 
-        # Validate required environment variables
-        required_vars = [
-            "ANDROID_HOST",
-            "ANDROID_SERIAL",
-            "HEXAGON_ARCH_VERSION",
-            "PYETM",
-            "CDSP_PATH",
-            "HEXAGON_SDK_ROOT",
-        ]
-        missing_vars = [var for var in required_vars if var not in self.env_vars]
-        if missing_vars:
-            raise RuntimeError(
-                f"Missing required environment variables: {', '.join(missing_vars)}. "
-                "Please source local_env.sh before running."
-            )
-
-        self.ANDROID_HOST = self.env_vars["ANDROID_HOST"]
-        self.ANDROID_SERIAL = self.env_vars["ANDROID_SERIAL"]
-        self.Q6_VERSION = self.env_vars["HEXAGON_ARCH_VERSION"]
-        self.PYETM = Path(self.env_vars["PYETM"])
-        self.CDSP_PATH = Path(self.env_vars["CDSP_PATH"])
-        self.HEXAGON_SDK_ROOT = self.env_vars["HEXAGON_SDK_ROOT"]
+        # Validate required environment variables up front; _require_env
+        # raises with the names of the missing ones and how to set them.
+        (
+            self.ANDROID_HOST,
+            self.ANDROID_SERIAL,
+            self.Q6_VERSION,
+            pyetm,
+            cds_path,
+            self.HEXAGON_SDK_ROOT,
+        ) = _require_env(self.env_vars, *_REQUIRED_ENV_VARS)
+        self.PYETM = Path(pyetm)
+        self.CDSP_PATH = Path(cds_path)
 
         self.ETM_FILES_PATH = os.path.join(etm_local_dir, "etm_files")
         self.APP_BINS = os.path.join(etm_local_dir, "app_bins")
         self.PYETM_RESULTS = os.path.join(etm_local_dir, "pyetm_results")
         self._profiling_mode = profiling_mode
+        self.kernel_name = kernel_name
+
+    def start(self):
+        """Bring the device into the state needed for ETM profiling.
+
+        Explicit entry point for all device-side setup, kept out of
+        __init__ on purpose. Order: reboot -> enable ETM trace -> etm prep.
+        This reboots the device, so call it only when a profiling run is
+        actually wanted: construct, then start(), then run the workload
+        and analyze_trace().
+        """
         self.reboot_device()
         self.enable_etm_trace_ca()
         self.etm_prep()
-        self.kernel_name = kernel_name
 
     def run_bash_command(
         self, command, adb: bool = True, capture_output=False, text=False

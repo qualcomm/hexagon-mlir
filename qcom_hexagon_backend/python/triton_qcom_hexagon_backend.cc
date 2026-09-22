@@ -96,15 +96,22 @@ void init_triton_hexagon_translation(py::module &m) {
 
   m.def(
       "translate_linalg_to_obj",
-      [](mlir::ModuleOp &linalg_module, py::dict arch_kwargs) {
+      [](mlir::ModuleOp &linalg_module, py::dict arch_kwargs, bool with_meta)
+          -> py::object {
         std::unordered_map<std::string, std::string> options_map;
         // Goes from a py::dict (arch_kwargs) mapping python strings to python
         // strings to a C++ mapping of strings to strings
         fill_options_map(arch_kwargs, options_map);
-        return hexagon_backend::translateLinalgToObj(linalg_module,
-                                                     options_map);
+        std::string weightPrepack;
+        auto objs = hexagon_backend::translateLinalgToObj(
+            linalg_module, options_map, with_meta ? &weightPrepack : nullptr);
+        py::object packed = py::cast(objs);
+        if (!with_meta)
+          return packed;
+        return py::object(py::make_tuple(packed, py::str(weightPrepack)));
       },
-      ret::take_ownership);
+      py::arg("linalg_module"), py::arg("arch_kwargs"),
+      py::arg("with_meta") = false, ret::take_ownership);
 }
 
 void init_triton_qcom_hexagon_backend(py::module &&m) {

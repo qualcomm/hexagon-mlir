@@ -12,9 +12,31 @@
 //===----------------------------------------------------------------------===//
 
 #include "UserDMA.h"
+#include <cassert>
+#include <cstdint>
+#include <cstring>
 
 namespace hexagon {
 namespace userdma {
+
+namespace {
+// Hand back a token whose wait() returns even though no transfer was started.
+// DMAToLLVMPass stores the token and never inspects `status`, so a rejected
+// transfer that returned 0 could make a later dma_wait(0) spin on an unrelated
+// descriptor. The descriptor below is left unlinked (the DMA engine never sees
+// it) and marked done, so the caller's wait() completes immediately.
+uint32_t enqueueRejectedDesc(RingBuffer<DMADesc2D> *queue, DMAStatus *status) {
+  uint32_t token = 0;
+  DMADesc2D *dmaDesc = queue->alloc(token);
+  std::memset(dmaDesc, 0, sizeof(DMADesc2D));
+  dmaDescSetState(dmaDesc, DESC_STATE_READY);
+  dmaDescSetNext(dmaDesc, DMA_NULL_PTR);
+  dmaDescSetDone(dmaDesc, DESC_DONE_COMPLETE);
+  *status = DMAFailure;
+  return token;
+}
+} // namespace
+
 bool inFlight(void *ptr) {
   DMADesc2D *dmaDesc = static_cast<DMADesc2D *>(ptr);
   dmpoll(); // Catch any exception occured during DMA transfer
@@ -56,12 +78,16 @@ uint32_t UserDMA::copy(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
 
   dmaDesc = dmaQueue->alloc(token);
 
+  // A slot reused after a 2D transfer may still carry desc_type=9 in word4.
+  // Clear it; a 1D descriptor leaves word4 reserved.
+  dmaDesc->descType = 0;
+
   // populate descriptor fields
   dmaDescSetState(dmaDesc, DESC_STATE_READY);
   dmaDescSetDone(dmaDesc, DESC_DONE_INCOMPLETE);
   dmaDescSetNext(dmaDesc, DMA_NULL_PTR);
   dmaDescSetLength(dmaDesc, numBytes);
-  dmaDescSetDescType(dmaDesc, DESC_DESCTYPE_1D);
+  dmaDescSetDescSize(dmaDesc, DESC_DESCSIZE_1D);
   dmaDescSetDstComp(dmaDesc, DESC_COMP_NONE);
   dmaDescSetSrcComp(dmaDesc, DESC_COMP_NONE);
 
@@ -99,16 +125,26 @@ uint32_t UserDMA::copy2D(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
 
   *status = DMAFailure;
 
+  // The v75+ descriptor holds width/row_size and the strides in 24-bit fields
+  // and height in 16 bits. The setters only mask, so an out-of-range geometry
+  // would be truncated silently and the engine would copy the wrong rows (on
+  // v79 a src_stride of 65600 was lowered as 64). Reject instead. This is a
+  // refusal, not an assert: the device runtime is built at -O2 without
+  // -DNDEBUG, so assert() would abort the DSP on a data-dependent value.
+  if (!dma2DGeometryFits(width, height, srcStride, dstStride)) {
+    return enqueueRejectedDesc(dmaQueue, status);
+  }
+
   // source address limited to 32 bits
   uint64_t src64 = reinterpret_cast<uint64_t>(src);
   if (!src64 || src64 > DESC_SRC_MASK) {
-    return 0;
+    return enqueueRejectedDesc(dmaQueue, status);
   }
 
   // destination address limited to 32 bits
   uint64_t dst64 = reinterpret_cast<uint64_t>(dst);
   if (!dst64 || dst64 > DESC_DST_MASK) {
-    return 0;
+    return enqueueRejectedDesc(dmaQueue, status);
   }
 
   uint32_t src32 = static_cast<uint32_t>(src64);
@@ -127,14 +163,16 @@ uint32_t UserDMA::copy2D(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
   dmaDescSetState(dmaDesc, DESC_STATE_READY);
   dmaDescSetDone(dmaDesc, DESC_DONE_INCOMPLETE);
   dmaDescSetNext(dmaDesc, DMA_NULL_PTR);
-  dmaDescSetDescType(dmaDesc, DESC_DESCTYPE_2D);
+  dmaDescSetDescSize(dmaDesc, DESC_DESCSIZE_2D);
+  dmaDescSetDescType(dmaDesc, DESC_TYPE_2D_24BIT);
   dmaDescSetDstComp(dmaDesc, DESC_COMP_NONE);
   dmaDescSetSrcComp(dmaDesc, DESC_COMP_NONE);
 
-  dmaDescSetROIWidth(dmaDesc, width);
-  dmaDescSetROIHeight(dmaDesc, height);
+  dmaDescSetRowSize(dmaDesc, width);
+  dmaDescSetNrows(dmaDesc, height);
   dmaDescSetSrcStride(dmaDesc, srcStride);
   dmaDescSetDstStride(dmaDesc, dstStride);
+  dmaDescSetOffset(dmaDesc, 0);
 
   dmaDescSetBypassDst(dmaDesc,
                       bypassCacheDst ? DESC_BYPASS_ON : DESC_BYPASS_OFF);

@@ -205,9 +205,17 @@ def test_flash_attention():
         enableMultiThreading=True,
         enableHexKL=False,
         enableVTCMTiling=False,
-        enableConvertToHexagonmem=False,
+        enableConvertToHexagonmem=True,  # was False: this is the only gate on the HMX path (vtcm-allocator), and leaving it off made this test measure a kernel with zero HMX leaves
         enableHexagonmemCopyToDMA=False,
     )
 
     reference = F.scaled_dot_product_attention(query, key, value, scale=SCALE)
-    assert torch.allclose(output, reference)
+    # The HMX engine's operands are fp16: an fp32 activation is quantised by the
+    # pack leaf (accepted as the f32 activation ABI, 2026-09-19), so this is a
+    # quantisation budget rather than a bit-exactness check. Measured on device
+    # over repeated runs: relative Frobenius error 7.2e-05 .. 7.4e-05. The bound
+    # is ~70x that noise and ~10x fp16 eps (4.9e-04), while a real correctness
+    # bug (wrong crouton offset, missing pack, wrong residual) shows up at
+    # rel ~ 1e-1..1 and still fails loudly.
+    rel = float((output - reference).norm() / reference.norm())
+    assert rel < 5e-3, f"relative error {rel:.3e} exceeds the fp16 quantisation budget"

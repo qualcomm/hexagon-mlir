@@ -13,16 +13,21 @@
 
 #include "hexagon/Conversion/DMAToLLVM/Passes.h"
 #include "hexagon/Conversion/HexKLToLLVM/Passes.h"
+#include "hexagon/Conversion/HmxToLLVM/HmxToLLVM.h"
 #include "hexagon/Conversion/HexagonMemToLLVM/Passes.h"
+#include "hexagon/Conversion/HvxToLLVM/Passes.h"
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
+#include "hexagon/Dialect/Hmx/IR/HmxDialect.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
+#include "hexagon/Dialect/Hvx/IR/HvxDialect.h"
 #include "hexagon/Dialect/HexagonTPtr/IR/HexagonTPtrDialect.h"
 #include "hexagon/Dialect/TTX/IR/TTXDialect.h"
 #include "hexagon/Transforms/Passes.h"
+#include "hexagon/Dialect/Hmx/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/Passes.h"
@@ -75,7 +80,8 @@ public:
                     vector::VectorDialect, memref::MemRefDialect,
                     LLVM::LLVMDialect, crouton::CroutonDialect, ttx::TTXDialect,
                     tptr::HexagonTPtrDialect, hexagonmem::HexagonMemDialect,
-                    hexkl::HexKLDialect, quant::QuantDialect>();
+                    hexkl::HexKLDialect, hmx::HmxDialect, hvx::HvxDialect,
+                    quant::QuantDialect>();
   }
 
   void runOnOperation() override {
@@ -242,6 +248,28 @@ public:
       pm.addPass(createCanonicalizerPass());
     }
 
+    // HMX engine attribution, deliberately not behind a switch: the pass decides
+    // per op and a matmul it declines is left to the existing paths. It must run
+    // before lower-pack, which turns the crouton layouts it seeds into data movement.
+    // The engine's operands live in VTCM, so the attribution only exists when
+    // this pipeline allocates it (the hexagonmem path); without that the pass
+    // refuses, rather than placing croutons where the engine cannot read them.
+    mlir::hmx::MatmulToHmxOptions matmulToHmxOpts;
+    matmulToHmxOpts.vtcmAllocator = enableConvertToHexagonmem;
+    // Attribution is gated on the same condition as the tile level below
+    // (`weight-resident` / `hmx-partition` / `hmx-workspace-resident` all live
+    // inside `if (enableBufferization)`): `hmx.matmul` has no other consumer --
+    // HmxToLLVMPass marks the dialect illegal and has no MatmulOp pattern, and
+    // nothing erases it -- so attributing while bufferization is off leaves IR
+    // that cannot be lowered (compile failure, possibly an assert on
+    // cast<MemRefType> of a tensor). Must stay before `lower-pack` (below), so
+    // it cannot simply move into that block.
+    if (enableBufferization) {
+      pm.addNestedPass<func::FuncOp>(
+          mlir::hmx::createMatmulToHmxPass(matmulToHmxOpts));
+    }
+    pm.addPass(createCanonicalizerPass());
+
     // enableMatmulToConv and enableSeedLayoutConversions are supposed to be set
     // for unit test only. They are not supposed to run on Full models
     if (enableMatmulToConv && enableSeedLayoutConversions) {
@@ -376,6 +404,15 @@ public:
       mlir::bufferization::OneShotBufferizePassOptions passOpts;
       passOpts.bufferizeFunctionBoundaries = true;
       passOpts.allowReturnAllocsFromLoops = true;
+      // The fused HMX tail (`hmx.unpack_acc_f32`) issues aligned 128 B stores
+      // into its destination, which bufferization allocates as a fresh
+      // internal buffer (same loop structure as the old unpack destination).
+      // Raising the pipeline-wide allocation alignment from the upstream
+      // default 64 to 128 guarantees that precondition allocator-side, at
+      // compile time, with no runtime check. Over-alignment is always safe;
+      // VTCM buffers are unaffected (ConvertToHexagonmem drops this attribute
+      // and hexagonmem.alloc carries its own alignment).
+      passOpts.bufferAlignment = 128;
       pm.addPass(bufferization::createOneShotBufferizePass(passOpts));
       pm.addPass(createCSEPass());
       pm.addPass(createCanonicalizerPass());
@@ -407,6 +444,44 @@ public:
 
       pm.addNestedPass<func::FuncOp>(createConvertZeroSizeMemrefPass());
       pm.addPass(createConvertBufferizationToMemRefPass());
+      // A compile-time constant weight arrives here as a `memref.get_global`,
+      // which the engine cannot read; give it a resident VTCM buffer before the
+      // tile level asks for one (see WeightResidentPass). With
+      // `enableWeightResident`, the same pass also makes a runtime weight
+      // resident: its per-launch pack bridge is dropped and the host pre-packs
+      // it (hmx.weight_prepack is the contract).
+      mlir::hmx::WeightResidentOptions weightResidentOpts;
+      weightResidentOpts.prepackRuntimeWeights = enableWeightResident;
+      pm.addNestedPass<func::FuncOp>(
+          mlir::hmx::createWeightResidentPass(weightResidentOpts));
+      // The HMX tile level runs while the crouton buffers are still the ones
+      // bufferization allocated: the VTCM machinery below rewrites space-1 buffers
+      // for the HVX scratch path, and these belong to the region the runtime
+      // acquires instead (docs/hmx/hmx-system-design.md 2.B / 10.12).
+      //
+      // No interaction with `FormSCFThreadsPass` (above, before bufferization):
+      // it selects the linalg ops that exist at that point, and both the HMX
+      // tile loop (created here) and its bridge pack loop (created by
+      // `lower-pack`, above this pass but after FormSCFThreads) come into being
+      // only after FormSCFThreads has already run. The HMX loops are therefore
+      // never candidates for scf-threading, and the partition pass needs no
+      // threading special case.
+      // The HMX tile loop's activation-staging ring depth: 0 = auto, 1 = force
+      // the serial ring, 2 = request the double ring (see hmx-partition).
+      mlir::hmx::HmxPartitionOptions hmxPartitionOpts;
+      hmxPartitionOpts.pipelineDepth = enableHmxPipelineDepth;
+      pm.addNestedPass<func::FuncOp>(
+          mlir::hmx::createHmxPartitionPass(hmxPartitionOpts));
+
+      // Per-launch VTCM workspace becomes a process-resident buffer. Opt-in:
+      // residency shares one buffer across every launch in the process, which
+      // is safe for sequential single-instance launches (each overwrites the
+      // whole buffer) but wrong under a grid>1 launch. Runs here so the
+      // partition pass's conversion state / ring / scratch exist, and before
+      // convert-to-hexagonmem carries the tag to the lowering.
+      if (enableWorkspaceResident)
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hmx::createHmxWorkspaceResidentPass());
     }
 
     if (enableConvertToHexagonmem)
@@ -437,6 +512,12 @@ public:
       pm.addNestedPass<func::FuncOp>(createHexmemCpyToDMAPass());
     pm.addPass(createCSEPass());
     pm.addPass(createCanonicalizerPass());
+    // Row reductions that would be scalarized below are rewritten into a
+    // vector fold plus an hvx.vror butterfly while they are still linalg ops
+    // on memrefs (the last point where the 2-D row structure is visible).
+    // Off by default; the knob is the device A/B switch.
+    if (enableVectorRowReduce)
+      pm.addNestedPass<func::FuncOp>(createVectorRowReducePass());
     pm.addPass(createConvertLinalgToLoopsPass());
 
     pm.addNestedPass<func::FuncOp>(createFormAsyncThreadsPass());
@@ -471,6 +552,8 @@ public:
     pm.addPass(hexagonmem::createHexagonMemToLLVMPass(
         setDeviceType(hexagonmem::HexagonMemToLLVMOptions{})));
     pm.addPass(hexkl::createHexKLToLLVMPass());
+    pm.addPass(mlir::hmx::createHmxToLLVMPass());
+    pm.addPass(mlir::hvx::createHvxToLLVMPass());
 
     if (enableCollapseAddressSpace) {
       pm.addPass(createCollapseAddressSpacePass());

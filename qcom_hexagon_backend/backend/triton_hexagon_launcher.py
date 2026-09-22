@@ -546,6 +546,7 @@ class TritonHexagonLauncher(HexagonLauncherBase):
         compiled_enable_multithreading: bool | str | None = None,
         compiled_enable_threaded_dispatch: bool | str | None = None,
         compiled_enable_lwp: bool | str | None = None,
+        weight_prepack: str | None = None,
         runtime_options: dict | None = None,
     ) -> list[Tensor]:
         # Getting the input metadata for effective wrapper codegen.
@@ -635,28 +636,26 @@ class TritonHexagonLauncher(HexagonLauncherBase):
                 f"the Hexagon launcher. Reduce grid size."
             )
 
-        # Safety gate: enableMultiThreading causes FormVirtualThreadsPass to
-        # emit scf.forall (parallel tiling loops) which rely on the async
-        # runtime. The single-instance wrapper uses a direct call with no async
-        # setup, so scf.forall iterations beyond the first never execute and
-        # the output is garbage. Disable for grid==1.
-        if prod(launch_grid) == 1 and options.get("enableMultiThreading", False):
-            warnings.warn(
-                "Disabling enableMultiThreading for single-instance launch (grid==1) "
-                "to avoid incorrect results from unexecuted scf.forall iterations.",
-                stacklevel=2,
+        # Safety gate: a resident HMX VTCM workspace is one buffer per process,
+        # shared by every launch. The compiler cannot see the grid (it is a
+        # launch parameter, not a compile-time one), so the launcher enforces
+        # the boundary `enableWorkspaceResident` promises: refuse a grid>1
+        # launch loudly rather than let prod(grid) instances clobber each
+        # other's workspace and compute wrong results.
+        if prod(launch_grid) > 1 and options.get("enableWorkspaceResident", False):
+            raise ValueError(
+                "enableWorkspaceResident makes the HMX VTCM workspace resident "
+                "per process, which is unsafe for an SPMD launch "
+                f"(grid={prod(launch_grid)} > 1): every program instance would "
+                "share the same buffers. Use grid=1 or disable "
+                "enableWorkspaceResident."
             )
-            options["enableMultiThreading"] = False
 
-        # Safety gate: enableThreadedDispatch has no effect for grid==1 since
-        # the single-instance path uses a direct call (no ThreadManager).
-        if prod(launch_grid) == 1 and options.get("enableThreadedDispatch", False):
-            warnings.warn(
-                "Disabling enableThreadedDispatch for single-instance launch (grid==1) "
-                "since ThreadManager is not used for single-instance kernels.",
-                stacklevel=2,
-            )
-            options["enableThreadedDispatch"] = False
+        # enableMultiThreading / enableThreadedDispatch are deliberately not
+        # cleared for grid==1. Both are compile-time-only flags here (the .o is
+        # already built; this dict only feeds wrapper codegen / executor knobs),
+        # and the grid==1 wrapper is a direct call regardless
+        # (multithreading_enabled == prod(grid) > 1), so neither flag is read.
 
         # Temporary safety gate:
         # UserDMA-backed hexagonmem-copy lowering is unstable with Triton SPMD
@@ -685,6 +684,12 @@ class TritonHexagonLauncher(HexagonLauncherBase):
         wrapper_generator = TritonHexagonWrapperGenerator(
             input_profs, iterations, func_name, output_profs, launch_grid, options
         )
+        # P2: the compiler's weight-residency contract, if any. Attached to the
+        # generator so the shared input-writing path can pre-pack the named
+        # argument slots (None keeps every argument row-major, as before).
+        from triton.backends.qcom_hexagon_backend.hmx_weight_prepack import WeightPrepack
+
+        wrapper_generator.weight_prepack = WeightPrepack.from_metadata(weight_prepack)
         print("==> Wrapper generator correctly instantiated")
 
         # The directory path used for execution is given by the executor, and if it's the empty string (meaning running on device),
@@ -721,8 +726,26 @@ class TritonHexagonLauncher(HexagonLauncherBase):
             else wrapper_generator.input_profs
         )
         res_idx = 0
+        # A pre-packed weight slot is not the kernel's view of that argument:
+        # the host wrote crouton-ordered bytes, the kernel only read them, and
+        # the round-trip dump is therefore crouton order too. Copying it back
+        # would silently turn the caller's row-major tensor into a crouton
+        # image, so the next launch -- and any host-side reference computed
+        # after this one -- would use the permuted bytes. The host owns the
+        # row-major form, so those slots are skipped. The slot indices here are
+        # `input_profs.idx` (the same key `generate_input_output_paths` used to
+        # decide which argument to pre-pack); the return-value branch has no
+        # pre-packed slot to skip.
+        prepack = (
+            getattr(wrapper_generator, "weight_prepack", None)
+            if len(wrapper_generator.output_profs) == 0
+            else None
+        )
         for out in profs:
             if out.rank:
+                if prepack is not None and prepack.has_slot(out.idx):
+                    res_idx += 1
+                    continue
                 inputs[out.input_id].copy_(results[res_idx])
                 res_idx += 1
         return results

@@ -82,7 +82,9 @@ class HexagonExecutor:
                     "kernel_run_id must be well-formed, non-empty string for execution via standalone launcher"
                 )
         self.exec_mode = get_exec_mode() if not compile_only else "compile_only"
-        self.device_path = f"/data/local/tmp/{kernel_run_id}"
+        # Base dir on device; overridable because a Termux app cannot write /data/local/tmp.
+        _device_base = os.getenv("HEXAGON_DEVICE_BASE", "/data/local/tmp")
+        self.device_path = f"{_device_base}/{kernel_run_id}"
         self.lib_path = f"{self.device_path}/lib"
         self.alt_perf_path = (
             perf_path  # Only needed in contexts where the .cpp wrapper is hardcoded
@@ -255,6 +257,15 @@ class HexagonExecutor:
         runtime_libs = ["qhmath_hvx"]
 
         HEX_CXX_FLAGS = f"-O3 -mv{self.config.Q6_VERSION} -mhvx"
+        # Opt-in HMX for the device-side wrapper. Needed by device self-tests
+        # that compile HMX intrinsics (Q6_* in hmx_hexagon_protos.h) inside the
+        # wrapper: clang only exposes those builtins with -mhmx, and the SDK's
+        # target include dir is not part of INCLUDES. Off by default because
+        # older SDK toolchains do not know -mhmx.
+        if os.environ.get("HEXAGON_ENABLE_HMX") == "1":
+            HEX_CXX_FLAGS += (
+                f" -mhmx -I{os.environ['HEXAGON_TOOLS']}/target/hexagon/include"
+            )
         INCLUDES = hexagon_compile_include_string.format(
             HEXAGON_MLIR_ROOT=self.config.env_vars["HEXAGON_MLIR_ROOT"],
             HEXAGON_SDK_ROOT=self.config.env_vars["HEXAGON_SDK_ROOT"],
@@ -308,6 +319,14 @@ class HexagonExecutor:
             hexkl_macro_a = os.path.join(hexkl_dir, "libhexkl_macro.a")
             runtime_libs.append(hexkl_micro_a)
             runtime_libs.append(hexkl_macro_a)
+
+        # HMX leaf primitives: a prebuilt static library (SDK-clang compiled, so
+        # the HMX intrinsics are already lowered). Linked only if it was built.
+        hmx_a = os.path.join(
+            self.config.env_vars["HEXAGON_RUNTIME_LIBS_DIR"], "libhmxapi.a"
+        )
+        if os.path.exists(hmx_a):
+            runtime_libs.append(hmx_a)
 
         # Check if HEXAGON_RUNTIME_LIBS_DIR + "/multithreading exists and "libhexagon_mlir_async_runtime.a" inside it
         multithreading_dir = os.path.join(
@@ -373,15 +392,34 @@ class HexagonExecutor:
         )
         print(command)
         try:
-            subprocess.run(
+            # Capture rather than discard: the device is where a failing kernel
+            # says why, and throwing that away turns every failure into "exit 1".
+            result = subprocess.run(
                 command,
                 shell=True,
                 check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
+                capture_output=True,
+                text=True,
             )
+            if result.stdout.strip():
+                print(result.stdout)
+            if result.stderr.strip():
+                print(result.stderr)
         except subprocess.CalledProcessError as e:
             print(f"Error executing the command: {e}")
+            try:
+                with open("/tmp/matmul_device.log", "a") as _f:
+                    _f.write(str(e.stdout) + "\n=== stderr ===\n" + str(e.stderr) + "\n")
+            except Exception:
+                pass
+            print("--- device stdout ---")
+            print(e.stdout)
+            print("--- device stderr ---")
+            print(e.stderr)
+            # Also to a file: the test wrapper post-processes stdout, and the
+            # device is where a failing kernel says why.
+            with open("/tmp/matmul_device.log", "w") as f:
+                f.write(str(e.stdout) + "\n=== stderr ===\n" + str(e.stderr))
             sys.exit(1)
         return kernel_path
 
@@ -452,9 +490,12 @@ class HexagonExecutor:
             f"{self.device_path}/{os.path.basename(fname)}" for fname in output_paths
         ]
 
-        # WriteLWPOutput() in all wrappers writes to /data/local/tmp/lwp.json;
-        # pull from that fixed path regardless of where kernel artifacts live.
-        lwp_device_path = "/data/local/tmp/lwp.json"
+        # WriteLWPOutput() writes to "$HEXAGON_DEVICE_BASE/lwp.json" (see
+        # hexagon_launcher_base.generate_lwp_call). Pull from the same base:
+        # /data/local/tmp is not writable on every target (e.g. a Termux app).
+        lwp_device_path = os.path.join(
+            os.getenv("HEXAGON_DEVICE_BASE", "/data/local/tmp"), "lwp.json"
+        )
         lwp_local_path = os.path.join(local_dir, "lwp.json")
 
         etm_local_dir = os.path.join(local_dir, "etm_pyetm")
@@ -489,12 +530,12 @@ class HexagonExecutor:
                         dump_device_path,
                     )
 
-                    subprocess.run(
+                    result = subprocess.run(
                         command,
                         shell=True,
                         check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.STDOUT,
+                        capture_output=True,
+                        text=True,
                     )
 
                 print("All previous dumped tensors destroyed.")
@@ -660,20 +701,21 @@ class HexagonExecutor:
                 hex_prof = HexagonProfiler(
                     etm_local_dir,
                     profiling_mode="etm",
-                    device_lib_path=path_to_principal_lib_on_device,
-                    local_lib_filename=f"{principal_lib_without_ext}.so",
                 )
+                # Construction is side-effect free; device bring-up (which
+                # reboots the phone) is an explicit start() call.
+                hex_prof.start()
             for command, should_run in commands:
                 if not should_run:
                     continue
                 print(command, flush=True)
                 start_time = time.time()
-                subprocess.run(
+                result = subprocess.run(
                     command,
                     shell=True,
                     check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT,
+                    capture_output=True,
+                    text=True,
                 )
                 end_time = time.time()
                 elapsed_time = end_time - start_time
@@ -682,6 +724,31 @@ class HexagonExecutor:
                     hex_prof.analyze_trace()
         except subprocess.CalledProcessError as e:
             print(f"Error executing the command: {e}")
+            # The device-side output is already captured (capture_output=True
+            # above); surface its tail so DSP-side failures (e.g. exit 13 with
+            # "Failed to call main") are visible instead of just an exit code.
+            def _tail(s, n=30):
+                lines = str(s or "").splitlines()
+                return "\n".join(lines[-n:])
+
+            out_tail = _tail(getattr(e, "stdout", ""))
+            err_tail = _tail(getattr(e, "stderr", ""))
+            print(f"--- failed command (exit {e.returncode}) ---")
+            print(e.cmd)
+            print("--- device stdout (last 30 lines) ---")
+            print(out_tail if out_tail else "<empty>")
+            print("--- device stderr (last 30 lines) ---")
+            print(err_tail if err_tail else "<empty>", flush=True)
+            try:
+                with open("/tmp/matmul_device.log", "a") as _f:
+                    _f.write(
+                        f"\n=== device launch failure: exit {e.returncode} ===\n"
+                        f"--- cmd ---\n{e.cmd}\n"
+                        f"--- stdout (last 30 lines) ---\n{out_tail}\n"
+                        f"--- stderr (last 30 lines) ---\n{err_tail}\n"
+                    )
+            except Exception:
+                pass
             sys.exit(1)
 
         # Initializing our result for the next two try blocks
@@ -732,12 +799,12 @@ class HexagonExecutor:
                 # Placing this path in the correct spot
                 output_paths[tensor_num + prev_len] = dump_local_path
 
-                subprocess.run(
+                result = subprocess.run(
                     command,
                     shell=True,
                     check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.STDOUT,
+                    capture_output=True,
+                    text=True,
                 )
         except subprocess.CalledProcessError as e:
             print(f"Error pulling dumped tensors: {e}")
@@ -812,4 +879,9 @@ class HexagonExecutor:
                     print(f"STDERR: {result.stderr}")
         except subprocess.CalledProcessError as e:
             print(f"Error executing the command: {e}")
+            try:
+                with open("/tmp/matmul_device.log", "a") as _f:
+                    _f.write(str(e.stdout) + "\n=== stderr ===\n" + str(e.stderr) + "\n")
+            except Exception:
+                pass
             sys.exit(1)

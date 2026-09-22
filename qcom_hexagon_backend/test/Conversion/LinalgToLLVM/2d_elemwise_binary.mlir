@@ -28,17 +28,16 @@ func.func @kernel(%x: memref<1024x256xf32>, %y: memref<1024x256xf32>, %z: memref
    return
  }
 }
-// CHECK-LABEL: @kernel(ptr readnone captures(none) %0, ptr %1, i64 %2,
-// CHECK-SAME:          i64 %3, i64 %4, i64 %5, i64 %6, ptr readnone captures(none) %7, ptr %8,
-// CHECK:      tail call void @hexagon_runtime_copy_dsp(ptr [[VTCM_X:%.+]], ptr %1, i32 524288, i1 true, i1 false)
-// CHECK:      tail call void @hexagon_runtime_copy_dsp(ptr [[VTCM_Y:%.+]], ptr %8, i32 524288, i1 true, i1 false)
-// CHECK:      {{.*}} = phi
-// CHECK-NEXT: {{.*}} = shl
-// CHECK-NEXT: {{.*}} = trunc
-// CHECK-NEXT: [[GEP_X:%.+]] = getelementptr [4 x i8], ptr [[VTCM_X]]
-// CHECK-NEXT: [[LOAD_X:%.+]] = load <32 x float>, ptr [[GEP_X]]
-// CHECK-NEXT: [[GEP_Y:%.+]] = getelementptr [4 x i8], ptr [[VTCM_Y]]
-// CHECK-NEXT: [[LOAD_Y:%.+]] = load <32 x float>, ptr [[GEP_Y]]
-// CHECK-NEXT: [[SUB:%.+]] = fsub {{(fast)?}} <32 x float> [[LOAD_X]], [[LOAD_Y]]
+// This generic is pure parallel + identity, so VTCM staging is deliberately
+// skipped (VTCMTiling.cpp: "streaming"): it must stream straight through DDR
+// with vectorized loads/stores, and never pay the extra VTCM round trip.
+// CHECK-LABEL: @kernel(ptr readnone captures(none) %0, ptr readonly captures(none) %1, i64 %2,
+// CHECK-SAME:          i64 %3, i64 %4, i64 %5, i64 %6, ptr readnone captures(none) %7, ptr readonly captures(none) %8,
+// CHECK-NOT:  hexagon_runtime_copy_dsp
+// CHECK:      [[GEP_X:%.+]] = getelementptr [4 x i8], ptr %1
+// CHECK-NEXT: [[LOAD_X:%.+]] = load <32 x float>, ptr [[GEP_X]], align 4
+// CHECK-NEXT: [[GEP_Y:%.+]] = getelementptr [4 x i8], ptr %8
+// CHECK-NEXT: [[LOAD_Y:%.+]] = load <32 x float>, ptr [[GEP_Y]], align 4
+// CHECK-NEXT: [[SUB:%.+]] = fsub fast <32 x float> [[LOAD_X]], [[LOAD_Y]]
 // CHECK-NEXT: [[GEP_Z:%.+]]  = getelementptr [4 x i8], ptr
 // CHECK-NEXT: store <32 x float> [[SUB]], ptr [[GEP_Z]]

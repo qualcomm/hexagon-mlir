@@ -66,6 +66,32 @@ LogicalResult splitGenericReduce(RewriterBase &rewriter,
         genericOp, "generic op does not have exactly one reduction loop");
   }
 
+  // Max/min reductions do not vectorise after the split: the accumulator is
+  // materialised in memory and then re-read element by element, which scalarises
+  // the whole reduction. Measured on v79 for a 128 element f16 max: 78 -> 941
+  // machine instructions (128 scalar compares), and on the softmax row reduction
+  // 689 -> 1365 instructions, 1089us -> 128us once the split is skipped.
+  // Additive reductions do vectorise after the split and do benefit from it
+  // (measured on the rms_norm row reduction: 1239 -> 686 instructions), so only a
+  // max/min *combine* is rejected here. Testing the whole body would also reject
+  // reductions that merely contain a max (rms_norm fuses a guarded sqrt into its
+  // body), so the check is limited to the value the body yields.
+  bool isMinMaxCombine = false;
+  if (auto yieldOp =
+          dyn_cast<linalg::YieldOp>(genericOp.getBody()->getTerminator())) {
+    for (Value yielded : yieldOp.getValues()) {
+      Operation *def = yielded.getDefiningOp();
+      if (def && isa<arith::MaxNumFOp, arith::MaximumFOp, arith::MinNumFOp,
+                     arith::MinimumFOp, arith::MaxSIOp, arith::MaxUIOp,
+                     arith::MinSIOp, arith::MinUIOp>(def))
+        isMinMaxCombine = true;
+    }
+  }
+  if (isMinMaxCombine) {
+    return rewriter.notifyMatchFailure(
+        genericOp, "max/min combining reductions do not vectorise after the split");
+  }
+
   // Reject ops with dynamic shapes; splitReduction only handles static shapes.
   for (auto operand : genericOp->getOperands()) {
     auto shapedType = dyn_cast<ShapedType>(operand.getType());

@@ -32,8 +32,11 @@ func.func @foo(%x: memref<2048x1024xf32>, %y: memref<2048x1024xf32>, %z: memref<
 // ON: llvm.call @hexagon_runtime_dma_start
 // ON-NOT: builtin.unrealized_conversion_cast
 //
-// OFF: builtin.unrealized_conversion_cast %{{.*}} : !llvm.struct<(ptr, ptr, i64, array<2 x i64>, array<2 x i64>)> to memref<{{.*}}, 1>
-// OFF-NEXT: builtin.unrealized_conversion_cast %{{.*}} : memref<{{.*}}, 1> to !llvm.struct<(ptr<1>, ptr<1>, i64, array<2 x i64>, array<2 x i64>)>
+// The pure-elementwise generic above is streamed (VTCMTiling skips it), so the
+// space-1 boundary the OFF run observes now comes from the explicit
+// hexagonmem.copy below, not from VTCM staging.
+// OFF: builtin.unrealized_conversion_cast %{{.*}} : !llvm.struct<(ptr<1>, ptr<1>, i64, array<3 x i64>, array<3 x i64>)> to memref<2x32x32xf32, strided<[1024, 32, 1]>, 1>
+// OFF-NEXT: builtin.unrealized_conversion_cast %{{.*}} : memref<2x32x32xf32, strided<[1024, 32, 1]>, 1> to !llvm.struct<(ptr, ptr, i64, array<3 x i64>, array<3 x i64>)>
 
 // -----
 

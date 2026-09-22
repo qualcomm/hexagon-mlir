@@ -22,14 +22,15 @@ func.func @add_kernel() -> tensor<32xf32> {
   return %result : tensor<32xf32>
 }
 
-// CHECK: %[[ALLOCDDR:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32>
-// CHECK: %[[ALLOC_VTCM_OUT:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32, 1>
-// CHECK-NEXT: memref.copy %[[ALLOCDDR]], %[[ALLOC_VTCM_OUT]] : memref<32xf32> to memref<32xf32, 1>
-// CHECK: linalg.fill ins({{.*}} : f32) outs(%[[ALLOCDDR]] : memref<32xf32>)
-// CHECK: %[[FOR:.+]] = scf.for {{.*}} iter_args(%arg1 = %[[ALLOCDDR]]) -> (memref<32xf32>)  : i32 {
-// CHECK:       %[[ALLOC_VTCM_INP:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32, 1>
-// CHECK-NEXT:  memref.copy %arg1, %[[ALLOC_VTCM_INP]] : memref<32xf32> to memref<32xf32, 1>
-// CHECK:       linalg.generic {{.*}} ins(%[[ALLOC_VTCM_INP]] : memref<32xf32, 1>) outs(%[[ALLOC_VTCM_OUT]] : memref<32xf32, 1>) {
+// The generic's result is yielded by the enclosing scf.for (loop-carried), so
+// VTCMTiling deliberately skips staging it: staging would leave the loop's
+// init_arg in DDR and the yielded value in VTCM, which one-shot-bufferize
+// rejects. It runs on DDR buffers directly instead.
+// CHECK: %[[ALLOC:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32>
+// CHECK: %[[ALLOC0:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32>
+// CHECK: linalg.fill ins({{.*}} : f32) outs(%[[ALLOC0]] : memref<32xf32>)
+// CHECK: %[[FOR:.+]] = scf.for {{.*}} iter_args(%arg1 = %[[ALLOC0]]) -> (memref<32xf32>)  : i32 {
+// CHECK:       linalg.generic {{.*}} ins(%arg1 : memref<32xf32>) outs(%[[ALLOC]] : memref<32xf32>) {
 // CHECK:       %[[ALLOC_RES:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32>
-// CHECK-NEXT:  memref.copy %[[ALLOC_VTCM_OUT]], %[[ALLOC_RES]] : memref<32xf32, 1> to memref<32xf32>
+// CHECK-NEXT:  memref.copy %[[ALLOC]], %[[ALLOC_RES]] : memref<32xf32> to memref<32xf32>
 // CHECK-NEXT:  scf.yield %[[ALLOC_RES]] : memref<32xf32>

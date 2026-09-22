@@ -49,6 +49,8 @@ std::unique_ptr<OperationPass<func::FuncOp>> createLowerPackPass();
 
 std::unique_ptr<OperationPass<func::FuncOp>> createSplitReduceGenericPass();
 
+std::unique_ptr<OperationPass<func::FuncOp>> createVectorRowReducePass();
+
 std::unique_ptr<OperationPass<func::FuncOp>>
 createEraseVectorToTensorWritebackPass();
 

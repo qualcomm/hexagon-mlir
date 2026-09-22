@@ -11,6 +11,8 @@
 
 #include "HAP_compute_res.h"
 #include "HexagonCommon.h"
+#include <cstdint>
+#include <mutex>
 #include <vector>
 
 class VtcmPool {
@@ -35,6 +37,22 @@ public:
 
   /// Allocate memory from the VTCM manager
   void *Allocate(size_t nbytes);
+
+  /// Allocate (once) a resident buffer for `key`. On the first call the buffer
+  /// is allocated and, when `src` is non-null, filled from it; later calls with
+  /// the same key return the same address and do not copy. `src == nullptr` is
+  /// the workspace flavour: the caller has no initial contents (it refills the
+  /// buffer every launch) and only wants the storage pinned. Resident buffers
+  /// are never returned to the free list by Free, so they survive every
+  /// per-launch deallocation.
+  void *Resident(uint64_t key, size_t nbytes, const void *src);
+
+  /// True when `ptr` points at a resident allocation.
+  bool IsResident(void *ptr) const;
+
+  /// Bytes held by resident allocations (aligned sizes, so they match the
+  /// allocator's accounting).
+  size_t getResidentBytes() const;
 
   /// Free nbytes from the allocated ptr
   void Free(void *ptr, size_t nbytes);
@@ -71,6 +89,14 @@ public:
   void printState() const;
 
 private:
+  /// Serialises the free list. A kernel launch can run on several quRT threads
+  /// (`tm.exec` dispatches one program per thread) and the pool is a plain
+  /// `std::vector` of segments, so unsynchronised `Allocate`/`Free` corrupt it --
+  /// measured as a dead DSP for f32 + VTCM + multi-threading. The runtime's
+  /// thread pool already uses `std::mutex`, so the primitive is available here.
+  /// `mutable` so the const residency query can take it.
+  mutable std::mutex mutex_;
+
   /// Total size of VTCM memory on device
   unsigned int vtcmDeviceSize_;
 
@@ -85,6 +111,20 @@ private:
 
   /// List of allocations
   std::vector<std::pair<char *, size_t>> allocations_;
+
+  /// Resident allocations: keyed by the compiler-assigned key, never freed.
+  struct ResidentBlock {
+    uint64_t key;
+    char *ptr;
+    size_t bytes;
+  };
+  std::vector<ResidentBlock> resident_;
+
+  /// Locked allocator body, shared by Allocate and Resident.
+  char *allocateLocked(size_t nbytes);
+
+  /// True when `ptr` is resident; caller must hold mutex_.
+  bool isResidentLocked(char *ptr) const;
 
   /// List of free segments
   std::vector<std::pair<char *, size_t>> free_;

@@ -26,22 +26,13 @@ func.func @static_size_no_tiling(%x: memref<128x256xf32>, %y: memref<128x256xf32
  }
 }
 
+// A whole static tensor, pure parallel + identity: this is the streaming case,
+// so VTCMTiling deliberately skips it and the generic runs straight on DDR.
 // CHECK-LABEL: @static_size_no_tiling
 // CHECK-SAME: %[[X:.+]]: memref<128x256xf32>, %[[Y:.+]]: memref<128x256xf32>, %[[Z:.+]]: memref<128x256xf32>
 //
-// CHECK: %[[ALLOC1:.+]] = memref.alloc() {alignment = 64 : i64} : memref<128x256xf32, 1>
-// CHECK-NEXT: memref.copy %[[X]], %[[ALLOC1]] : memref<128x256xf32> to memref<128x256xf32, 1>
-// CHECK: %[[ALLOC2:.+]] = memref.alloc() {alignment = 64 : i64} : memref<128x256xf32, 1>
-// CHECK-NEXT: memref.copy %[[Y]], %[[ALLOC2]] : memref<128x256xf32> to memref<128x256xf32, 1>
-// CHECK: %[[ALLOC3:.+]] = memref.alloc() {alignment = 64 : i64} : memref<128x256xf32, 1>
-// CHECK-NEXT: memref.copy %[[Z]], %[[ALLOC3]] : memref<128x256xf32> to memref<128x256xf32, 1>
-// CHECK: linalg.generic {{.*}} ins(%[[ALLOC1]], %[[ALLOC2]] :  memref<128x256xf32, 1>, memref<128x256xf32, 1>) outs(%[[ALLOC3]] : memref<128x256xf32, 1>)
-// CHECK: %[[ALLOC4:.+]] = memref.alloc() {alignment = 64 : i64} : memref<128x256xf32>
-// CHECK: memref.copy %[[ALLOC3]], %[[ALLOC4]] :  memref<128x256xf32, 1> to memref<128x256xf32>
-// CHECK: memref.dealloc %[[ALLOC1]] : memref<128x256xf32, 1>
-// CHECK: memref.dealloc %[[ALLOC2]] : memref<128x256xf32, 1>
-// CHECK: memref.dealloc %[[ALLOC3]] : memref<128x256xf32, 1>
-// CHECK: memref.dealloc %[[ALLOC4]] : memref<128x256xf32>
+// CHECK-NOT: memref.alloc
+// CHECK: linalg.generic {{.*}} ins(%[[X]], %[[Y]] : memref<128x256xf32>, memref<128x256xf32>) outs(%[[Z]] : memref<128x256xf32>)
 //
 
 // -----

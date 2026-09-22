@@ -12,6 +12,8 @@
 
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
+#include "hexagon/Dialect/Hmx/IR/HmxDialect.h"
+#include "hexagon/Dialect/Hvx/IR/HvxDialect.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 
 int main(int argc, char **argv) {
@@ -21,6 +23,8 @@ int main(int argc, char **argv) {
   registry.insert<mlir::crouton::CroutonDialect>();
   registry.insert<mlir::hexagonmem::HexagonMemDialect>();
   registry.insert<mlir::hexkl::HexKLDialect>();
+  registry.insert<mlir::hmx::HmxDialect>();
+  registry.insert<mlir::hvx::HvxDialect>();
 
   return mlir::failed(mlir::MlirLspServerMain(argc, argv, registry));
 }

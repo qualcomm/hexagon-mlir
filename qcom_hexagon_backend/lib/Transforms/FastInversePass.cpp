@@ -7,9 +7,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements rewrite patterns to convert element-wise floating point
-// division operations to multiplication by a reciprocal using the Quake III
-// Arena fast inverse square root algorithm.
+// This file implements a rewrite pattern to convert element-wise floating
+// point division by a square root into multiplication by a fast inverse
+// square root using the Quake III Arena algorithm.
 //
 //===----------------------------------------------------------------------===//
 
@@ -165,81 +165,9 @@ static bool isSqrt(Value value) {
   return false;
 }
 
-// Pattern: arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)
-// that avoids a division (expensive and without HVX support),
-// by instead using one multiplication and the inexpensive Quake_rsqrt().
-// Note that we do not apply this pattern when %q is of the form sqrt(%a),
-// to avoid the anti-optimization of getting back to %a, to then circle
-// back to something related to sqrt(%a) which we already had to start with
-struct DivToQuakeAndSquaringAndMult : public OpRewritePattern<arith::DivFOp> {
-  using OpRewritePattern<arith::DivFOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(arith::DivFOp divOp,
-                                PatternRewriter &rewriter) const override {
-    Value num = divOp.getLhs();
-    Value denom = divOp.getRhs();
-    Location loc = divOp.getLoc();
-    Type resultType = divOp.getType();
-
-    // Only handle float or vector of float types.
-    if (!isF32OrF32Vector(resultType))
-      return failure();
-
-    // VECTORIZED CASE: LHS is "x / broadcast(scalarDenom)"
-    // with scalarDenom NOT of the form sqrt(a), and the rewrite will be:
-    // num / broadcast(scalarDenom) -->
-    //       num * broadcast(Quake_rsqrt(scalarDenom*scalarDenom))
-    // -----------------------------------------------------------
-    if (auto broadcastOp = denom.getDefiningOp<vector::BroadcastOp>()) {
-      Value scalarDenom = broadcastOp.getSource();
-
-      // Do NOT rewrite x / broadcast(sqrt(a)), which would otherwise lead to
-      // an anti-optimization: first getting back to 'a' by squaring it, to then
-      // circle back to something related to sqrt(a) which we already had
-      if (isSqrt(scalarDenom))
-        return failure();
-
-      Type vectorType = broadcastOp.getType();
-
-      // 1. Compute denom * denom.
-      Value denom2 =
-          arith::MulFOp::create(rewriter, loc, scalarDenom, scalarDenom);
-      // 2. Apply fast inverse square root to get 1/(denom*denom).
-      Value invScalar = buildQuakeRsqrt(rewriter, loc, denom2);
-      // 3. Broadcast the inverse to vector type.
-      Value invVec =
-          vector::BroadcastOp::create(rewriter, loc, vectorType, invScalar);
-      // 4. Multiply num with the broadcasted inverse.
-      Value mul = arith::MulFOp::create(rewriter, loc, num, invVec);
-
-      rewriter.replaceOp(divOp, mul);
-      return success();
-    }
-
-    // SCALAR CASE: LHS is "num / denom"
-    // with denom NOT of the form sqrt(a), and the rewrite will be:
-    // num / denom --> num * Quake_rsqrt(denom*denom)
-    // ----------------------------------------
-    // Do NOT rewrite x / sqrt(a), which would otherwise lead to
-    // an anti-optimization: first getting back to 'a' by squaring it, to then
-    // circle back to something related to sqrt(a) which we already had
-    if (isSqrt(denom))
-      return failure();
-
-    // 1. Compute denom * denom.
-    Value denom2 = arith::MulFOp::create(rewriter, loc, denom, denom);
-    // 2. Apply fast inverse square root to get 1/(denom*denom).
-    Value invDenom2 = buildQuakeRsqrt(rewriter, loc, denom2);
-    // 3 Multiply num with the inverse.
-    Value newMul = arith::MulFOp::create(rewriter, loc, num, invDenom2);
-    rewriter.replaceOp(divOp, newMul);
-    return success();
-  }
-};
-
 // Returns true is the given value 'v' is the fp32 value 1.0f
 // or in the case of a dense, a repetition of the value 1.0f everywhere.
-// This is a utility function for the second pattern that will follow
+// This is a utility function for the sqrt-denominator pattern below
 static bool isOneF32(Value v) {
   if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
     // Case of a single float value
@@ -280,14 +208,15 @@ Value extractValueFromSqrt(Value x) {
   return a;
 }
 
-// 2 more specialized rewrite rules that are more efficient that the general one
+// Rewrite rules for a sqrt denominator, which replace an expensive sqrt() op
+// by the inexpensive Quake_rsqrt() op and entirely remove a division
+// (expensive and without HVX support):
 // a) The "most" specialized one:
 // arith.divf one, sqrt(%a) --> Quake_rsqrt(%a)
 // b) The "more" specialized one (whose RHS contains an extra mult):
 // arith.divf %num, sqrt(%a) --> %num * Quake_rsqrt(%a)
-// They share the same 2 benefits:
-// 1. They replace an expensive sqrt() op by the inexpensive Quake_rsqrt() op,
-// 2. They entirely remove a division (expensive and without HVX support)
+// Both are value-correct: sqrt(%a) >= 0, so 1/sqrt(%a) == rsqrt(%a) up to the
+// ~5e-6 Quake approximation error, with no sign flip.
 // Performance justifications:
 // a) Knowing that Cost(Quake_rsqrt) < Cost(sqrt), the rewrite rule a)
 // is always an optimization, since it is trivially provable that
@@ -380,22 +309,20 @@ struct FastInversePass : public ::impl::FastInverseBase<FastInversePass> {
   }
   StringRef getArgument() const final { return "hexagon-fast-inverse"; }
   StringRef getDescription() const final {
-    return "Convert element-wise floating point division to multiplication by "
-           "reciprocal using the fast inverse square root algorithm, "
-           "and related optimizations.";
+    return "Convert element-wise floating point division by a square root to "
+           "multiplication by a fast inverse square root.";
   }
   void runOnOperation() override {
     auto moduleOp = getOperation();
     RewritePatternSet patterns(moduleOp.getContext());
-    // 1. More specialized rewrite rules (sqrt denominators), producing NO
-    // squaring and also NO product when the numerator is the value 1, i.e.:
+    // Rewrite rules for sqrt denominators, producing NO squaring and also NO
+    // product when the numerator is the value 1, i.e.:
     // arith.divf one, sqrt(%a) --> Quake_rsqrt(%a)
     // arith.divf x, sqrt(%a) --> x * Quake_rsqrt(%a)
+    // General f32 divisions are deliberately left alone: the old
+    // p/q --> p*rsqrt(q*q) rewrite computed 1/|q| and flipped the sign for
+    // q < 0.
     patterns.insert<DivWithSqrtDenom>(patterns.getContext());
-    // -----
-    // 2. More general rewrite rule, producing a product and the square of the
-    // denom arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)
-    patterns.insert<DivToQuakeAndSquaringAndMult>(patterns.getContext());
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       return signalPassFailure();
     }

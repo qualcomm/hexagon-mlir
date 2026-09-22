@@ -303,8 +303,10 @@ class HexagonWrapperGenerator:
 
     def generate_lwp_call(self):
         if self.enable_lwp:
+            # Same base as HexagonExecutor.device_path; /data/local/tmp is not
+            # writable on every target (e.g. a Termux app).
             return self.common_strings.call_lwp.format(
-                path="/data/local/tmp", fname="lwp"
+                path=os.getenv("HEXAGON_DEVICE_BASE", "/data/local/tmp"), fname="lwp"
             )
         return ""
 
@@ -427,13 +429,30 @@ class HexagonLauncherBase:
         input_paths = []
         output_paths = []
 
+        # P2 host pre-pack: when the compiler published a weight-residency
+        # contract, the kernel reads these arguments as crouton arrays and will
+        # not pack them itself, so the bytes written here must already be in
+        # crouton order. `WeightPrepack` is keyed by slot and cached by content.
+        prepack = getattr(wrapper, "weight_prepack", None)
+
         for inp in wrapper.input_profs:
             if inp.input_type == "tensor":
                 i = inp.idx
                 data = inp.value
                 input_path = os.path.join(directory, f"{file_name}_t{i}.raw")
+                payload = None
+                if prepack is not None and prepack.has_slot(i):
+                    payload = prepack.pack(data, i)
+                    if payload is None:
+                        print(
+                            f"==> warning: weight slot {i} does not match its "
+                            f"prepack contract; writing row-major bytes while "
+                            f"the kernel expects a crouton image"
+                        )
+                if payload is None:
+                    payload = data.numpy().tobytes()
                 with open(input_path, "wb") as file:
-                    file.write(data.numpy().tobytes())
+                    file.write(payload)
                 input_paths.append(input_path)
 
         # The output path count is provided by the frontend. There are

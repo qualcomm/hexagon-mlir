@@ -45,3 +45,13 @@ __pycache__/
 
 # triton-install dir
 triton-install
+
+# Vendored sources fetched/extracted by tools/hexmlir/fetch_triton.sh
+# (deliberately inside this repo, but not ours to track)
+/triton/
+/triton_shared/
+/triton.tar.gz
+/triton_shared.tar.gz
+
+# In-tree logs: measured artifacts live in the workspace logs/ dir instead
+/qcom_hexagon_backend/logs/

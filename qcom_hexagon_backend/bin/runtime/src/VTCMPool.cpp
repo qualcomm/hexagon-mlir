@@ -18,9 +18,35 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <vector>
+
+//===----------------------------------------------------------------------===//
+// Runtime diagnostics gate
+//
+// The device runtime bitcode is compiled at -O2 *without* -DNDEBUG (see
+// HEXAGON_FLAGS in bin/runtime/CMakeLists.txt), so every `#ifndef NDEBUG` block
+// and `assert` in this file is live in production. Two of them sit on the
+// per-launch path:
+//   * validateInvariants() is an O(allocations^2) overlap scan after every
+//     Allocate and Free;
+//   * the fmtKB()/fmtPct() arguments of the alloc/free log lines are evaluated
+//     eagerly (they run snprintf) even though VTCM_DEBUG defaults to 0.
+//
+// Gate those diagnostics behind an explicit opt-in: a debug build defines
+// HEXMLIR_RUNTIME_DEBUG (e.g. -DHEXMLIR_RUNTIME_DEBUG) and keeps every check and
+// log; the release device build does not, so the work is compiled out. This
+// changes no allocator behavior -- the real guards (the CHECK()s over an
+// unallocated / wrong-size / already-free pointer, and the free-list overlap
+// tests in coalesceAndAddToFreeList) run unconditionally.
+//===----------------------------------------------------------------------===//
+#ifdef HEXMLIR_RUNTIME_DEBUG
+#define HEXMLIR_RT_DIAG 1
+#else
+#define HEXMLIR_RT_DIAG 0
+#endif
 
 namespace {
 // Constants
@@ -280,13 +306,70 @@ VtcmPool::~VtcmPool() {
 }
 
 void *VtcmPool::Allocate(size_t nbytes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return allocateLocked(nbytes);
+}
+
+void *VtcmPool::Resident(uint64_t key, size_t nbytes, const void *src) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Reuse: the same key maps to the same buffer for the life of the pool, so
+  // every launch after the first is a map lookup, not an allocation or a copy.
+  for (const ResidentBlock &block : resident_)
+    if (block.key == key && block.bytes >= alignSize(nbytes))
+      return block.ptr;
+
+  if (nbytes == 0)
+    return nullptr;
+
+  char *ptr = allocateLocked(nbytes);
+  if (ptr == nullptr)
+    return nullptr;
+
+  // Two residency flavours share this entry. A weight passes its compile-time
+  // image in `src`, so the one DRAM->VTCM copy happens here on the first call.
+  // A workspace passes `src == nullptr`: it owns no initial contents (the
+  // kernel refills it on every launch), so residency only pins the storage.
+  if (src != nullptr)
+    std::memcpy(ptr, src, nbytes);
+  resident_.push_back(ResidentBlock{key, ptr, alignSize(nbytes)});
+
+  vtcmDebugLog(1, "[VTCM] Resident: ", fmtKB(nbytes), " @ 0x", std::hex,
+               ptr - static_cast<char *>(vtcmAllocatedPtr_), std::dec,
+               " | resident=", fmtKB(getResidentBytes()));
+  return ptr;
+}
+
+bool VtcmPool::isResidentLocked(char *ptr) const {
+  for (const ResidentBlock &block : resident_)
+    if (block.ptr == ptr)
+      return true;
+  return false;
+}
+
+bool VtcmPool::IsResident(void *ptr) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return isResidentLocked(static_cast<char *>(ptr));
+}
+
+size_t VtcmPool::getResidentBytes() const {
+  size_t total = 0;
+  for (const ResidentBlock &block : resident_)
+    total += block.bytes;
+  return total;
+}
+
+char *VtcmPool::allocateLocked(size_t nbytes) {
   // Edge case: zero-size allocation
   if (nbytes == 0) {
     vtcmDebugLog(1, "[VTCM] WARNING: Zero-size allocation requested");
     return nullptr;
   }
 
+#if HEXMLIR_RT_DIAG
+  // Only the debug log below needs the pre-alignment size.
   size_t original_nbytes = nbytes;
+#endif
   nbytes = alignSize(nbytes);
 
   // Edge case: allocation larger than total pool
@@ -297,19 +380,23 @@ void *VtcmPool::Allocate(size_t nbytes) {
     return nullptr;
   }
 
+#if HEXMLIR_RT_DIAG
   vtcmDebugLog(2, "[VTCM] Alloc request: ", fmtKB(original_nbytes),
                " → aligned: ", fmtKB(nbytes));
+#endif
 
   char *ptr = nullptr;
 
   // Small allocation: try END of last free block
   if (nbytes < kLargeThreshold) {
     ptr = tryAllocateFromEnd(nbytes);
+#if HEXMLIR_RT_DIAG
     if (ptr != nullptr) {
       vtcmDebugLog(2, "[VTCM]   Allocated from end of last block");
     } else {
       vtcmDebugLog(2, "[VTCM]   End allocation failed, using best-fit");
     }
+#endif
   }
 
   // Large allocation OR small allocation fallback: use best-fit
@@ -322,9 +409,9 @@ void *VtcmPool::Allocate(size_t nbytes) {
     return nullptr;
   }
 
+#if HEXMLIR_RT_DIAG
   logAllocationSuccess(ptr, nbytes);
 
-#ifndef NDEBUG
   validateInvariants();
 #endif
 
@@ -404,6 +491,8 @@ void VtcmPool::logAllocationSuccess(char *ptr, size_t nbytes) {
 }
 
 void VtcmPool::Free(void *ptr, size_t nbytes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
   // Edge case: null pointer
   if (ptr == nullptr) {
     vtcmDebugLog(1, "[VTCM] WARNING: Attempted to free null pointer");
@@ -416,11 +505,26 @@ void VtcmPool::Free(void *ptr, size_t nbytes) {
     return;
   }
 
+#if HEXMLIR_RT_DIAG
+  // Only the debug log below needs the pre-alignment size.
   size_t original_nbytes = nbytes;
+#endif
   nbytes = alignSize(nbytes);
 
+  // A resident buffer is not part of the per-launch lifetime: the kernel's
+  // deallocation reaches here every launch, so swallowing it is what keeps the
+  // weight pinned. Everything else frees as before.
+  if (isResidentLocked(static_cast<char *>(ptr))) {
+#if HEXMLIR_RT_DIAG
+    vtcmDebugLog(1, "[VTCM] Free: keeping resident ", fmtKB(original_nbytes));
+#endif
+    return;
+  }
+
+#if HEXMLIR_RT_DIAG
   vtcmDebugLog(2, "[VTCM] Free request: ", fmtKB(original_nbytes),
                " → aligned: ", fmtKB(nbytes));
+#endif
 
   // Validate and remove from allocations
   char *ptrToFree = static_cast<char *>(ptr);
@@ -434,13 +538,15 @@ void VtcmPool::Free(void *ptr, size_t nbytes) {
 
   allocations_.erase(it);
 
-  // Coalesce and add to free list
+  // Coalesce and add to free list. The return (number of blocks merged) is only
+  // read by the debug log below.
   size_t numCoalesced = coalesceAndAddToFreeList(ptrToFree, nbytes);
+  (void)numCoalesced;
 
   // Log the free operation
+#if HEXMLIR_RT_DIAG
   logFreeSuccess(ptrToFree, nbytes, numCoalesced);
 
-#ifndef NDEBUG
   validateInvariants();
 #endif
 }
@@ -546,7 +652,7 @@ void VtcmPool::printState() const {
 
 // Validation methods (debug builds only)
 void VtcmPool::validateInvariants() const {
-#ifndef NDEBUG
+#if HEXMLIR_RT_DIAG
   // Check that allocations don't overlap
   for (auto it1 = allocations_.begin(); it1 != allocations_.end(); ++it1) {
     for (auto it2 = std::next(it1); it2 != allocations_.end(); ++it2) {

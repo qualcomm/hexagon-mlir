@@ -26,16 +26,23 @@
 #include "hexagon/Conversion/AffineToLLVM/Passes.h"
 #include "hexagon/Conversion/DMAToLLVM/Passes.h"
 #include "hexagon/Conversion/HexKLToLLVM/Passes.h"
+#include "hexagon/Conversion/HmxToLLVM/Passes.h"
+#include "hexagon/Conversion/HvxToLLVM/Passes.h"
 #include "hexagon/Conversion/HexagonMemToLLVM/Passes.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexKL/Transforms/BufferizableOpInterfaceImpl.h"
+#include "hexagon/Dialect/Hmx/IR/HmxDialect.h"
+#include "hexagon/Dialect/Hmx/Transforms/BufferizableOpInterfaceImpl.h"
+#include "hexagon/Dialect/Hvx/IR/HvxDialect.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 #include "hexagon/Dialect/HexagonTPtr/IR/HexagonTPtrDialect.h"
 #include "hexagon/Dialect/TTX/IR/TTXDialect.h"
 #include "hexagon/Dialect/TmTensor/IR/TmTensorDialect.h"
 #include "hexagon/Transforms/Passes.h"
+#include "hexagon/Dialect/Hmx/Transforms/Passes.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllExtensions.h"
 #include "mlir/InitAllPasses.h"
@@ -53,6 +60,8 @@ int main(int argc, char **argv) {
   registry.insert<mlir::tptr::HexagonTPtrDialect>();
   registry.insert<mlir::hexagonmem::HexagonMemDialect>();
   registry.insert<mlir::hexkl::HexKLDialect>();
+  registry.insert<mlir::hmx::HmxDialect>();
+  registry.insert<mlir::hvx::HvxDialect>();
 
   mlir::hexagonmem::registerConvertHexagonMemToLLVMInterface(registry);
 
@@ -75,6 +84,8 @@ int main(int argc, char **argv) {
   mlir::hexagon::registerHexagonSlicingPass();
   mlir::hexagon::registerHexagonTilingPass();
   mlir::hexagon::registerLinalgToLLVMPass();
+  mlir::hexagon::registerVectorRowReducePass();
+  mlir::hvx::registerHvxToLLVMPass();
   mlir::hexagon::registerHexagonVectorLoweringPass();
   mlir::hexagon::registerHexagonVectorizationPass();
   mlir::hexagon::registerRewriteUBPoisonToZeroPass();
@@ -84,6 +95,10 @@ int main(int argc, char **argv) {
   mlir::hexagon::registerDecomposeTensorConcatPass();
   mlir::hexagon::registerMatmulToConvPass();
   mlir::hexagon::registerMatmulToHexKLPass();
+  mlir::hmx::registerMatmulToHmxPass();
+  mlir::hmx::registerHmxPartitionPass();
+  mlir::hmx::registerWeightResidentPass();
+  mlir::hmx::registerHmxWorkspaceResidentPass();
   mlir::hexagon::registerDecomposeHexKLMatmulPass();
   mlir::hexagon::registerConvTilingPass();
   mlir::hexagon::registerDMAToLLVMPass();
@@ -92,6 +107,7 @@ int main(int argc, char **argv) {
   mlir::hexagon::registerHexagonLLVMEnableHexagonRoutines();
   mlir::hexagonmem::registerHexagonMemToLLVMPass();
   mlir::hexkl::registerHexKLToLLVMPass();
+  mlir::hmx::registerHmxToLLVMPass();
   mlir::hexagon::registerExpandBoolVecPass();
   mlir::hexagon::registerLowerConstantsSeparatelyPass();
   mlir::hexagon::registerHexmemCpyToDMA();
@@ -132,6 +148,11 @@ int main(int argc, char **argv) {
 
   // Register all external models.
   mlir::hexkl::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::hmx::registerBufferizableOpInterfaceExternalModels(registry);
+  // hmx.matmul's f32 result is the fp16 read-out widened at the tensor level,
+  // so the arith tensor ops have to be bufferizable here (the HexKL macro path
+  // does the same thing, but it is off by default and never exercised).
+  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Linalg To Hexagon LLVM compiler driver\n", registry));

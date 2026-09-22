@@ -7,7 +7,7 @@
 #
 # ===------------------------------------------------------------------------===
 
-import functools
+import hashlib
 import os
 import re
 import tempfile
@@ -20,6 +20,10 @@ from types import ModuleType
 from triton._C.libtriton import ir, passes, qcom_hexagon_backend  # type: ignore
 from triton.backends.compiler import BaseBackend, GPUTarget
 from triton.backends.qcom_hexagon_backend.utils import parse_return_types
+from triton.backends.qcom_hexagon_backend.utils import (
+    PACK_METADATA_DEFAULTS,
+    PACK_METADATA_REQUIRED,
+)
 
 # Temporary measure to compile .so for HTP without calling the Triton driver
 from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
@@ -114,9 +118,13 @@ def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
     # TODO: The lowering pipeline needs to be refactored similar to other Triton backends to
     # have a dynamic pipeline filtered by options with each pass represented by a pybind function.
     # See make_ttgir() in nvidia backend as an example.
-    mods_llvmir_bytes = qcom_hexagon_backend.translate_linalg_to_obj(
-        mlir_mod, options_map
+    # `with_meta=True` also returns the host pre-pack contract for runtime
+    # weights (P2). It is a JSON string, passed to the launcher through the
+    # kernel metadata so the generated wrapper can pre-pack those arguments.
+    mods_llvmir_bytes, weight_prepack = qcom_hexagon_backend.translate_linalg_to_obj(
+        mlir_mod, options_map, True
     )
+    metadata["weight_prepack"] = weight_prepack
     # Note: translate_linalg_to_obj() now returns a collection of object codes in general,
     # which in the case of the triton flow will only contain one element (i.e. one object code)
     # since there is no separation of constants for the triton flow.
@@ -144,18 +152,28 @@ class HexagonBackend(BaseBackend):
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
         self.version_key = None
+        # Effective backend options, set by parse_options() and consumed by
+        # hash(). Held at the dataclass defaults until the first parse (the
+        # autotuner hashes a freshly constructed backend that never parses).
+        self._parsed_options = HexagonOptions()
 
     @no_type_check  # Forced to ignore typing since base class uses deprecated annotation
     @staticmethod
     def supports_target(target: GPUTarget):
         return target.backend == "hexagon"
 
-    # TODO: set version to hexagon version
-    #       compute_core_version_key() seems to deprecated, need new approach
-    @functools.lru_cache()
-    def hash(self):
-        version = "TODO"
-        return f"{version}-{self.target}"
+    def hash(self) -> str:
+        """Backend identity for triton's kernel cache key (triton/runtime/cache.py).
+
+        Covers the target plus every effective backend option, so changing an
+        option re-keys the cache instead of reusing a kernel compiled under the
+        old one. The compiled backend library itself is deliberately not part
+        of this hash; tools/hexmlir/env.sh partitions TRITON_CACHE_DIR on the
+        libtriton.so identity for that.
+        """
+        return hashlib.sha256(
+            f"{self.target}-{self._parsed_options.hash()}".encode("utf-8")
+        ).hexdigest()
 
     def parse_options(self, opts) -> Any:
         assert self.target.backend == "hexagon"
@@ -182,6 +200,7 @@ class HexagonBackend(BaseBackend):
                 enableThreadedDispatch=True,
             )
 
+        self._parsed_options = hexagon_opts
         return hexagon_opts
 
     @staticmethod
@@ -189,7 +208,6 @@ class HexagonBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
-        passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm, False)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
@@ -268,23 +286,29 @@ class HexagonBackend(BaseBackend):
         return codegen_fns
 
     def pack_metadata(self, metadata):
-        # Putting these in so we're
-        # consistent with other backends
-        return (
-            metadata.num_warps,
-            metadata.num_ctas,
-            metadata.shared,
-            metadata.cluster_dims[0],
-            metadata.cluster_dims[1],
-            metadata.cluster_dims[2],
-            metadata.name,
-            metadata.return_types,
-            metadata.iterations,
-            metadata.scratch,
-            metadata.enableMultiThreading,
-            metadata.enableThreadedDispatch,
-            metadata.enableLWP,
+        """Turn the compilation metadata into the dict the launcher reads.
+
+        Field names live in backend/utils.py (PACK_METADATA_*): this object is
+        handed to the launcher as one opaque argument and read back there by
+        name, so the contract is the key set, not a positional order. A stale
+        cached JSON (written before a field existed) raises here with the field
+        names instead of silently shifting every index downstream.
+        """
+        packed_fields = sorted(
+            getattr(metadata, "_fields", [k for k in dir(metadata) if not k.startswith("_")])
         )
+        missing = [k for k in PACK_METADATA_REQUIRED if not hasattr(metadata, k)]
+        if missing:
+            raise RuntimeError(
+                f"compiled kernel metadata is missing {missing} (has {packed_fields}); "
+                "this cached artifact was written by an older backend - clear "
+                "TRITON_CACHE_DIR (tools/hexmlir/env.sh)"
+            )
+        packed = {k: getattr(metadata, k) for k in PACK_METADATA_REQUIRED}
+        # Optional fields: the cached JSON may predate them, hence the default.
+        for key, default in PACK_METADATA_DEFAULTS.items():
+            packed[key] = getattr(metadata, key, default)
+        return packed
 
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.backends.qcom_hexagon_backend.hexagon_extern.hexagon import (

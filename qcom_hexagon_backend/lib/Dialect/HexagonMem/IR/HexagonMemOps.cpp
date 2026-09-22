@@ -46,8 +46,17 @@ LogicalResult AllocOp::verify() {
           "Dynamic shapes are not supported for crouton allocations");
 
   } else if (auto memRefType = mlir::dyn_cast<MemRefType>(type)) {
-    if (static_cast<int64_t>(getDynamicSizes().size()) !=
-        memRefType.getNumDynamicDims())
+    // A resident-weight allocation is static but carries its source address as
+    // one extra operand: the runtime needs that address as the residency key,
+    // and unlike a dynamic size it does not participate in the shape (the
+    // lowering builds the descriptor from the static type). This is the only
+    // op form that may name a dynamic-arity operand it does not consume.
+    int64_t expectedDims = memRefType.getNumDynamicDims();
+    if (auto resident =
+            (*this)->getAttrOfType<DictionaryAttr>("hmx.weight_resident"))
+      if (resident.get("address"))
+        expectedDims += 1;
+    if (static_cast<int64_t>(getDynamicSizes().size()) != expectedDims)
       return emitOpError("dimension operand count does not equal memref "
                          "dynamic dimension count");
   }

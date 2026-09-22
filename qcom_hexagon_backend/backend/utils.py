@@ -246,3 +246,59 @@ def get_exec_mode():
             "Invalid value for RUN_ON_SIM. Set RUN_ON_SIM to 1 "
             "to run the kernel on the simulator and 0 to run it on the device."
         )
+
+
+# ---------------------------------------------------------------------------
+# Compiled-kernel metadata contract (backend/compiler.py -> backend/driver.py)
+# ---------------------------------------------------------------------------
+# Triton core treats this object as opaque: CompiledKernel stores
+# backend.pack_metadata(...) as kernel.packed_metadata and passes it to run() as
+# one positional argument (triton/python/triton/compiler/compiler.py), where
+# this backend reads it back as args[5]. Nothing outside this backend indexes
+# it, so it is a dict of field names rather than a positional tuple: with a
+# tuple, appending a field shifted every consumer index silently, and the old
+# `len(x) > i` guards turned "this cached artifact predates field X" into
+# "treat it as off" instead of an error.
+PACK_METADATA_REQUIRED = (
+    "num_warps",
+    "num_ctas",
+    "shared",
+    "cluster_dims",
+    "name",
+    "return_types",
+    "iterations",
+    "scratch",
+    "enableMultiThreading",
+    "enableThreadedDispatch",
+    "enableLWP",
+)
+
+# A cached artifact may legitimately lack these (weight_prepack is written by a
+# later compilation stage), so the producer fills in the default and consumers
+# always see the key.
+PACK_METADATA_DEFAULTS = {"weight_prepack": ""}
+
+
+def require_pack_metadata(packed):
+    """Validate the packed metadata dict and return it.
+
+    Fails with an actionable message instead of letting a missing field turn
+    into a silent "feature off" (the old positional guards) or a bare
+    AttributeError out of a stale cached JSON.
+    """
+    if not isinstance(packed, dict):
+        raise RuntimeError(
+            "compiled kernel metadata must be a dict of field names, got "
+            f"{type(packed).__name__}; the kernel was built by a different "
+            "backend version - clear TRITON_CACHE_DIR (tools/hexmlir/env.sh)"
+        )
+    missing = [
+        k for k in (*PACK_METADATA_REQUIRED, *PACK_METADATA_DEFAULTS) if k not in packed
+    ]
+    if missing:
+        raise RuntimeError(
+            f"compiled kernel metadata is missing {missing} (has {sorted(packed)}); "
+            "this artifact was written by an older backend - clear "
+            "TRITON_CACHE_DIR (tools/hexmlir/env.sh)"
+        )
+    return packed
