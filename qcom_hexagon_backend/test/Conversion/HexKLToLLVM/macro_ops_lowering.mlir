@@ -43,7 +43,7 @@ func.func @macro_rm_to_ah(%buf: memref<32x64xf16>) {
   %ptr_i64 = arith.index_cast %ptr_idx : index to i64
   %ptr = llvm.inttoptr %ptr_i64 : i64 to !llvm.ptr
   // CHECK-LABEL: func.func @macro_rm_to_ah
-  // CHECK: llvm.call @hexkl_macro_rm_to_ah_f16_inplace({{.*}}) : (i32, i32, !llvm.ptr) -> i32
+  // CHECK: llvm.call @hexkl_macro_f16_rm_to_f16_ah_inplace({{.*}}) : (i32, i32, !llvm.ptr) -> i32
   hexkl.macro_rm_to_ah_f16_inplace(%m, %k, %ptr) : i32, i32, !llvm.ptr
   return
 }
@@ -56,7 +56,7 @@ func.func @macro_ah_to_rm(%buf: memref<32x128xf16>) {
   %ptr_i64 = arith.index_cast %ptr_idx : index to i64
   %ptr = llvm.inttoptr %ptr_i64 : i64 to !llvm.ptr
   // CHECK-LABEL: func.func @macro_ah_to_rm
-  // CHECK: llvm.call @hexkl_macro_ah_to_rm_f16_inplace({{.*}}) : (i32, i32, !llvm.ptr) -> i32
+  // CHECK: llvm.call @hexkl_macro_f16_ah_to_f16_rm_inplace({{.*}}) : (i32, i32, !llvm.ptr) -> i32
   hexkl.macro_ah_to_rm_f16_inplace(%m, %n, %ptr) : i32, i32, !llvm.ptr
   return
 }
