@@ -1,3 +1,12 @@
+//===- macro_ops_lowering.mlir --------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -hexkl-to-llvm | FileCheck %s
 
 // This test checks that each HexKL macro op lowers to an LLVM call with the

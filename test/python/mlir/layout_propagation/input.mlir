@@ -1,3 +1,12 @@
+//===- input.mlir ---------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // The unpack_then_reduce function is an adaptation of the function in the
 // qcom_hexagon_backend/test/Transforms/LayoutPropagation/reduce_generics.mlir
 // lit test, and the function reduce_then_unpack is the output of running

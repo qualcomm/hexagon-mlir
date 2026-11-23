@@ -215,13 +215,67 @@ struct LowerToMemRef : public OpRewritePattern<tptr::HexagonToMemrefOp> {
   }
 };
 
+// Lower `tptr.inttoptr %int -> !ptr.ptr` to an index materialization of the
+// pointer. Mirror-image of the ptr->int prologue in LowerToMemRef: cast the
+// integer to `index`, then `unrealized_conversion_cast` index -> !ptr.ptr.
+// The result feeds `ptr.from_ptr` (lowered by LowerCorePtr, scheduled right
+// after this pass), whose first step casts !ptr.ptr back to index; the two
+// inverse casts fold away in reconcile-unrealized-casts/canonicalize.
+struct LowerInttoPtr : public OpRewritePattern<tptr::HexagonIntToPtrOp> {
+  LowerInttoPtr(MLIRContext *context)
+      : OpRewritePattern<tptr::HexagonIntToPtrOp>(context) {}
+
+  LogicalResult matchAndRewrite(tptr::HexagonIntToPtrOp op,
+                                PatternRewriter &rewriter) const final {
+    auto loc = op.getLoc();
+    Value asIdx = op.getOffset();
+    if (!asIdx.getType().isIndex()) {
+      asIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(),
+                                         asIdx)
+                  .getResult();
+    }
+    auto cast =
+        UnrealizedConversionCastOp::create(rewriter, loc, op.getType(), asIdx);
+    rewriter.replaceAllUsesWith(op.getResult(), cast.getResult(0));
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// Lower `tptr.ptrtoint %ptr -> !int` to an integer materialization of the
+// pointer. Same prologue as LowerToMemRef (lines above): cast !ptr.ptr to
+// `index`, then `index_cast` to the requested integer width. If the result is
+// already index-typed, the index_cast is skipped.
+struct LowerPtrToInt : public OpRewritePattern<tptr::HexagonPtrToIntOp> {
+  LowerPtrToInt(MLIRContext *context)
+      : OpRewritePattern<tptr::HexagonPtrToIntOp>(context) {}
+
+  LogicalResult matchAndRewrite(tptr::HexagonPtrToIntOp op,
+                                PatternRewriter &rewriter) const final {
+    auto loc = op.getLoc();
+    Value ptrAsIdx =
+        UnrealizedConversionCastOp::create(
+            rewriter, loc, IndexType::get(op.getContext()), op.getPtr())
+            .getResult(0);
+    Value result = ptrAsIdx;
+    if (!op.getType().isIndex()) {
+      result = arith::IndexCastOp::create(rewriter, loc, op.getType(), ptrAsIdx)
+                   .getResult();
+    }
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 void LowerTPtrPass::runOnOperation() {
   auto &dla = getAnalysis<DataLayoutAnalysis>();
   MLIRContext *context = &getContext();
 
   RewritePatternSet patterns(context);
   patterns.add<LowerTypeOffset>(context, dla);
-  patterns.add<LowerFromMemref, LowerTPtrAdd, LowerToMemRef>(context);
+  patterns.add<LowerFromMemref, LowerTPtrAdd, LowerToMemRef, LowerInttoPtr,
+               LowerPtrToInt>(context);
 
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
     signalPassFailure();

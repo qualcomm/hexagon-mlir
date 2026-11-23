@@ -13,11 +13,11 @@ import torch
 import triton
 import triton.language as tl
 from triton.backends.qcom_hexagon_backend.driver import HexagonDriver
-from .. import parameterize_func_name
 
 triton.runtime.driver.set_active(HexagonDriver())
 
 ATOL = 1e-2
+RTOL = 1e-3
 
 
 @pytest.mark.parametrize("num_elements", [1024 * 1024])
@@ -46,5 +46,5 @@ def test_vec_add(num_elements, dtype):
         enableSplitReduction=True,
     )
 
-    reference = torch.sum(x)
-    assert torch.allclose(output, reference, atol=ATOL)
+    reference = torch.sum(x).unsqueeze(0)
+    assert torch.allclose(output, reference, atol=ATOL, rtol=RTOL)

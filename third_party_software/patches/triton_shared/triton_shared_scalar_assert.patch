@@ -1,0 +1,34 @@
+--- a/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp
++++ b/include/triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp
+@@ -743,6 +743,31 @@
+       // handle tensor case
+       int64_t rank = tensorType.getRank();
+ 
++      // A scalar or singleton tensor assertion does not need a
++      // linalg.generic. In particular, creating a zero-iterator generic here
++      // is unsafe: masked loads in the condition can contain scf.if, and the
++      // later SCF-to-control-flow conversion then splits the generic body
++      // into multiple blocks. linalg.generic requires its body to have at
++      // most one block, so keep scalar-like assertions as scalar cf.asserts.
++      bool scalarLike = rank == 0;
++      if (!scalarLike && tensorType.hasStaticShape()) {
++        scalarLike = true;
++        for (int64_t dim : tensorType.getShape())
++          scalarLike &= dim == 1;
++      }
++      if (scalarLike) {
++        SmallVector<Value> coords;
++        for (int64_t i = 0; i < rank; ++i)
++          coords.push_back(arith::ConstantIndexOp::create(rewriter,
++                                                           op.getLoc(), 0));
++        Value scalarCond = tensor::ExtractOp::create(
++            rewriter, op.getLoc(), condVal, coords);
++        cf::AssertOp::create(rewriter, op.getLoc(), scalarCond,
++                             assertMessage.str());
++        rewriter.eraseOp(op);
++        return success();
++      }
++
+       // create identity mapping for access pattern
+       SmallVector<AffineMap, 3> indexingMaps{
+           AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())};

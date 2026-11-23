@@ -8,10 +8,11 @@
 # ===------------------------------------------------------------------------===
 """Tests for the static VTCM allocator (MemoryOffsetsPass + InsertScratchArgPass).
 
-Exercises external VTCM scratch across grid sizes [1, 2, 4] with and without
-scratch enabled. When scratch > 0 the compiler auto-configures
-enableThreadedDispatch, disables enableConvertToHexagonmem, etc. via
-parse_options().
+Exercises external VTCM scratch across grid sizes [1, 2, 4, 8] with and without
+scratch enabled. Grid size 8 tests oversubscription (prod(grid) > num_threads),
+where each thread loops over multiple grid points. When scratch > 0 the compiler
+auto-configures enableThreadedDispatch, disables enableConvertToHexagonmem, etc.
+via parse_options().
 """
 
 import pytest
@@ -38,7 +39,9 @@ def add_kernel(x_ptr, y_ptr, output_ptr, n_elements, block_size: tl.constexpr):
 @pytest.mark.parametrize(
     "use_scratch", [False, True], ids=["no-scratch", "vtcm-scratch"]
 )
-@pytest.mark.parametrize("grid", [(1,), (2,), (4,)], ids=["grid1", "grid2", "grid4"])
+@pytest.mark.parametrize(
+    "grid", [(1,), (2,), (4,), (8,)], ids=["grid1", "grid2", "grid4", "grid8"]
+)
 def test_static_allocator_vadd(grid, use_scratch):
     N = 131072
     x = torch.rand(N)

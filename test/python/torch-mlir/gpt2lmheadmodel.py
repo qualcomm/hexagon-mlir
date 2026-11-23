@@ -142,16 +142,17 @@ def process_lwp():
 
 
 def gpt2lmheadmodel(enablelwp=False):
+    CACHE_DIR = os.environ.get("MLIR_CACHE_DIR", "/tmp/mlir-cache-dir")
 
     model_name = "openai-community/gpt2"
     prompt = "What is nature of our existence?"
-    tokenizer = GPT2Tokenizer.from_pretrained(model_name)
+    tokenizer = GPT2Tokenizer.from_pretrained(model_name, cache_dir=CACHE_DIR)
 
-    config = GPT2Config.from_pretrained(model_name)
+    config = GPT2Config.from_pretrained(model_name, cache_dir=CACHE_DIR)
     config.n_layer = 2  # layer == 1 isn't practical for checking accuracy
 
     model = GPT2LMHeadModel.from_pretrained(
-        model_name, config=config, torch_dtype=torch.float16
+        model_name, config=config, torch_dtype=torch.float16, cache_dir=CACHE_DIR
     )
     func_name = model.__class__.__name__
 

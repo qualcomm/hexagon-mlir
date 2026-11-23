@@ -1,3 +1,12 @@
+//===- pack_and_wrap_fp16.mlir --------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(seed-layout-conversions))' | FileCheck %s
 // CHECK: func.func @main(%[[ARG0:.+]]: tensor<1x15x7x59xf16>, %[[ARG1:.+]]: tensor<59x1x1x59xf16>, %[[ARG2:.+]]: tensor<64x3x3x59xf16>, %[[ARG3:.+]]: tensor<1x7x3x64xf16>) -> tensor<1x7x3x64xf16> {
 // CHECK: %[[CST0:.+]] = arith.constant 0.000000e+00 : f16

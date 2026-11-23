@@ -84,6 +84,8 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
       if (secondOperandDef && isa<linalg::TransposeOp>(secondOperandDef)) {
         // Check if the second operand is a transpose op
         // Convert linalg.transpose + linalg.matmul to linalg.matmul_transpose_b
+        // Only erase the transpose if it has no remaining uses after the
+        // matmul is replaced; multi-use transposes are left in place.
         auto transposeOp = dyn_cast<linalg::TransposeOp>(secondOperandDef);
         auto matmulTransposeBOp = linalg::MatmulTransposeBOp::create(
             rewriter, linalgOp.getLoc(),
@@ -91,10 +93,12 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
             ValueRange{linalgOp.getDpsInputs()[0], transposeOp.getOperand(0)},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeBOp);
-        rewriter.eraseOp(transposeOp);
+        if (transposeOp->use_empty())
+          rewriter.eraseOp(transposeOp);
       } else if (firstOperandDef && isa<linalg::TransposeOp>(firstOperandDef)) {
         // Check if the first operand is a transpose op
         // Convert linalg.transpose + linalg.matmul to linalg.matmul_transpose_a
+        // Only erase the transpose if it has no remaining uses (see above).
         auto transposeOp = dyn_cast<linalg::TransposeOp>(firstOperandDef);
         auto matmulTransposeAOp = linalg::MatmulTransposeAOp::create(
             rewriter, linalgOp.getLoc(),
@@ -102,7 +106,8 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
             ValueRange{transposeOp.getOperand(0), linalgOp.getDpsInputs()[1]},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeAOp);
-        rewriter.eraseOp(transposeOp);
+        if (transposeOp->use_empty())
+          rewriter.eraseOp(transposeOp);
       }
     } else if (isa_and_nonnull<linalg::BatchMatmulOp>(
                    linalgOp.getOperation()) &&
@@ -121,7 +126,8 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
             ValueRange{linalgOp.getDpsInputs()[0], transposeOp.getOperand(0)},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeBOp);
-        rewriter.eraseOp(transposeOp);
+        if (transposeOp->use_empty())
+          rewriter.eraseOp(transposeOp);
       } else if (firstOperandDef && isa<linalg::TransposeOp>(firstOperandDef)) {
         // Check if the first operand is a transpose op
         // Convert linalg.transpose + linalg.batch_matmul to
@@ -133,7 +139,8 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
             ValueRange{transposeOp.getOperand(0), linalgOp.getDpsInputs()[1]},
             linalgOp.getDpsInits());
         rewriter.replaceOp(linalgOp, matmulTransposeAOp);
-        rewriter.eraseOp(transposeOp);
+        if (transposeOp->use_empty())
+          rewriter.eraseOp(transposeOp);
       }
     }
   });
@@ -148,13 +155,13 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
     }
   });
   for (auto linalgOp : batchMatmulOps) {
-    FailureOr<linalg::GenericOp> generalizedOp =
-        GeneralizeOp(rewriter, linalgOp);
     auto permutation = getBatchMatmulPermutation(linalgOp);
     if (permutation.empty()) {
       linalgOp->emitOpError("failed to determine batch matmul permutation");
       return signalPassFailure();
     }
+    FailureOr<linalg::GenericOp> generalizedOp =
+        GeneralizeOp(rewriter, linalgOp);
     rewriter.setInsertionPoint(*generalizedOp);
     // Apply the interchange transformation
     FailureOr<linalg::GenericOp> interchangedOp =
@@ -175,13 +182,13 @@ void ScheduleMatmulForHVXPass::runOnOperation() {
     }
   });
   for (auto linalgOp : matmulOps) {
-    FailureOr<linalg::GenericOp> generalizedOp =
-        GeneralizeOp(rewriter, linalgOp);
     auto permutation = getMatmulPermutation(linalgOp);
     if (permutation.empty()) {
       linalgOp->emitOpError("failed to determine matmul permutation");
       return signalPassFailure();
     }
+    FailureOr<linalg::GenericOp> generalizedOp =
+        GeneralizeOp(rewriter, linalgOp);
     rewriter.setInsertionPoint(*generalizedOp);
     // Apply the interchange transformation
     FailureOr<linalg::GenericOp> interchangedOp =

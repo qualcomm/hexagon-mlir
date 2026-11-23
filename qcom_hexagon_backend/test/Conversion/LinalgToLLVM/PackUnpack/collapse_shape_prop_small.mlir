@@ -1,3 +1,12 @@
+//===- collapse_shape_prop_small.mlir -------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(extend-pack-frontier{parallels-only=false}))' | FileCheck %s
 // This file tests propagation of collapse_shape ops across generics with:
 // multiple outputs, reduction iterators (along different dimensions) and

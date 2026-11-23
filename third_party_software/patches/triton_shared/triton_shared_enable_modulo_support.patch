@@ -1,0 +1,46 @@
+From 3e4dc725d1095d63c7200fe02d3f78600a9ac3d9 Mon Sep 17 00:00:00 2001
+From: vpandya-quic <vpandya@qti.qualcomm.com>
+Date: Fri, 14 Aug 2026 20:49:00 +0530
+Subject: [PATCH] Thread enable-modulo-support through
+ TritonToLinalgExperimental (#40)
+
+TritonToStructured accepts enable-modulo-support (since f2eb8c5), but
+TritonToLinalgExperimental never declared the option and never forwarded
+it to the inner createTritonToStructuredPass() call, so
+--triton-to-linalg-experimental=enable-modulo-support=false errored with
+"no such option" instead of disabling the modulo split-pointer path.
+---
+ .../Conversion/TritonToLinalgExperimental/Passes.td            | 2 ++
+ .../TritonToLinalgExperimentalPass.cpp                         | 3 ++-
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/include/triton-shared/Conversion/TritonToLinalgExperimental/Passes.td b/include/triton-shared/Conversion/TritonToLinalgExperimental/Passes.td
+index 8ffae62..22efbab 100644
+--- a/include/triton-shared/Conversion/TritonToLinalgExperimental/Passes.td
++++ b/include/triton-shared/Conversion/TritonToLinalgExperimental/Passes.td
+@@ -16,6 +16,8 @@ def TritonToLinalgExperimental : Pass<"triton-to-linalg-experimental", "mlir::Mo
+   let options = [
+       Option<"enableMakeGatherScatterTensorPtr", "enable-make-gather-scatter", "bool", /*default*/"true",
+              "Enable make_gather_scatter_tptr support">,
++      Option<"enableModuloSupport", "enable-modulo-support", "bool", /*default*/"true",
++             "Enable modulo operation support in pointer analysis">,
+       Option<"enableCollapseShape", "enable-collapse-shape", "bool", /*default*/"false",
+              "Enable collapse shape pass">,
+   ];
+diff --git a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+index 58e94fe..3825354 100644
+--- a/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
++++ b/lib/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimentalPass.cpp
+@@ -55,7 +55,8 @@ public:
+     auto moduleOp = getOperation();
+     PassManager pm(&getContext(), moduleOp.getOperationName());
+ 
+-    pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
++    pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr,
++                                            enableModuloSupport));
+ 
+     // Erase dead code and fold constants created during lowering
+     pm.addPass(createCSEPass());
+-- 
+2.53.0
+

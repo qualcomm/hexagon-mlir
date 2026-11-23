@@ -1,3 +1,12 @@
+//===- small_exp_to_mul.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -split-input-file -pass-pipeline='builtin.module(small-exponent-to-multiply)' | FileCheck %s
 
 // Simple scalar expansion: x^3 -> x*x*x

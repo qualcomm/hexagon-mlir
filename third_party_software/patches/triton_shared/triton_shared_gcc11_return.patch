@@ -1,0 +1,15 @@
+diff --git a/include/triton-shared/Analysis/UseAnalysis.h b/include/triton-shared/Analysis/UseAnalysis.h
+index d4e6675..cc8e718 100644
+--- a/include/triton-shared/Analysis/UseAnalysis.h
++++ b/include/triton-shared/Analysis/UseAnalysis.h
+@@ -49,6 +49,10 @@ struct UseInfo : public dataflow::AbstractSparseLattice {
+     case UseType::MixUse:
+       return ChangeResult::NoChange;
+     }
++
++    // Keep the function total for compilers that do not infer enum
++    // exhaustiveness from the switch above.
++    return ChangeResult::NoChange;
+   }
+ 
+   ChangeResult meet(const AbstractSparseLattice &other) override {

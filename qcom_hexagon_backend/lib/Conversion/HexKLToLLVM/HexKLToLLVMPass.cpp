@@ -67,11 +67,13 @@ getMatmulRefFn(ModuleOp module, const LLVMTypeConverter &typeConverter,
                                 argTys, voidTy);
 }
 
-// Common helper: extract aligned pointer from lowered memref descriptor.
-static Value alignedPtr(ConversionPatternRewriter &rewriter, Location loc,
-                        Value memrefDesc) {
+// Common helper: lower  memref descriptor and extract buffer pointer
+static Value bufferPtr(ConversionPatternRewriter &rewriter,
+                       const LLVMTypeConverter &converter, Location loc,
+                       Value memrefDesc, Type memrefType) {
+  auto memref = cast<MemRefType>(memrefType);
   MemRefDescriptor desc(memrefDesc);
-  return desc.alignedPtr(rewriter, loc);
+  return desc.bufferPtr(rewriter, loc, converter, memref);
 }
 
 struct LowerMatmul : public ConvertOpToLLVMPattern<hexkl::MatmulOp> {
@@ -88,15 +90,18 @@ struct LowerMatmul : public ConvertOpToLLVMPattern<hexkl::MatmulOp> {
 
     // --- Ensure the callee is declared ---
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    const auto *typeConverter = getTypeConverter();
-    auto fn = getMatmulRefFn(module, *typeConverter, rewriter);
+    auto &typeConverter = *getTypeConverter();
+    auto fn = getMatmulRefFn(module, typeConverter, rewriter);
     if (failed(fn))
       return failure();
 
     // --- Extract aligned data pointers using helper function ---
-    Value outPtr = alignedPtr(rewriter, loc, adaptor.getOuts());
-    Value lhsPtr = alignedPtr(rewriter, loc, adaptor.getLhs());
-    Value rhsPtr = alignedPtr(rewriter, loc, adaptor.getRhs());
+    Value outPtr =
+        bufferPtr(rewriter, typeConverter, loc, adaptor.getOuts(), resType);
+    Value lhsPtr =
+        bufferPtr(rewriter, typeConverter, loc, adaptor.getLhs(), lhsType);
+    Value rhsPtr =
+        bufferPtr(rewriter, typeConverter, loc, adaptor.getRhs(), rhsType);
 
     // --- Extract matrix extents as index-typed values ---
     // lhs: [n_row, n_inner], rhs: [n_inner, n_col], out: [n_row, n_col]
@@ -148,6 +153,27 @@ getNoArgI32RetFn(ModuleOp module, ConversionPatternRewriter &rewriter,
                     rewriter.getUnitAttr());
   }
   return fn;
+}
+
+// The config block occupies the VTCM tail: size - config size. Keep this shared
+// by all accumulator operations and consistent with the launcher and daemon.
+static FailureOr<Value>
+computeHmxConfigOffset(ModuleOp module, ConversionPatternRewriter &rewriter,
+                       Location loc, MemRefDescriptor hmxDesc) {
+  // vtcm_size (element count of memref<?xi8>, i.e. bytes)
+  Value vtcmSizeIdx = hmxDesc.size(rewriter, loc, 0);
+  Value vtcmSizeI32 = castToI32(rewriter, loc, vtcmSizeIdx);
+
+  auto cfgFn =
+      getNoArgI32RetFn(module, rewriter, hexkl::getHmxConfigSizeFnName());
+  if (failed(cfgFn))
+    return failure();
+  auto cfgCallee = FlatSymbolRefAttr::get((*cfgFn).getOperation());
+  Value cfgSize = LLVM::CallOp::create(rewriter, loc, rewriter.getI32Type(),
+                                       cfgCallee, ValueRange{})
+                      .getResult();
+
+  return Value(LLVM::SubOp::create(rewriter, loc, vtcmSizeI32, cfgSize));
 }
 
 static FailureOr<LLVM::LLVMFuncOp>
@@ -238,6 +264,42 @@ getAhToRmF16Fn(ModuleOp module, ConversionPatternRewriter &rewriter) {
 }
 
 static FailureOr<LLVM::LLVMFuncOp>
+getCopySubmatrixTo8bActivationFn(ModuleOp module,
+                                 ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 7> argTys{ptrTy, i32Ty, ptrTy, i32Ty, i32Ty, i32Ty, i32Ty};
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getHmxCopySubmatrixTo8bActivationFnName(),
+      argTys, voidTy);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getRmToWhI8Fn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 6> argTys{ptrTy, i32Ty, ptrTy, i32Ty, i32Ty, i32Ty};
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  return LLVM::lookupOrCreateFn(rewriter, module, hexkl::getHmxRmToWhI8FnName(),
+                                argTys, voidTy);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getCopy32bToSubmatrixFn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  SmallVector<Type, 7> argTys{ptrTy, i32Ty, ptrTy, i32Ty, i32Ty, i32Ty, i32Ty};
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  return LLVM::lookupOrCreateFn(rewriter, module,
+                                hexkl::getHmxCopy32bToSubmatrixFnName(), argTys,
+                                voidTy);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
 getCopyF16ToF32SubmatrixFn(ModuleOp module,
                            ConversionPatternRewriter &rewriter) {
   auto ctx = module->getContext();
@@ -248,6 +310,33 @@ getCopyF16ToF32SubmatrixFn(ModuleOp module,
   return LLVM::lookupOrCreateFn(rewriter, module,
                                 hexkl::getHmxCopyF16ToF32SubmatrixFnName(),
                                 argTys, voidTy);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getHmxMicroDispatchFn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  auto i1Ty = rewriter.getI1Type();
+  // void hmx_micro_dispatch(queue, worker_id, act, wgt, out, clear_acc,
+  //                         write_out, job_kind)
+  SmallVector<Type, 8> argTys{ptrTy, i32Ty, i32Ty, i32Ty,
+                              i32Ty, i1Ty,  i1Ty,  i32Ty};
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getHmxMicroDispatchFnName(), argTys, voidTy);
+}
+
+static FailureOr<LLVM::LLVMFuncOp>
+getHmxMicroWaitIdleFn(ModuleOp module, ConversionPatternRewriter &rewriter) {
+  auto ctx = module->getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = rewriter.getI32Type();
+  // void hmx_micro_wait_idle(queue, worker_id)
+  SmallVector<Type, 2> argTys{ptrTy, i32Ty};
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  return LLVM::lookupOrCreateFn(
+      rewriter, module, hexkl::getHmxMicroWaitIdleFnName(), argTys, voidTy);
 }
 
 static FailureOr<LLVM::LLVMFuncOp>
@@ -477,31 +566,20 @@ struct LowerSetupAccReadF16
     // no-op
 
     // vtcm_base
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
     MemRefDescriptor hmxDesc(adaptor.getHmxBlock());
-
-    // vtcm_size (element count of memref<?xi8>)
-    Value vtcmSizeIdx = hmxDesc.size(rewriter, loc, 0);
-    Value vtcmSizeI32 = castToI32(rewriter, loc, vtcmSizeIdx);
-
-    auto cfgFn =
-        getNoArgI32RetFn(module, rewriter, hexkl::getHmxConfigSizeFnName());
-    if (failed(cfgFn))
+    auto cfgOffset = computeHmxConfigOffset(module, rewriter, loc, hmxDesc);
+    if (failed(cfgOffset))
       return failure();
-    auto cfgCallee = FlatSymbolRefAttr::get((*cfgFn).getOperation());
-    Value cfgSize = LLVM::CallOp::create(rewriter, loc, rewriter.getI32Type(),
-                                         cfgCallee, ValueRange{})
-                        .getResult();
-
-    // hmx_config_offset = vtcm_size - config_size
-    Value cfgOffset = LLVM::SubOp::create(rewriter, loc, vtcmSizeI32, cfgSize);
 
     // call setup_acc_read_f16(vtcm_base, hmx_config_offset)
     auto setupFn = getSetupAccReadF16Fn(module, rewriter);
     if (failed(setupFn))
       return failure();
     auto setupCallee = FlatSymbolRefAttr::get((*setupFn).getOperation());
-    SmallVector<Value> args{vtcmBase, cfgOffset};
+    SmallVector<Value> args{vtcmBase, *cfgOffset};
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, setupCallee,
                                               args);
     return success();
@@ -539,28 +617,20 @@ struct LowerAccReadF16
     ModuleOp module = op->getParentOfType<ModuleOp>();
     // no-op
 
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
     MemRefDescriptor hmxDesc(adaptor.getHmxBlock());
-    Value vtcmSizeIdx = hmxDesc.size(rewriter, loc, 0);
-    Value vtcmSizeI32 = castToI32(rewriter, loc, vtcmSizeIdx);
-
-    auto cfgFn =
-        getNoArgI32RetFn(module, rewriter, hexkl::getHmxConfigSizeFnName());
-    if (failed(cfgFn))
+    auto cfgOffset = computeHmxConfigOffset(module, rewriter, loc, hmxDesc);
+    if (failed(cfgOffset))
       return failure();
-    auto cfgCallee = FlatSymbolRefAttr::get((*cfgFn).getOperation());
-    Value cfgSize = LLVM::CallOp::create(rewriter, loc, rewriter.getI32Type(),
-                                         cfgCallee, ValueRange{})
-                        .getResult();
-
-    Value cfgOffset = LLVM::SubOp::create(rewriter, loc, vtcmSizeI32, cfgSize);
 
     Value outOffset = adaptor.getOutOffset();
     auto fn = getAccReadF16Fn(module, rewriter);
     if (failed(fn))
       return failure();
     auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
-    SmallVector<Value> args{vtcmBase, cfgOffset, outOffset};
+    SmallVector<Value> args{vtcmBase, *cfgOffset, outOffset};
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
     return success();
   }
@@ -577,8 +647,11 @@ struct LowerCopySubmatrixToF16
     ModuleOp module = op->getParentOfType<ModuleOp>();
     // no-op
 
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
-    Value srcPtr = alignedPtr(rewriter, loc, adaptor.getSrc());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value srcPtr = bufferPtr(rewriter, converter, loc, adaptor.getSrc(),
+                             op.getSrc().getType());
 
     auto fn = getCopySubmatrixToF16Fn(module, rewriter);
     if (failed(fn))
@@ -606,7 +679,9 @@ struct LowerRmToAhF16
     Location loc = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
     // no-op
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
     auto fn = getRmToAhF16Fn(module, rewriter);
     if (failed(fn))
       return failure();
@@ -627,8 +702,11 @@ struct LowerRmToWhF16
                                 ConversionPatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
-    Value srcPtr = alignedPtr(rewriter, loc, adaptor.getSrc());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value srcPtr = bufferPtr(rewriter, converter, loc, adaptor.getSrc(),
+                             op.getSrc().getType());
     auto fn = getRmToWhF16Fn(module, rewriter);
     if (failed(fn))
       return failure();
@@ -650,7 +728,9 @@ struct LowerMmF16 : public ConvertOpToLLVMPattern<hexkl::MicroHMXMmF16Op> {
                                 ConversionPatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
     auto fn = getMmF16Fn(module, rewriter);
     if (failed(fn))
       return failure();
@@ -671,13 +751,109 @@ struct LowerAhToRmF16
                                 ConversionPatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
     auto fn = getAhToRmF16Fn(module, rewriter);
     if (failed(fn))
       return failure();
     auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
     SmallVector<Value> args{vtcmBase, adaptor.getFlatOutOffset(),
                             adaptor.getActivationInOffset()};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Lower HMX quantized data-movement micro ops to extern calls
+//===----------------------------------------------------------------------===//
+
+struct LowerCopySubmatrixTo8bActivation
+    : public ConvertOpToLLVMPattern<
+          hexkl::MicroHMXCopySubmatrixTo8bActivationOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MicroHMXCopySubmatrixTo8bActivationOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MicroHMXCopySubmatrixTo8bActivationOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value srcPtr = bufferPtr(rewriter, converter, loc, adaptor.getSrc(),
+                             op.getSrc().getType());
+
+    auto fn = getCopySubmatrixTo8bActivationFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value> args{vtcmBase,
+                            adaptor.getOutOffset(),
+                            srcPtr,
+                            adaptor.getTileRow(),
+                            adaptor.getTileCol(),
+                            adaptor.getInputRows(),
+                            adaptor.getInputCols()};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
+    return success();
+  }
+};
+
+struct LowerRmToWhI8
+    : public ConvertOpToLLVMPattern<hexkl::MicroHMXRmToWhI8Op> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MicroHMXRmToWhI8Op>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MicroHMXRmToWhI8Op op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value srcPtr = bufferPtr(rewriter, converter, loc, adaptor.getSrc(),
+                             op.getSrc().getType());
+    auto fn = getRmToWhI8Fn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value> args{vtcmBase,
+                            adaptor.getWeightOffset(),
+                            srcPtr,
+                            adaptor.getTileRow(),
+                            adaptor.getTileCol(),
+                            adaptor.getWtCols()};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
+    return success();
+  }
+};
+
+struct LowerCopy32bToSubmatrix
+    : public ConvertOpToLLVMPattern<hexkl::MicroHMXCopy32bToSubmatrixOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MicroHMXCopy32bToSubmatrixOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MicroHMXCopy32bToSubmatrixOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value dstPtr = bufferPtr(rewriter, converter, loc, adaptor.getDst(),
+                             op.getDst().getType());
+    auto fn = getCopy32bToSubmatrixFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value> args{vtcmBase,
+                            adaptor.getInOffset(),
+                            dstPtr,
+                            adaptor.getTileRow(),
+                            adaptor.getTileCol(),
+                            adaptor.getOutputRows(),
+                            adaptor.getOutputCols()};
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
     return success();
   }
@@ -692,8 +868,11 @@ struct LowerCopyF16ToF32Submatrix
                                 ConversionPatternRewriter &rewriter) const {
     Location loc = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    Value vtcmBase = alignedPtr(rewriter, loc, adaptor.getHmxBlock());
-    Value dstPtr = alignedPtr(rewriter, loc, adaptor.getDst());
+    auto &converter = *getTypeConverter();
+    Value vtcmBase = bufferPtr(rewriter, converter, loc, adaptor.getHmxBlock(),
+                               op.getHmxBlock().getType());
+    Value dstPtr = bufferPtr(rewriter, converter, loc, adaptor.getDst(),
+                             op.getDst().getType());
     auto fn = getCopyF16ToF32SubmatrixFn(module, rewriter);
     if (failed(fn))
       return failure();
@@ -705,6 +884,60 @@ struct LowerCopyF16ToF32Submatrix
                             adaptor.getTileCol(),
                             adaptor.getOutputRows(),
                             adaptor.getOutputCols()};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Lower HMX micro daemon queue ops to extern calls
+//===----------------------------------------------------------------------===//
+
+struct LowerMicroHmxDispatch
+    : public ConvertOpToLLVMPattern<hexkl::MicroHMXDispatchOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MicroHMXDispatchOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MicroHMXDispatchOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getHmxMicroDispatchFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+
+    // job_kind is a compile-time string on the op; materialise it as the
+    // HMXMicroJobKind enum value the runtime expects. The op verifier already
+    // restricted it to the two accepted spellings.
+    int64_t kindVal = op.getJobKind() == "u8i8" ? 1 : 0;
+    Value jobKind =
+        LLVM::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                 rewriter.getI32IntegerAttr(kindVal));
+
+    // The queue arrives as the injected !llvm.ptr kernel argument; every other
+    // operand is a scalar (offsets are already-computed i32s). No memref
+    // descriptor extraction is needed -- the daemon holds vtcm_base itself.
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value> args{adaptor.getQueue(),     adaptor.getWorkerId(),
+                            adaptor.getActOffset(), adaptor.getWgtOffset(),
+                            adaptor.getOutOffset(), adaptor.getClearAcc(),
+                            adaptor.getWriteOut(),  jobKind};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
+    return success();
+  }
+};
+
+struct LowerMicroHmxWaitIdle
+    : public ConvertOpToLLVMPattern<hexkl::MicroHMXWaitIdleOp> {
+  using ConvertOpToLLVMPattern<
+      hexkl::MicroHMXWaitIdleOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(hexkl::MicroHMXWaitIdleOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    auto fn = getHmxMicroWaitIdleFn(module, rewriter);
+    if (failed(fn))
+      return failure();
+    auto callee = FlatSymbolRefAttr::get((*fn).getOperation());
+    SmallVector<Value> args{adaptor.getQueue(), adaptor.getWorkerId()};
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, TypeRange{}, callee, args);
     return success();
   }
@@ -731,6 +964,13 @@ void populateHexKLToLLVMConversionPatterns(LLVMTypeConverter &converter,
                LowerCopySubmatrixToF16, LowerRmToAhF16, LowerRmToWhF16,
                LowerMmF16, LowerAhToRmF16, LowerCopyF16ToF32Submatrix>(
       converter);
+
+  // Lower quantized data-movement micro ops to externs.
+  patterns.add<LowerCopySubmatrixTo8bActivation, LowerRmToWhI8,
+               LowerCopy32bToSubmatrix>(converter);
+
+  // Lower HMX micro daemon queue ops to externs.
+  patterns.add<LowerMicroHmxDispatch, LowerMicroHmxWaitIdle>(converter);
 }
 
 struct HexKLToLLVMPass : public ::impl::HexKLToLLVMBase<HexKLToLLVMPass> {

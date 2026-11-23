@@ -1,3 +1,12 @@
+//===- hexagonmem_roundtrip_to_crouton.mlir -------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s | FileCheck %s
 
 // CHECK-LABEL:   func.func @memref_to_crouton(

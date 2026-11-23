@@ -1,3 +1,12 @@
+//===- micro_ops_lowering.mlir --------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -hexkl-to-llvm | FileCheck %s
 
 // This test checks that each HexKL micro op lowers to an LLVM call with the
@@ -93,5 +102,49 @@ func.func @copy_f16_to_f32(%hmx: memref<?xi8, 1>, %dst: memref<64x64xf32>) {
   // CHECK-LABEL: func.func @copy_f16_to_f32
   // CHECK: llvm.call @hexkl_micro_hmx_copy_f16_to_f32_submatrix({{.*}}) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, i32, i32) -> ()
   hexkl.micro_hmx_copy_f16_to_f32_submatrix(%hmx, %in_off, %dst, %row, %col, %rows, %cols) : memref<?xi8, 1>, i32, memref<64x64xf32>, i32, i32, i32, i32
+  return
+}
+
+// micro_hmx_dispatch: (queue, worker_id, act, wgt, out, clear_acc, write_out,
+// job_kind).  The queue is the injected !llvm.ptr kernel arg; offsets/flags are
+// scalars.  job_kind is a compile-time attribute on the op, materialised as the
+// trailing i32 HMXMicroJobKind enum value (f16 = 0, u8i8 = 1) -- the daemon
+// programs setup_acc_read from it, so it must reach the call.
+func.func @micro_hmx_dispatch(%queue: !llvm.ptr) {
+  %wid = arith.constant 0 : i32
+  %act = arith.constant 0 : i32
+  %wgt = arith.constant 4096 : i32
+  %out = arith.constant 8192 : i32
+  %clear = arith.constant true
+  %write = arith.constant false
+  // CHECK-LABEL: func.func @micro_hmx_dispatch
+  // CHECK: llvm.mlir.constant(0 : i32)
+  // CHECK: llvm.call @hmx_micro_dispatch({{.*}}) : (!llvm.ptr, i32, i32, i32, i32, i1, i1, i32) -> ()
+  hexkl.micro_hmx_dispatch(%queue, %wid, %act, %wgt, %out, %clear, %write) : !llvm.ptr, i32, i32, i32, i32, i1, i1 {job_kind = "f16"}
+  return
+}
+
+// The u8i8 spelling must materialise enum value 1, not 0: passing the wrong one
+// runs mm_f16 over u8i8 tiles and silently corrupts the whole output.
+func.func @micro_hmx_dispatch_u8i8(%queue: !llvm.ptr) {
+  %wid = arith.constant 0 : i32
+  %act = arith.constant 0 : i32
+  %wgt = arith.constant 4096 : i32
+  %out = arith.constant 8192 : i32
+  %clear = arith.constant true
+  %write = arith.constant false
+  // CHECK-LABEL: func.func @micro_hmx_dispatch_u8i8
+  // CHECK: llvm.mlir.constant(1 : i32)
+  // CHECK: llvm.call @hmx_micro_dispatch({{.*}}) : (!llvm.ptr, i32, i32, i32, i32, i1, i1, i32) -> ()
+  hexkl.micro_hmx_dispatch(%queue, %wid, %act, %wgt, %out, %clear, %write) : !llvm.ptr, i32, i32, i32, i32, i1, i1 {job_kind = "u8i8"}
+  return
+}
+
+// micro_hmx_wait_idle: (queue, worker_id)
+func.func @micro_hmx_wait_idle(%queue: !llvm.ptr) {
+  %wid = arith.constant 0 : i32
+  // CHECK-LABEL: func.func @micro_hmx_wait_idle
+  // CHECK: llvm.call @hmx_micro_wait_idle({{.*}}) : (!llvm.ptr, i32) -> ()
+  hexkl.micro_hmx_wait_idle(%queue, %wid) : !llvm.ptr, i32
   return
 }

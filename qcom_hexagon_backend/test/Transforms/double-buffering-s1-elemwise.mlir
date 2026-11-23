@@ -1,3 +1,12 @@
+//===- double-buffering-s1-elemwise.mlir ----------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(hexagon-double-buffer-generic-s1),cse)' %s | FileCheck %s
 
 // CHECK-LABEL: func.func @kernel
@@ -28,6 +37,11 @@
 // CHECK: memref.store %[[CMP0]], %[[ALLOC_CMP]][] : memref<i1>
 // CHECK: %[[NON_ZERO_LOOP:.*]] = memref.load %[[ALLOC_CMP]][] : memref<i1>
 //
+// Deep-prologue suppression flag: initialised false, set to tile1Exists inside
+// the prologue so ping iter 0 can skip its duplicate pong prefetch.
+// CHECK: %[[PONG_PROLOGUE_DONE:.*]] = memref.alloc() : memref<i1>
+// CHECK: memref.store %[[FALSE]], %[[PONG_PROLOGUE_DONE]][]
+//
 // CHECK: scf.if %[[NON_ZERO_LOOP]] {
 // CHECK:   %[[SUBVIEW_PROLOGUE_0:.*]] = memref.subview %[[ARG0]][%[[C0]], 0] [64, 2048] [1, 1]
 // CHECK:   memref.copy %[[SUBVIEW_PROLOGUE_0]], %[[ALLOC_PING_0]]
@@ -35,15 +49,32 @@
 // CHECK:   memref.copy %[[SUBVIEW_PROLOGUE_1]], %[[ALLOC_PING_1]]
 // CHECK:   %[[SUBVIEW_PROLOGUE_2:.*]] = memref.subview %[[ALLOC]][%[[C0]], 0] [64, 2048] [1, 1]
 // CHECK:   memref.copy %[[SUBVIEW_PROLOGUE_2]], %[[ALLOC_PING_2]]
+// Deep prologue: prefetch tile 1 into pong buffers.  Bounds are static here
+// (0/1024/64), so tile1Exists folds to a constant and CSE dedupes it with
+// the original %[[TRUE]].
+// CHECK:   %[[TILE1_IDX:.*]] = arith.addi %[[C0]], %[[C64]] : index
+// CHECK:   memref.store %[[TRUE]], %[[PONG_PROLOGUE_DONE]][]
+// CHECK:   scf.if %[[TRUE]] {
+// CHECK:     %[[SUBVIEW_DEEP_0:.*]] = memref.subview %[[ARG0]][%[[TILE1_IDX]], 0] [64, 2048] [1, 1]
+// CHECK:     memref.copy %[[SUBVIEW_DEEP_0]], %[[ALLOC_PONG_0]]
+// CHECK:     %[[SUBVIEW_DEEP_1:.*]] = memref.subview %[[ARG1]][%[[TILE1_IDX]], 0] [64, 2048] [1, 1]
+// CHECK:     memref.copy %[[SUBVIEW_DEEP_1]], %[[ALLOC_PONG_1]]
+// CHECK:     %[[SUBVIEW_DEEP_2:.*]] = memref.subview %[[ALLOC]][%[[TILE1_IDX]], 0] [64, 2048] [1, 1]
+// CHECK:     memref.copy %[[SUBVIEW_DEEP_2]], %[[ALLOC_PONG_2]]
+// CHECK:   } {db_prologue_pong}
 // CHECK: } {db_generic = 0 : i64, db_prologue}
 //
 // CHECK: scf.for %[[IV:.*]] = %[[C0]] to %[[C1024]] step %[[C64]] {
 // CHECK:   %[[IS_PING_STAGE:.*]] = memref.load %[[TOGGLE]][] : memref<i1>
 // CHECK:   %[[NEXT_IV:.*]] = arith.addi %[[IV]], %[[C64]] : index
-// CHECK:   %[[NEXT_NEXT_IV:.*]] = arith.addi %[[NEXT_IV]], %[[C64]] : index
-// CHECK:   %[[IS_NOT_LAST_ITERATION:.*]] = arith.cmpi sle, %[[NEXT_NEXT_IV]], %[[C1024]] : index
+// CHECK:   %[[IS_NOT_LAST_ITERATION:.*]] = arith.cmpi slt, %[[NEXT_IV]], %[[C1024]] : index
 // CHECK:   scf.if %[[IS_PING_STAGE]] {
-// CHECK:     scf.if %[[IS_NOT_LAST_ITERATION]] {
+// Ping iter 0 suppresses the pong prefetch when the deep prologue already
+// started it; subsequent iterations use the normal IS_NOT_LAST_ITERATION check.
+// CHECK:     %[[DONE:.*]] = memref.load %[[PONG_PROLOGUE_DONE]][] : memref<i1>
+// CHECK:     %[[NOT_DONE:.*]] = arith.xori %[[DONE]], %[[TRUE]] : i1
+// CHECK:     %[[DO_PREFETCH:.*]] = arith.andi %[[IS_NOT_LAST_ITERATION]], %[[NOT_DONE]] : i1
+// CHECK:     scf.if %[[DO_PREFETCH]] {
 // CHECK:       %[[SUBVIEW_PREFETCH_0:.*]] = memref.subview %[[ARG0]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
 // CHECK:       memref.copy %[[SUBVIEW_PREFETCH_0]], %[[ALLOC_PONG_0]]
 // CHECK:       %[[SUBVIEW_PREFETCH_1:.*]] = memref.subview %[[ARG1]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
@@ -51,6 +82,7 @@
 // CHECK:       %[[SUBVIEW_PREFETCH_2:.*]] = memref.subview %[[ALLOC]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
 // CHECK:       memref.copy %[[SUBVIEW_PREFETCH_2]], %[[ALLOC_PONG_2]]
 // CHECK:     } {db_prefetch}
+// CHECK:     memref.store %[[FALSE]], %[[PONG_PROLOGUE_DONE]][]
 // CHECK:     scf.for %[[IV_I:.*]] = %[[C0]] to %[[C64]] step %[[C1]] {
 // CHECK:       scf.for %[[IV_J:.*]] = %[[C0]] to %[[C2048]] step %[[C32]] {
 // CHECK:         %[[SUBVIEW_PING_0:.*]] = memref.subview %[[ALLOC_PING_0]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]

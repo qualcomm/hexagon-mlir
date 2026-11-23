@@ -7,13 +7,12 @@
 #
 # ===------------------------------------------------------------------------===
 
-import os
-from pathlib import Path
+
+from triton._C.libtriton import ir, qcom_hexagon_backend  # type: ignore
 from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
 from triton.backends.qcom_hexagon_backend.hexagon_launcher_base import (
     create_timestamped_folder,
 )
-from triton._C.libtriton import qcom_hexagon_backend, ir  # type: ignore
 
 """
 This launcher is only intended for unit testing small MLIR examples and/or
@@ -55,10 +54,11 @@ class MLIRHexagonLauncher:
         )
         assert len(obj_modules) == 1, "Multiple modules not supported"
 
-        local_dir_path, kernel_run_id = create_timestamped_folder(func_name)
+        local_dir_path = create_timestamped_folder(func_name)
+        kernel_run_id = local_dir_path.name
         print(f"==> cpp wrapper path: {cpp_wrapper_path}")
-        obj_src_path = os.path.join(local_dir_path, func_name + ".o")
-        Path(obj_src_path).write_bytes(obj_modules[0])
+        obj_src_path = local_dir_path / f"{func_name}.o"
+        obj_src_path.write_bytes(obj_modules[0])
         print(f"==> kernel obj saved in: {obj_src_path}")
 
         hexec = HexagonExecutor(

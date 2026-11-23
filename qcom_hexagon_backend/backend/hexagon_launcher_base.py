@@ -7,18 +7,40 @@
 #
 # ===------------------------------------------------------------------------===
 
-from pathlib import Path
-import os, tempfile
+import hashlib
+import logging
+import subprocess
 from datetime import datetime
-from typing import Optional
-from torch import Tensor  # For type annotations
+from pathlib import Path
+
+try:
+    from torch import Tensor  # For type annotations
+except ImportError:
+    Tensor = object  # type: ignore
+from triton.backends.qcom_hexagon_backend import knobs
 from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
-from triton._C.libtriton import qcom_hexagon_backend  # type: ignore
 
 # This file is part of a small subset of python files that uses some type-annotations
 # and it passes type-verification with mypy (a type checker).
 # To typecheck this set of files, do:
-# mypy compiler.py hexagon_executor.py hexagon_launcher_base.py torch_mlir_hexagon_launcher.py triton_hexagon_launcher.py --follow-untyped-imports --check-untyped-defs
+# mypy compiler.py hexagon_executor.py hexagon_launcher_base.py \
+#   torch_mlir_hexagon_launcher.py stablehlo_hexagon_launcher.py \
+#   triton_hexagon_launcher.py --follow-untyped-imports --check-untyped-defs
+
+log = logging.getLogger(__name__)
+
+
+def _fs_name(func_name: str) -> str:
+    """Return a filename-safe alias (≤ 150 chars) for func_name.
+
+    Used only for filesystem artifacts (.o, .so, _wrapper.cpp, build dir).
+    The full func_name is still used for C symbol linkage and runtime dispatch.
+    Matches the upstream Triton [:150] guard in triton/compiler/compiler.py.
+    """
+    if len(func_name) <= 150:
+        return func_name
+    suffix = hashlib.md5(func_name.encode()).hexdigest()[:16]
+    return func_name[:100] + "_" + suffix
 
 
 class WrapperGeneratorStrings:
@@ -60,6 +82,7 @@ struct FuncResult
         )
         self.extern_llvm_func_call = """{func_name}({descriptor_string});\n"""
         self.load_from_file_string = """{input_tensor_prefix}{idx}.load_from_file("{path}/{file_name}_t{idx}.raw");\n"""
+        self.load_from_file_chunked_string = """{input_tensor_prefix}{idx}.load_from_file_chunked("{path}/{file_name}_t{idx}.raw");\n"""
         self.dump_to_file_string = """{output_tensor_prefix}{idx}.dump_to_file("{path}/{file_name}_o{idx}.raw");\n"""
         self.call_lwp = """WriteLWPOutput("{path}/{fname}.json");\n"""
 
@@ -137,6 +160,7 @@ class HexagonWrapperGenerator:
         self.output_profs = output_profs
         self.common_strings = common_strings
         self.enable_lwp = options["enableLWP"]
+        self.chunked_file_loads = options.get("chunkedFileLoads", False)
 
     def generate_input_declarations(self):
         """
@@ -290,9 +314,14 @@ class HexagonWrapperGenerator:
         read_from_file_string = ""
 
         for inp in self.input_profs:
-            if inp.rank:
+            if inp.input_type == "tensor":
                 tensor_idx = inp.idx
-                write_call = self.common_strings.load_from_file_string.format(
+                load_string = (
+                    self.common_strings.load_from_file_chunked_string
+                    if self.chunked_file_loads
+                    else self.common_strings.load_from_file_string
+                )
+                write_call = load_string.format(
                     input_tensor_prefix=self.common_strings.input_tensor_name,
                     idx=tensor_idx,
                     path=exec_dir,
@@ -375,55 +404,199 @@ class HexagonWrapperGenerator:
         )
 
 
-# Utility function to create a timestamped folder, which will be used to place all
-# the build artifacts (cpp wrapper, .o and .so, etc) that are generated.
-# The folder will be called model_name-%Y-%m-%d_%H-%M-%S and will be put under:
-# possibility 1 - the user-privided `optional_base_dir` if it is not None
-# possibility 2 - the value of the environment variable HEXAGON_MLIR_DUMP_DIR
-# possibility 3 - the /tmp/ directory otherwise
-# which will be check in this order
-# Returns (full path, leaf dirname) to the folder created
+class MLIRWrapperGeneratorStrings(WrapperGeneratorStrings):
+    def __init__(self):
+        super().__init__()
+
+        self.mlir_code_body = """
+int main() {{
+{tensor_definition_str}
+{result_struct_init}
+{read_from_file_calls}
+{benchmarking_and_reporting}
+{update_tensor}
+{write_to_file_calls}
+{lwp}
+return 0;
+}}
+"""
+
+
+class MLIRHexagonWrapperGenerator(HexagonWrapperGenerator):
+    def __init__(self, input_profs, iterations, func_name, output_profs, options: dict):
+        super().__init__(
+            input_profs,
+            iterations,
+            func_name,
+            output_profs,
+            MLIRWrapperGeneratorStrings(),
+            options,
+        )
+
+    def generate_llvm_function_signature(self):
+        """Generate lowered LLVM function definition to be called from CPP launcher."""
+        function_arg_string = "void *,"
+        function_arg_string += self.generate_llvm_function_signature_arg_string()
+        return self.common_strings.extern_llvm_func_defn.format(
+            kernel_name=self.func_name, function_arg_string=function_arg_string
+        )
+
+    def generate_llvm_function_call(self):
+        """Generate call to the lowered LLVM function."""
+        function_call_descriptor_string = "r,"
+        function_call_descriptor_string += self.generate_llvm_function_call_arg_string()
+        return self.common_strings.extern_llvm_func_call.format(
+            func_name=self.func_name, descriptor_string=function_call_descriptor_string
+        )
+
+    def generate_input_wrapper_struct_def(self):
+        return ""
+
+    def generate_input_wrapper_structs_init(self):
+        return ""
+
+    def generate_cpp_wrapper(self, file_name, exec_dir):
+        code_headers = self.common_strings.code_headers
+        code_define = self.common_strings.code_define.format(
+            llvm_func_sign=self.generate_llvm_function_signature(),
+            input_wrapper_struct_def="",
+            result_struct_def=self.generate_result_struct(),
+        )
+        code_body = self.common_strings.mlir_code_body.format(
+            tensor_definition_str=self.generate_input_declarations(),
+            result_struct_init=self.generate_result_struct_init(),
+            read_from_file_calls=self.generate_tensor_read_from_file_calls(
+                file_name, exec_dir
+            ),
+            benchmarking_and_reporting=self.generate_benchmarking_and_reporting(
+                self.generate_llvm_function_call(), exec_dir
+            ),
+            update_tensor=self.generate_update_tensor_calls(),
+            write_to_file_calls=self.generate_tensor_write_to_file_calls(
+                file_name, exec_dir
+            ),
+            lwp=self.generate_lwp_call(),
+        )
+        return self.common_strings.code_string.format(
+            code_headers=code_headers, code_define=code_define, code_body=code_body
+        )
+
+
 def create_timestamped_folder(
-    model_name: str, optional_base_dir: Optional[str] = None
-) -> str:
-    # --- Part 1: deciding the base directory ---
-    # Possibility 1: the user has provided the base directory
-    if optional_base_dir != None:
-        base_dir = optional_base_dir
-        reason = "(as requested by the --output-dir argument provided)"
-    else:
-        # Possibility 2: otherwise look at the env variable HEXAGON_MLIR_DUMP_DIR
-        env_var_dump_ir = os.getenv("HEXAGON_MLIR_DUMP_DIR")
-        if env_var_dump_ir != None:
-            base_dir = env_var_dump_ir
-            reason = "(as specified by the env variable HEXAGON_MLIR_DUMP_DIR)"
-        else:
-            # Possibility 3: otherwise use a predetermined base directory
-            # To prevent clutter, we create the folder under /tmp
-            base_dir = "/tmp"
-            reason = "(as default location)"
-    assert os.path.isdir(
-        base_dir
-    ), f"The base directory {base_dir} ({reason}) isn't a valid directory"
-    # --- Part 2: naming and creating the subfolder that will contain all the artifacts ---
-    # Get the current date and time
-    now = datetime.now()
-    # Format the folder name
-    folder_name = now.strftime(model_name + "-%Y-%m-%d_%H-%M-%S-%f")
-    # Full path
-    full_path = os.path.join(base_dir, folder_name)
-    # Create the folder
-    os.makedirs(full_path)
-    print(
-        f"==> Folder '{folder_name}' created successfully inside of", base_dir, reason
+    model_name: str,
+    base_dir: str | Path | None = None,
+) -> Path:
+    """Create a timestamp-based directory for a launcher invocation.
+
+    The directory is created below ``base_dir`` when provided; otherwise, it
+    is created below the configured Hexagon MLIR dump directory.  It is named
+    using a filesystem-safe version of ``model_name`` followed by the current
+    local timestamp.  Parent directories are created as needed.
+    The directory is never reused: if the generated name already exists, the
+    creation fails rather than silently sharing the existing directory.
+
+    Args:
+        model_name: Name of the model or kernel used to form the directory
+            name.  Long names are shortened by :func:`_fs_name`.
+        base_dir: Optional directory in which to create the folder.  If not
+            provided, the configured Hexagon MLIR dump directory is used.
+
+    Returns:
+        The path to the newly created directory.  Use ``Path.name`` to obtain
+        the directory name when it is needed as a run identifier.
+
+    Raises:
+        FileExistsError: If the generated timestamped directory already
+            exists, for example because of a timestamp collision.
+        OSError: If the directory or one of its parents cannot be created.
+    """
+    dump_dir = knobs.hexagon_mlir.dump_dir
+    if base_dir is not None:
+        dump_dir = Path(base_dir)
+
+    name = _fs_name(model_name)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-%f")
+    full_path = dump_dir / f"{name}-{timestamp}"
+    full_path.mkdir(parents=True, exist_ok=False)
+
+    log.debug("Created timestamped folder: %s", full_path.name)
+    return full_path
+
+
+def create_hashed_folder(
+    model_name: str,
+    content_hash: str,
+    base_dir: str | Path | None = None,
+) -> tuple[Path, bool]:
+    """Create or reuse a content-addressed directory for build artifacts.
+
+    The directory is created below ``base_dir`` when provided; otherwise, it
+    is created below the configured Hexagon MLIR dump directory.  It is named
+    using a filesystem-safe version of ``model_name`` followed by
+    ``content_hash``.  Repeated calls with the same arguments therefore refer
+    to the same directory, allowing cached artifacts to be reused.
+    ``content_hash`` is supplied by the caller and is not computed by this
+    function.
+
+    Args:
+        model_name: Name of the model or kernel used to form the directory
+            name.  Long names are shortened by :func:`_fs_name`.
+        content_hash: Hash identifying the contents or build configuration
+            associated with the artifacts in the directory.
+        base_dir: Optional directory in which to create the folder.  If not
+            provided, the configured Hexagon MLIR dump directory is used.
+
+    Returns:
+        A tuple containing the directory and a boolean indicating whether the
+        directory already existed before this call.  ``False`` indicates that
+        this call created the directory.
+
+    Raises:
+        OSError: If the directory or one of its parents cannot be created.
+    """
+    dump_dir = knobs.hexagon_mlir.dump_dir
+    if base_dir is not None:
+        dump_dir = Path(base_dir)
+
+    name = _fs_name(model_name)
+    full_path = dump_dir / f"{name}-{content_hash}"
+    cache_hit = full_path.is_dir()
+    full_path.mkdir(parents=True, exist_ok=True)
+
+    log.debug(
+        "%s hashed folder: %s",
+        "Reusing" if cache_hit else "Created",
+        full_path.name,
     )
-    return full_path, folder_name
+
+    return full_path, cache_hit
 
 
 class HexagonLauncherBase:
+    @staticmethod
+    def rename_kernel_main_symbol(obj_path: str | Path, hexec: HexagonExecutor) -> None:
+        """Avoid collision between an MLIR `main` symbol and the C++ wrapper."""
+        objcopy = (
+            Path(hexec.config.HEX_TOOLS["hexagon-clang++"]).parent
+            / "hexagon-llvm-objcopy"
+        )
+        if not objcopy.exists():
+            return
+        subprocess.run(
+            [
+                str(objcopy),
+                "--redefine-sym",
+                "main=mlir_kernel_main",
+                str(obj_path),
+                str(obj_path),
+            ],
+            check=True,
+        )
+        print("==> renamed kernel symbol main -> mlir_kernel_main", flush=True)
+
     def generate_input_output_paths(
-        self, directory: str, file_name: str, wrapper: HexagonWrapperGenerator
-    ) -> tuple[list[str], list[str]]:
+        self, directory: Path, file_name: str, wrapper: HexagonWrapperGenerator
+    ) -> tuple[list[Path], list[Path]]:
         input_paths = []
         output_paths = []
 
@@ -431,7 +604,7 @@ class HexagonLauncherBase:
             if inp.input_type == "tensor":
                 i = inp.idx
                 data = inp.value
-                input_path = os.path.join(directory, f"{file_name}_t{i}.raw")
+                input_path = directory / f"{file_name}_t{i}.raw"
                 with open(input_path, "wb") as file:
                     file.write(data.numpy().tobytes())
                 input_paths.append(input_path)
@@ -441,7 +614,7 @@ class HexagonLauncherBase:
         # that must be handled accordingly
         output_tensor_path_count = self.get_output_tensor_path_count(wrapper)
         for i in range(output_tensor_path_count):
-            output_path = os.path.join(directory, f"{file_name}_o{i}.raw")
+            output_path = directory / f"{file_name}_o{i}.raw"
             output_paths.append(output_path)
 
         return input_paths, output_paths
@@ -455,12 +628,12 @@ class HexagonLauncherBase:
     def generate_and_dump_wrapper(
         self,
         wrapper_generator: HexagonWrapperGenerator,
-        local_dir: str,
+        local_dir: Path,
         file_name: str,
         exec_dir: str,
-    ) -> str:
+    ) -> Path:
         """Generates and dumps CPP wrapper file using a given wrapper generator"""
-        cpp_wrapper_path = os.path.join(local_dir, file_name + "_wrapper.cpp")
+        cpp_wrapper_path = local_dir / f"{file_name}_wrapper.cpp"
         with open(cpp_wrapper_path, "w") as file:
             cpp_wrapper = wrapper_generator.generate_cpp_wrapper(file_name, exec_dir)
             file.write(cpp_wrapper)
@@ -469,7 +642,7 @@ class HexagonLauncherBase:
     def execute_kernel(
         self,
         hexec: HexagonExecutor,
-        local_dir: str,
+        local_dir: Path,
         filename_without_ext: str,
         paths_to_shared_libs_generated: list[str],
         wrapper_generator: HexagonWrapperGenerator,

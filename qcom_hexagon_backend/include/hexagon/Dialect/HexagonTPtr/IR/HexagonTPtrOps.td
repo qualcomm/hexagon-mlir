@@ -76,5 +76,44 @@ def HexagonTPtr_HexagonPtrAddOp
   }];
 }
 
+def HexagonTPtr_HexagonIntToPtrOp : HexagonTPtr_Op<"inttoptr", [Pure]> {
+  let summary = "Cast an integer to a tptr pointer";
+  let description = [{
+    The `inttoptr` operation reinterprets a signless integer or index
+    (`AnySignlessIntegerOrIndex`) as a pointer value. It is the counterpart of
+    `ptrtoint`. triton_shared emits this op when lowering `tt.int_to_ptr` on the
+    scalar/unstructured pointer path (e.g. loading a raw pointer stored as an
+    i64 out of a pointer array).
+
+    Example:
+    ```mlir
+    %p = tptr.inttoptr %i : i64 to <#tptr.default_memory_space>
+    ```
+  }];
+
+  let arguments = (ins AnySignlessIntegerOrIndex:$offset);
+  let results = (outs Ptr_PtrType:$result);
+  let assemblyFormat = "$offset attr-dict `:` type($offset) `to` type($result)";
+}
+
+def HexagonTPtr_HexagonPtrToIntOp : HexagonTPtr_Op<"ptrtoint", [Pure]> {
+  let summary = "Cast a tptr pointer to an integer";
+  let description = [{
+    The `ptrtoint` operation reinterprets a pointer value as a signless integer
+    or index (`AnySignlessIntegerOrIndex`). It is the counterpart of `inttoptr`.
+    triton_shared emits this op when lowering `tt.ptr_to_int` on the
+    scalar/unstructured pointer path (e.g. storing a raw pointer back into a
+    pointer array).
+
+    Example:
+    ```mlir
+    %i = tptr.ptrtoint %p : <#tptr.default_memory_space> to i64
+    ```
+  }];
+
+  let arguments = (ins Ptr_PtrType:$ptr);
+  let results = (outs AnySignlessIntegerOrIndex:$result);
+  let assemblyFormat = "$ptr attr-dict `:` type($ptr) `to` type($result)";
+}
 
 #endif // HEXAGON_DIALECT_TPTR_IR_TPTR_OPS_TD

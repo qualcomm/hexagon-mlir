@@ -31,6 +31,12 @@ std::optional<unsigned> computeSmallestOperandTypeSize(Operation *op) {
   for (OpOperand &opOperand : op->getOpOperands()) {
     Type operandType = opOperand.get().getType();
     if (auto type = dyn_cast<RankedTensorType>(operandType)) {
+      // Skip i1 tensors: they represent boolean predicates, not the actual
+      // data width being vectorized. Including them would yield a 1-byte
+      // minimum and inflate dataTileSize to 128, preventing vectorization of
+      // f32/i32 ops whose bodies contain boolean sub-expressions.
+      if (type.getElementType().isInteger(1))
+        continue;
       auto operandSize = getElementSizeInBytes(type);
       if (operandSize) {
         minElemSize = std::min(minElemSize, *operandSize);
@@ -43,6 +49,11 @@ std::optional<unsigned> computeSmallestOperandTypeSize(Operation *op) {
     for (Operation &op : genericOp.getBody()->getOperations()) {
       if (op.hasTrait<OpTrait::Vectorizable>()) {
         for (auto res : op.getResults()) {
+          // Skip i1 results: these are boolean predicates (arith.cmpf,
+          // arith.cmpi, arith.andi, arith.ori) that are intermediate values
+          // in the computation, not the actual data element size.
+          if (getElementType(res.getType()).isInteger(1))
+            continue;
           auto resSize = getElementSizeInBytes(res.getType());
           if (resSize)
             minElemSize = std::min(minElemSize, *resSize);
@@ -66,7 +77,10 @@ Type getElementType(Type type) {
 
 std::optional<unsigned> getElementSizeInBytes(Type type) {
   Type elemType = getElementType(type);
-  if (elemType.isInteger(1) || elemType.isInteger(8))
+
+  if (elemType.isInteger(1) || elemType.isInteger(8) ||
+      isa<Float8E4M3FNType, Float8E5M2Type, Float8E4M3FNUZType,
+          Float8E5M2FNUZType>(elemType))
     return 1;
   if (elemType.isF16() || elemType.isBF16() || elemType.isInteger(16))
     return 2;
@@ -85,14 +99,27 @@ std::optional<unsigned> computeDataTileSize(Operation *op) {
 }
 
 bool isPerfectlyTileable(unsigned LoopRange, unsigned dataTileSize) {
-  if (LoopRange % dataTileSize != 0) {
-    return false;
-  }
-  return true;
+  return (LoopRange % dataTileSize == 0);
 }
 
 bool perfectlyVectorizable(unsigned dataTileSize, unsigned innerLoopRange) {
   return dataTileSize == innerLoopRange;
+}
+
+bool isVectorizableLoopDim(unsigned innerLoopDim, unsigned dataTileSize) {
+  // An inner-loop is vectorizable if either of these conditions holds:
+  //   1. Its dimension is one HVX vector or smaller:
+  //      0 < innerLoopDim <= dataTileSize
+  //      (e.g. 32 f16 = 64 bytes <= 128-byte HVX register).
+  //      It gets vectorized at its natural width (no masks); and the
+  //      LLVM backend is capable of taking care of it even if it is smaller
+  //      than the HVX length.
+  //   2. Exactly an HVX pair: innerLoopDim == 2 * dataTileSize.
+  // Note: The case of dataTileSize < innerLoopDim < 2 * dataTileSize will be
+  // later taken care of by splitting it into a head (utilizing full vectors),
+  // and a tail (vectorized or scalarized).
+  return innerLoopDim != 0 &&
+         (innerLoopDim <= dataTileSize || innerLoopDim == 2 * dataTileSize);
 }
 
 void setTargetTriple(ModuleOp moduleOp) {
@@ -114,7 +141,6 @@ void setDataLayout(ModuleOp moduleOp) {
 }
 
 bool doesFuncReturnValue(ModuleOp moduleOp) {
-
   return moduleOp
       .walk([&](func::FuncOp op) {
         if (!op.getResultTypes().empty())

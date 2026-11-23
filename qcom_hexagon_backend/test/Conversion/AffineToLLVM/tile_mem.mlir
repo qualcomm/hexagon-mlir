@@ -1,3 +1,12 @@
+//===- tile_mem.mlir ------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -affine-tile-memory='cache-size=16' %s | FileCheck %s
 
 #id = affine_map<(d0) -> (d0)>
@@ -279,6 +288,7 @@ func.func @cache_allocation_priority_promotion() -> () {
 func.func @no_copy_back_on_read_only(%arg0: memref<64x64xf32>) -> () {
   // CHECK: %[[ALLOC:[a-zA-Z0-9_-]+]] = memref.alloc() : memref<64x64xf32>
   // CHECK: memref.copy %{{[a-zA-Z0-9_-]+}}, %[[ALLOC]]
+  // CHECK: affine.load %[[ALLOC]]
   affine.for %i0 = 0 to 64 step 32 {
     affine.for %j0 = 0 to 64 step 32 {
       affine.for %i1 = #id(%i0) to #plus_32(%i0) {
@@ -290,5 +300,25 @@ func.func @no_copy_back_on_read_only(%arg0: memref<64x64xf32>) -> () {
   }
   // CHECK-NOT: memref.copy %[[ALLOC]]
   // CHECK: memref.dealloc %[[ALLOC]]
+  return
+}
+
+// A memref with a non-affine (memref.load) user must not be cached, since the
+// affine-only replacement cannot rewrite that use.
+// CHECK-LABEL: @mixed_affine_and_memref_load
+func.func @mixed_affine_and_memref_load(%arg0: memref<64x64xf32>) -> () {
+  // CHECK-NOT: memref.alloc
+  affine.for %i0 = 0 to 64 step 32 {
+    affine.for %j0 = 0 to 64 step 32 {
+      affine.for %i1 = #id(%i0) to #plus_32(%i0) {
+        affine.for %j1 = #id(%j0) to #plus_32(%j0) {
+          %0 = affine.load %arg0[%i1, %j1] : memref<64x64xf32>
+          %1 = memref.load %arg0[%i1, %j1] : memref<64x64xf32>
+          %2 = arith.addf %0, %1 : f32
+          affine.store %2, %arg0[%i1, %j1] : memref<64x64xf32>
+        }
+      }
+    }
+  }
   return
 }

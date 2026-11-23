@@ -30,8 +30,10 @@
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/StringSaver.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
@@ -69,6 +71,82 @@ void initializeHexagonTarget() {
   LLVMInitializeHexagonTargetMC();
   LLVMInitializeHexagonAsmParser();
   LLVMInitializeHexagonAsmPrinter();
+
+  // Forward arbitrary flags into LLVM's cl::opt registry. Format is
+  // shell-style, e.g.:
+  //   HEXAGON_LLVM_ARGS='-hexagon-vector-combine=false'
+  // Applied once — the outer isInitialized guard ensures we don't parse
+  // twice. Called after target init so the Hexagon backend's cl::opts are
+  // registered by the time we try to look them up.
+  if (const char *envArgs = std::getenv("HEXAGON_LLVM_ARGS");
+      envArgs && envArgs[0] != '\0') {
+    llvm::BumpPtrAllocator alloc;
+    llvm::StringSaver saver(alloc);
+    llvm::SmallVector<const char *, 8> argv;
+    argv.push_back("hexagon-mlir"); // fake program name
+    llvm::cl::TokenizeGNUCommandLine(envArgs, saver, argv);
+    llvm::cl::ParseCommandLineOptions(
+        static_cast<int>(argv.size()), argv.data(),
+        /*Overview=*/"Hexagon MLIR translation extra LLVM args", &llvm::errs());
+  }
+}
+
+// Returns true if any non-declaration function in the module carries the
+// +long-calls target feature, which translateLLVMToLLVMIR stamps on every
+// function when outlineLinalgGeneric is enabled. Used by callers of
+// create_target_machine that don't hold arch_kwargs directly.
+static bool moduleHasLongCalls(const llvm::Module &m) {
+  for (const llvm::Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    if (f.getFnAttribute("target-features")
+            .getValueAsString()
+            .contains("+long-calls"))
+      return true;
+  }
+  return false;
+}
+
+static std::unique_ptr<llvm::TargetMachine>
+create_target_machine(const llvm::Triple &target_triple,
+                      bool outlineLinalgGeneric = false) {
+
+  // Hexagon target instance is needed to give a broader description of the
+  // target platform
+  std::string error;
+  const llvm::Target *target_instance =
+      llvm::TargetRegistry::lookupTarget(target_triple, error);
+  if (!target_instance) {
+    llvm::report_fatal_error(
+        "Target_triple" + llvm::Twine(target_triple.str()) +
+        "is not supported failed to create TargetInstance");
+  }
+
+  // Create the target machine using the target.
+  // Provides a detailed configuration for generating optimized machine code.
+  llvm::TargetOptions target_options = {};
+  // With linalg.generic outlining enabled the module has thousands of
+  // functions that otherwise pack into a single multi-MB .text section, whose
+  // size exceeds the Hexagon R_HEX_B22_PCREL +-8MB branch reach. Emit each
+  // function in its own .text.<name> section so the linker can place them
+  // (and keep prebuilt runtime/EH archive functions adjacent). Pairs with the
+  // +long-calls feature added in translateLLVMToLLVMIR.
+  if (outlineLinalgGeneric) {
+    target_options.FunctionSections = true;
+    target_options.DataSections = true;
+  }
+  const llvm::Reloc::Model &reloc_model = llvm::Reloc::PIC_;
+  const llvm::CodeModel::Model &code_model = llvm::CodeModel::Small;
+  const llvm::CodeGenOptLevel &codegen_optlevel =
+      llvm::CodeGenOptLevel::Aggressive;
+
+  llvm::TargetMachine *targetMachine = target_instance->createTargetMachine(
+      target_triple, "", "", target_options, reloc_model, code_model,
+      codegen_optlevel);
+
+  if (!targetMachine)
+    llvm::report_fatal_error("Error while creating create TargetMachine");
+  return std::unique_ptr<llvm::TargetMachine>(targetMachine);
 }
 
 void dumpHexagonAssembly(llvm::Module &module, unsigned moduleId,
@@ -88,27 +166,9 @@ void dumpHexagonAssembly(llvm::Module &module, unsigned moduleId,
   // Remove the assembly file if it already exists.
   llvm::sys::fs::remove(asmFileName);
 
-  // Determine target triple and architecture.
-  std::string archVer = archVersion;
-  if (archVer.front() != 'v')
-    archVer = "v" + archVer;
-
-  std::string cpu = "hexagon" + archVer;
-  std::string features =
-      "+hvx" + archVer + ",+hvx-length128b"; // Modify as needed.
   auto targetTriple = module.getTargetTriple();
-
-  std::string error;
-  const llvm::Target *target =
-      llvm::TargetRegistry::lookupTarget(targetTriple, error);
-  if (!target) {
-    llvm::errs() << "Target lookup failed: " << error << "\n";
-    return;
-  }
-
-  llvm::TargetOptions opt;
-  std::unique_ptr<llvm::TargetMachine> targetMachine(
-      target->createTargetMachine(targetTriple, cpu, features, opt, {}));
+  std::unique_ptr<llvm::TargetMachine> targetMachine =
+      create_target_machine(targetTriple, moduleHasLongCalls(module));
 
   auto emitFile = [&](llvm::CodeGenFileType fileType,
                       const std::string &filename, const char *label) {
@@ -247,8 +307,19 @@ static std::unique_ptr<llvm::Module> translateLLVMToLLVMIR(
   }
   llvmModule->setTargetTriple(llvm::Triple(arch_kwargs.at("arch_triple")));
   llvmModule->setDataLayout(arch_kwargs.at("data_layout"));
+  std::string archFeatures = arch_kwargs.at("arch_features");
+  auto outlineIt = arch_kwargs.find("outlineLinalgGeneric");
+  bool outlineLinalgGeneric =
+      outlineIt != arch_kwargs.end() && outlineIt->second == "True";
+
+  if (outlineLinalgGeneric &&
+      archFeatures.find("+long-calls") == std::string::npos) {
+    if (!archFeatures.empty())
+      archFeatures += ",";
+    archFeatures += "+long-calls";
+  }
   for (llvm::Function &f : llvmModule->functions())
-    f.addFnAttr("target-features", arch_kwargs.at("arch_features"));
+    f.addFnAttr("target-features", archFeatures);
 
   if (optLevel != LLVMOptimizationLevel::NoOptimization) {
     auto optPipeline = runLLVMOptimizer(
@@ -275,37 +346,6 @@ std::unique_ptr<llvm::Module> translateHexagonMlirLlvmToLLVMIR(
   }
 
   return llvmIR;
-}
-
-static std::unique_ptr<llvm::TargetMachine>
-create_target_machine(const llvm::Triple &target_triple) {
-
-  // Hexagon target instance is needed to give a broader description of the
-  // target platform
-  std::string error;
-  const llvm::Target *target_instance =
-      llvm::TargetRegistry::lookupTarget(target_triple, error);
-  if (!target_instance) {
-    llvm::report_fatal_error(
-        "Target_triple" + llvm::Twine(target_triple.str()) +
-        "is not supported failed to create TargetInstance");
-  }
-
-  // Create the target machine using the target.
-  // Provides a detailed configuration for generating optimized machine code.
-  const llvm::TargetOptions &target_options = {};
-  const llvm::Reloc::Model &reloc_model = llvm::Reloc::PIC_;
-  const llvm::CodeModel::Model &code_model = llvm::CodeModel::Small;
-  const llvm::CodeGenOptLevel &codegen_optlevel =
-      llvm::CodeGenOptLevel::Aggressive;
-
-  llvm::TargetMachine *targetMachine = target_instance->createTargetMachine(
-      target_triple, "", "", target_options, reloc_model, code_model,
-      codegen_optlevel);
-
-  if (!targetMachine)
-    llvm::report_fatal_error("Error while creating create TargetMachine");
-  return std::unique_ptr<llvm::TargetMachine>(targetMachine);
 }
 
 inline std::vector<char> llvm_module_to_obj_string(llvm::Module &llvmModule) {
@@ -379,7 +419,7 @@ llvm_module_to_obj_string(std::unique_ptr<llvm::Module> &llvmModule) {
   auto target_triple = llvmModule->getTargetTriple();
 
   std::unique_ptr<llvm::TargetMachine> targetMachine =
-      create_target_machine(target_triple);
+      create_target_machine(target_triple, moduleHasLongCalls(*llvmModule));
 
   // Set options for debugging
   setupCodegenDumpOptions();

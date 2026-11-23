@@ -1,3 +1,9 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+
 set(LLVM_TARGET_DEFINITIONS TmTensorDialect.td)
 mlir_tablegen(TmTensorDialect.h.inc -gen-dialect-decls -dialect=tm_tensor)
 mlir_tablegen(TmTensorDialect.cpp.inc -gen-dialect-defs -dialect=tm_tensor)

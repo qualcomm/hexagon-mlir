@@ -60,9 +60,13 @@ static LogicalResult vectorizeLinalgOp(linalg::LinalgOp op) {
   auto innerLoopDim = op.getStaticLoopRanges()[numLoops - 1];
 
   auto dataTileSize = computeDataTileSize(op);
-  if (!dataTileSize ||
-      !perfectlyVectorizable(dataTileSize.value(), innerLoopDim)) {
-    DBG("-> skipping vectorization. data tile size and loop mismatch");
+  if (!dataTileSize) {
+    DBG("-> skipping vectorization - can not compute data tile size");
+    return failure();
+  }
+  if (ShapedType::isDynamic(innerLoopDim) ||
+      !isVectorizableLoopDim(innerLoopDim, dataTileSize.value())) {
+    DBG("-> skipping vectorization - can not vectorize this loop");
     return failure();
   }
 

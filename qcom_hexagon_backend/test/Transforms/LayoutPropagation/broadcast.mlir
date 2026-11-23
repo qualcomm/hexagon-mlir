@@ -1,3 +1,11 @@
+//===- broadcast.mlir -----------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
 
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=false},linalg-specialize-generic-ops))' | FileCheck %s --check-prefixes=CHECK
 //===------------------------------------------------------------------===//
@@ -6,7 +14,7 @@
 module {
   func.func @broadcast_pack_mmt4d_unpack(
       %arg0 : tensor<8xi32>,
-      %argB_packed : tensor<2x2x4x4xi32>) -> tensor<8x8x2xi32> {
+      %argB_packed : tensor<2x2x4x4xi32>) -> tensor<8x7x2xi32> {
     // Pre: broadcast to get A : 8x7
     %a_dst = tensor.empty() : tensor<8x7xi32>
     %A = linalg.broadcast
@@ -26,16 +34,16 @@ module {
       outs(%C_pack_dst : tensor<2x2x4x4xi32>) -> tensor<2x2x4x4xi32>
 
     // Unpack C -> 8x8
-    %C_dst = tensor.empty() : tensor<8x8xi32>
+    %C_dst = tensor.empty() : tensor<8x7xi32>
     %C = linalg.unpack %C_packed
       inner_dims_pos = [0, 1] inner_tiles = [4, 4] into %C_dst
-      : tensor<2x2x4x4xi32> -> tensor<8x8xi32>
+      : tensor<2x2x4x4xi32> -> tensor<8x7xi32>
     
     // Post: broadcast again (same kind)
-    %b_dst = tensor.empty() : tensor<8x8x2xi32>
+    %b_dst = tensor.empty() : tensor<8x7x2xi32>
     %Cb = linalg.broadcast
-            ins(%C : tensor<8x8xi32>) outs(%b_dst : tensor<8x8x2xi32>) dimensions = [2]
-    return %Cb : tensor<8x8x2xi32>
+            ins(%C : tensor<8x7xi32>) outs(%b_dst : tensor<8x7x2xi32>) dimensions = [2]
+    return %Cb : tensor<8x7x2xi32>
   }
 }
 // CHECK: func.func @broadcast_pack_mmt4d_unpack(%[[A0:.+]]: tensor<8xi32>, %[[A1:.+]]: tensor<2x2x4x4xi32>)
@@ -53,4 +61,4 @@ module {
 // CHECK: %[[UNPACK:.*]] = linalg.unpack %[[BROADCAST2]]
 // CHECK-SAME: inner_dims_pos = [0, 1]
 // CHECK-SAME: inner_tiles = [4, 4]
-// CHECK: return %[[UNPACK]] : tensor<8x8x2xi32>
+// CHECK: return %[[UNPACK]] : tensor<8x7x2xi32>

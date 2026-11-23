@@ -8,13 +8,17 @@
 # ===------------------------------------------------------------------------===
 
 from math import prod
-from triton.backends.driver import DriverBase
+
 from triton.backends.compiler import GPUTarget
+from triton.backends.driver import DriverBase
 from triton.backends.qcom_hexagon_backend.triton_hexagon_launcher import (
-    TritonHexagonLauncher,
     HexagonUtils,
+    TritonHexagonLauncher,
 )
-from triton.backends.qcom_hexagon_backend.utils import make_profiled_return
+from triton.backends.qcom_hexagon_backend.utils import (
+    PackedMetadata,
+    make_profiled_return,
+)
 
 
 def getHexagonLauncherClass(device_type="dsp"):
@@ -37,53 +41,50 @@ def getHexagonLauncherClass(device_type="dsp"):
             #         CompiledKernel.launch_enter_hook,
             #         self.CompiledKernel.launch_exit_hook, *args
             kernel_llir = args[4]
-            pack_metadata = args[5]
-            unstructured_return_types = pack_metadata[7]
+            pack_metadata: PackedMetadata = args[5]
             return_profs = [
-                make_profiled_return(ret) for ret in unstructured_return_types
+                make_profiled_return(ret) for ret in pack_metadata.return_types
             ]
             # Extract metadata["name"] field which has the function name.
             # Add "_mlir_ciface_" prefix if kernel has >0 returns (this changes the calling conv.)
             func_name = (
                 "_mlir_ciface_" if len(return_profs) > 0 else ""
-            ) + pack_metadata[6]
-            iterations = pack_metadata[8]
-            compiled_scratch = pack_metadata[9] if len(pack_metadata) > 9 else None
-            compiled_enable_multithreading = (
-                pack_metadata[10] if len(pack_metadata) > 10 else None
-            )
-            compiled_enable_threaded_dispatch = (
-                pack_metadata[11] if len(pack_metadata) > 11 else None
-            )
-            compiled_enable_lwp = pack_metadata[12] if len(pack_metadata) > 12 else None
+            ) + pack_metadata.name
             num_fixed_args = 9
             inputs_with_constants = list(args[num_fixed_args:])
             inputs = [
                 inp
                 for idx, inp in enumerate(inputs_with_constants)
-                if not self.input_type_list[idx] == "constexpr"
+                if self.input_type_list[idx] != "constexpr"
+            ]
+            input_arg_types = [
+                self.input_type_list[idx]
+                for idx in range(len(inputs_with_constants))
+                if self.input_type_list[idx] != "constexpr"
             ]
             launch_grid = (args[0], args[1], args[2])
             if prod(launch_grid) < 1:
                 raise ValueError(
-                    """
-                    Must set at least 1 thread in SPMD launch grid.
-                    To launch singlethreaded, invoke kernel as follows:
-                    your_kernel[(1,)](...)
-                    """
+                    "Must set at least 1 thread in SPMD launch grid.\n"
+                    "To launch singlethreaded, invoke kernel as follows:\n"
+                    "your_kernel[(1,)](...)"
                 )
             self.launcher._exec_kernel(
                 kernel_llir,
-                iterations,
+                pack_metadata.iterations,
                 func_name,
                 inputs,
                 return_profs,
                 launch_grid,
-                compiled_scratch=compiled_scratch,
-                compiled_enable_multithreading=compiled_enable_multithreading,
-                compiled_enable_threaded_dispatch=compiled_enable_threaded_dispatch,
-                compiled_enable_lwp=compiled_enable_lwp,
+                compiled_scratch=pack_metadata.scratch,
+                compiled_enable_multithreading=pack_metadata.enableMultiThreading,
+                compiled_enable_threaded_dispatch=pack_metadata.enableThreadedDispatch,
+                compiled_enable_lwp=pack_metadata.enableLWP,
+                compiled_enable_hexkl=pack_metadata.enableHexKL,
+                compiled_hexkl_mode=pack_metadata.hexKLMode,
+                compiled_num_threads=pack_metadata.num_threads,
                 runtime_options=kwargs,
+                input_arg_types=input_arg_types,
             )
             # TODO: There seems to be no way to propogate the call returns upward, because
             #    - The call result is not used by the caller
@@ -115,11 +116,10 @@ def ty_to_cpp(ty):
 
 
 class HexagonDriver(DriverBase):
-    def __init__(self, device_type="dsp"):
+    def __init__(self):
         self.utils = HexagonUtils()
         self.backend = "HEXAGON"
-        self.device_type = device_type
-        instance = getHexagonLauncherClass(device_type)
+        instance = getHexagonLauncherClass()
         instance._initialized = True
         self.launcher_cls = instance
         # Dummy executable/binary set, since there is no binary for our usecase.
@@ -159,10 +159,9 @@ class HexagonDriver(DriverBase):
     def get_empty_cache_for_benchmark(self):
         import torch
 
-        device = "cpu"
         # 256MB cache
         cache_size = 256 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int, device=device)
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device="cpu")
 
     def clear_cache(self, cache):
         cache.zero_()

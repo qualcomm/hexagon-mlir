@@ -79,7 +79,10 @@ static int64_t getAllocationSize(crouton::CroutonType cTy) {
 }
 
 static int64_t getAllocationSize(MemRefType cTy) {
-  return cTy.getNumElements() * cTy.getElementTypeBitWidth() / 8;
+  // Ceil to bytes so sub-byte types (e.g. i1, stored as 1 byte on Hexagon)
+  // are sized correctly. Matches the dynamic path which uses LLVM's sizeof(T).
+  int64_t bytesPerElem = (cTy.getElementTypeBitWidth() + 7) / 8;
+  return cTy.getNumElements() * bytesPerElem;
 }
 
 static Value computeAllocationSize(MemRefType type,
@@ -669,8 +672,6 @@ struct HexagonMemToLLVMPass
     : public ::impl::HexagonMemToLLVMBase<HexagonMemToLLVMPass> {
   explicit HexagonMemToLLVMPass(const HexagonMemToLLVMOptions &options)
       : Base(options) {}
-
-  using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry

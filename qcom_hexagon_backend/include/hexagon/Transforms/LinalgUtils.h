@@ -28,4 +28,57 @@ llvm::SmallVector<unsigned> getMatmulPermutation(mlir::linalg::LinalgOp op);
 llvm::SmallVector<unsigned>
 getBatchMatmulPermutation(mlir::linalg::LinalgOp op);
 
+/// Returns true iff `op` is a canonical row-major matmul:
+/// A(m,k) * B(k,n) -> C(m,n) with the standard indexing maps and no
+/// transpose / broadcast applied via the optional indexing_maps attribute.
+bool isCanonicalRowMajorMatmul(mlir::linalg::LinalgOp op);
+
+/// Describes the orientation of a 2-D `linalg::MatmulOp` (or compatible
+/// `linalg::GenericOp`) by inspecting its `indexing_maps`.  Identifies one
+/// of the four supported orientations:
+///
+///   isMatmul   lhsTranspose   rhsTranspose   pattern
+///   --------   ------------   ------------   -------
+///   true       false          false          C(m,n) = A(m,k) · B(k,n)
+///   true       true           false          C(m,n) = A(k,m)ᵀ · B(k,n)
+///   true       false          true           C(m,n) = A(m,k) · B(n,k)ᵀ
+///   true       true           true           C(m,n) = A(k,m)ᵀ · B(n,k)ᵀ
+///   false      *              *              (non-matmul / unsupported)
+///
+/// The C map is always identity `(m,n) -> (m,n)`.  In all cases the iteration
+/// space is (m, n, k); only the operand access patterns change.  Returns
+/// `isMatmul = false` for any other shape (broadcasts, higher rank, etc.).
+struct MatmulMapOrientation {
+  bool isMatmul = false;
+  bool lhsTranspose = false;
+  bool rhsTranspose = false;
+};
+MatmulMapOrientation getMatmulMapOrientation(mlir::linalg::LinalgOp op);
+
+namespace mlir {
+/// Which HMX matmul element-type contract an operation matched.
+///   F16  : (f16, f16) -> f16|f32   -- HMX f16 MAC.
+///   U8I8 : (i8,  i8 ) -> i32       -- HMX mixed unsigned-activation /
+///                                     signed-weight MAC (mm_u8i8). Both
+///                                     operands are signless `i8`; "u8
+///                                     activation" is a contract carried by
+///                                     operand position, not by the MLIR type,
+///                                     matching the hexkl dialect's micro ops.
+enum class HMXMatmulKind { F16, U8I8 };
+
+/// Returns the typed operand tensors to the batched matmul only if the
+/// operation maps to HMX.
+///
+/// `allowU8I8` additionally admits the (i8, i8) -> i32 contract; it defaults to
+/// false so existing callers keep the f16-only behaviour. Callers that opt in
+/// must handle both kinds -- pass `matchedKind` to learn which one matched.
+FailureOr<std::tuple<TypedValue<RankedTensorType>, TypedValue<RankedTensorType>,
+                     TypedValue<RankedTensorType>>>
+isHMXTypeAndRankCompatible(DestinationStyleOpInterface op,
+                           PatternRewriter &rewriter, const int64_t rank,
+                           bool allowU8I8 = false,
+                           HMXMatmulKind *matchedKind = nullptr);
+
+} // namespace mlir
+
 #endif

@@ -1,11 +1,17 @@
+//===- test_memory_offsets_errors.mlir ------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -memory-offsets -split-input-file -verify-diagnostics
 
-// ===================================================================
-// Case 1: Dynamic scratch arg — memref<?xi8, 1> is rejected because
-// the pass requires a static size to validate at compile time.
-// ===================================================================
-// expected-error @+1 {{hexagon.scratch argument must have a static size}}
-func.func @test_dynamic_scratch_rejected(
+// Case 1: Invalid scratch type — warns and falls back to internal alloc.
+// expected-warning @+1 {{Invalid hexagon.scratch arg type}}
+func.func @test_dynamic_scratch_falls_back(
     %A: memref<32xf32>,
     %vtcm: memref<?xi8, 1> {hexagon.scratch}) {
   %0 = memref.alloc() : memref<32xf32, 1>
@@ -16,32 +22,9 @@ func.func @test_dynamic_scratch_rejected(
 
 // -----
 
-// ===================================================================
-// Case 2: Oversized allocs — kernel allocations exceed the scratch
-// buffer size.
-// ===================================================================
-// expected-error @+1 {{Required VTCM size}}
-func.func @test_scratch_overflow(
-    %A: memref<32xf32>,
-    %vtcm: memref<128xi8, 1> {hexagon.scratch}) {
-  // Two 32xf32 allocs = 2 * 128 bytes = 256 bytes, aligned to 2048 each = 4096 bytes total.
-  // Scratch is only 128 bytes — must fail.
-  %0 = memref.alloc() : memref<32xf32, 1>
-  %1 = memref.alloc() : memref<32xf32, 1>
-  memref.copy %A, %0 : memref<32xf32> to memref<32xf32, 1>
-  memref.dealloc %0 : memref<32xf32, 1>
-  memref.dealloc %1 : memref<32xf32, 1>
-  return
-}
-
-// -----
-
-// ===================================================================
-// Case 3: Zero-sized scratch arg — memref<0xi8, 1> must be rejected
-// even though it has a static shape.
-// ===================================================================
-// expected-error @+1 {{hexagon.scratch argument must have a positive size}}
-func.func @test_zero_sized_scratch(
+// Case 2: Zero-sized scratch — warns and falls back.
+// expected-warning @+1 {{Invalid hexagon.scratch arg type}}
+func.func @test_zero_sized_scratch_falls_back(
     %A: memref<32xf32>,
     %vtcm: memref<0xi8, 1> {hexagon.scratch}) {
   %0 = memref.alloc() : memref<32xf32, 1>
@@ -52,16 +35,44 @@ func.func @test_zero_sized_scratch(
 
 // -----
 
-// ===================================================================
-// Case 4: Fallback budget exceeded — no scratch arg, but allocs
-// exceed the configured bufferSize budget.
-// ===================================================================
-// expected-error @+1 {{Required VTCM size}}
+// Case 3: Peak pressure exceeds scratch budget — errors with per-alloc notes.
+// expected-error @+1 {{VTCM peak 256 > budget 128}}
+func.func @test_scratch_overflow(
+    %A: memref<32xf32>,
+    %vtcm: memref<128xi8, 1> {hexagon.scratch}) {
+  // expected-note @+1 {{(128 B)}}
+  %0 = memref.alloc() : memref<32xf32, 1>
+  // expected-note @+1 {{(128 B)}}
+  %1 = memref.alloc() : memref<32xf32, 1>
+  memref.copy %A, %0 : memref<32xf32> to memref<32xf32, 1>
+  memref.dealloc %0 : memref<32xf32, 1>
+  memref.dealloc %1 : memref<32xf32, 1>
+  return
+}
+
+// -----
+
+// Case 4: Fallback budget exceeded — same error shape as external mode.
+// expected-error @+1 {{VTCM peak 2097152 > budget 1048576}}
 func.func @test_fallback_budget_exceeded(%A: memref<32xf32>) {
-  // A single memref<262144xf32, 1> = 1MB exactly; two of them exceed the budget.
+  // expected-note @+1 {{(1048576 B)}}
   %0 = memref.alloc() : memref<262144xf32, 1>
+  // expected-note @+1 {{(1048576 B)}}
   %1 = memref.alloc() : memref<262144xf32, 1>
   memref.dealloc %0 : memref<262144xf32, 1>
   memref.dealloc %1 : memref<262144xf32, 1>
+  return
+}
+
+// -----
+
+// Case 5: VTCM alloc inside scf.forall — concurrent iterations would
+// share offsets; pass errors out.
+func.func @test_alloc_in_forall(%vtcm: memref<2048xi8, 1> {hexagon.scratch}) {
+  scf.forall (%i) in (8) {
+    // expected-error @+1 {{VTCM alloc in scf.forall not supported}}
+    %0 = memref.alloc() : memref<128xf32, 1>
+    memref.dealloc %0 : memref<128xf32, 1>
+  }
   return
 }

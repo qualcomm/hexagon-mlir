@@ -1272,6 +1272,116 @@ bool containsDivision(GenericOp genericOp) {
   }
   return false;
 }
+
+// Iterate over the post dominating users recursively to find an UnPack Op.
+// The UnPack Op must convert the padded dimensions to non-padded sizes.
+// The source of the PackOp and the result of the UnPack Op may be different
+// tensors.
+bool paddingValuesNotUsed(Operation *postDomOp, PackOp &packOp,
+                          llvm::SmallVector<unsigned> &paddingDims) {
+  auto hasEquivalentTiles = [&](UnPackOp upOp) {
+    return packOp.getOuterDimsPerm() == upOp.getOuterDimsPerm() &&
+           packOp.getInnerDimsPos() == upOp.getInnerDimsPos() &&
+           llvm::equal(packOp.getMixedTiles(), upOp.getMixedTiles());
+  };
+
+  auto equalPaddingDimSizes = [&](UnPackOp upOp) {
+    llvm::ArrayRef<int64_t> shape1 = packOp.getSourceType().getShape();
+    auto resultTy = upOp.getResult().getType();
+    llvm::ArrayRef<int64_t> shape2 = resultTy.getShape();
+
+    for (auto dim : paddingDims) {
+      if (shape1[dim] != shape2[dim])
+        return false;
+    }
+
+    return true;
+  };
+
+  // A post-dominating UnPack Op must have the same tile sizes.
+  // The padding dimensions of the source tensor and result tensor must be the
+  // same.
+  if (isa<linalg::UnPackOp>(postDomOp)) {
+    if (hasEquivalentTiles(dyn_cast<UnPackOp>(postDomOp)) &&
+        equalPaddingDimSizes(dyn_cast<UnPackOp>(postDomOp))) {
+      return true;
+    }
+  }
+
+  // If a post-dominating op is a generic op, return false if there is any
+  // reduction iterator.
+  if (auto genOp = dyn_cast<GenericOp>(postDomOp)) {
+    bool allIteratorsAreParallel =
+        llvm::all_of(genOp.getIteratorTypesArray(), linalg::isParallelIterator);
+
+    if (!allIteratorsAreParallel)
+      return false;
+  }
+
+  // A conv2d reduces along the channels. If a post-dominating conv2d op is
+  // encountered, channels (dim=0) must not be padded.
+  if (isa<linalg::Conv2DNhwcFhwcOp>(postDomOp)) {
+    bool zero =
+        llvm::any_of(paddingDims, [](unsigned val) { return val == 0; });
+
+    if (zero)
+      return false;
+  }
+
+  if (isa<linalg::Mmt4DOp>(postDomOp)) {
+    Value padding = packOp.getPaddingValue();
+
+    APInt integerValue = llvm::APInt::getZero(32);
+    if (!matchPattern(padding, m_ConstantInt(&integerValue)))
+      return false;
+
+    return true;
+  }
+
+  // Only handle single result ops to avoid complexity.
+  if (postDomOp->getNumResults() != 1)
+    return false;
+
+  // Only handle single user cases to avoid complexity.
+  Value result = postDomOp->getResult(0);
+  if (!result.hasOneUse())
+    return false;
+  Operation *user = *result.user_begin();
+  return paddingValuesNotUsed(user, packOp, paddingDims);
+}
+
+// Get the dimensions padded by the PackOp
+static llvm::SmallVector<unsigned> getPaddingDims(linalg::PackOp packOp) {
+  llvm::SmallVector<unsigned> paddingDims;
+
+  auto srcType = llvm::dyn_cast<RankedTensorType>(packOp.getSourceType());
+  if (!srcType || !srcType.hasStaticShape())
+    return paddingDims; // Need ranked tensor to inspect static extents
+
+  ArrayRef<int64_t> innerDimsPos = packOp.getInnerDimsPos();
+  SmallVector<int64_t> innerTileSizes = packOp.getStaticTiles();
+
+  // All tile dimensions must be static
+  bool allStatic = llvm::all_of(innerTileSizes, [](int64_t tile) {
+    return !ShapedType::isDynamic(tile);
+  });
+
+  if (!allStatic)
+    return paddingDims;
+
+  for (int i = 0; i < innerDimsPos.size(); i++) {
+    int64_t srcDim = innerDimsPos[i];
+    int64_t tile = innerTileSizes[i];
+    int64_t extent = srcType.getDimSize(srcDim);
+
+    // This packed dimension will be padded if not divisible by tile size.
+    if (extent % tile != 0)
+      paddingDims.push_back(srcDim);
+  }
+
+  return paddingDims;
+}
+
 // Different than upstream end
 
 /// Bubbles up linalg.pack op through a producer generic op. This
@@ -1320,7 +1430,8 @@ bool containsDivision(GenericOp genericOp) {
 static FailureOr<
     std::tuple<SmallVector<SmallVector<linalg::PackOp>>, GenericOp>>
 bubbleUpPackOpThroughGenericOp(RewriterBase &rewriter, linalg::PackOp packOp,
-                               const ControlPropagationFn &controlFn) {
+                               const ControlPropagationFn &controlFn,
+                               bool enablePaddedPackPropagation = false) {
   auto genericOp = packOp.getSource().getDefiningOp<GenericOp>();
   if (!genericOp)
     return failure();
@@ -1335,6 +1446,7 @@ bubbleUpPackOpThroughGenericOp(RewriterBase &rewriter, linalg::PackOp packOp,
   if (hasGatherSemantics(genericOp))
     return failure();
 
+  // Different than upstream begin
   // Check for matching types for 2 packops.
   auto haveMatchingTypes = [](linalg::PackOp packOp1,
                               linalg::PackOp packOp2) -> bool {
@@ -1373,6 +1485,45 @@ bubbleUpPackOpThroughGenericOp(RewriterBase &rewriter, linalg::PackOp packOp,
     for (OpOperand &use : resValue.getUses()) {
       if (auto packOp = dyn_cast<linalg::PackOp>(use.getOwner())) {
         userPackOps.push_back(packOp);
+        if (!enablePaddedPackPropagation && packOp.getPaddingValue()) {
+          // Check for safety when moving linalg.pack with padding values
+          // Safety conditions:
+          // 1. The linalg.generic iterator must be a parallel iterator for the
+          // padding dimensions.
+          // 2. The padded locations must not be used by the later uses.
+          auto srcType =
+              llvm::dyn_cast<RankedTensorType>(packOp.getSourceType());
+          if (!srcType)
+            return failure();
+
+          // Get the dimensions that contain padded locations
+          auto paddingDims = getPaddingDims(packOp);
+
+          // Get the iterator types array
+          SmallVector<utils::IteratorType> iterators =
+              genericOp.getIteratorTypesArray();
+
+          // The linalg.pack can only be moved if the padding dims are processed
+          // in "parallel".
+          for (unsigned d : paddingDims) {
+            if (!isParallelIterator(iterators[d])) {
+              LLVM_DEBUG(
+                  llvm::dbgs()
+                  << "The padded values are involved in a reduction operation. "
+                     "Hence unsafe to move the padded PackOp\n");
+              return failure();
+            }
+          }
+
+          // Return if the padding values are used later on
+          if (!paddingValuesNotUsed(packOp, packOp, paddingDims)) {
+            LLVM_DEBUG(llvm::dbgs() << "Padded values may be used. Hence "
+                                       "unsafe to move the padded PackOp\n");
+            return failure();
+          }
+
+          LLVM_DEBUG(llvm::dbgs() << "Safe to move the padded PackOp\n");
+        }
 
         // Check for matching pack types
         if (!haveMatchingTypes(packOp, userPackOps[0]))
@@ -1382,6 +1533,7 @@ bubbleUpPackOpThroughGenericOp(RewriterBase &rewriter, linalg::PackOp packOp,
     }
     userPackOpsForRes.push_back(userPackOps);
   }
+  // Different than upstream end
 
   if (numResults != genericOp.getNumDpsInits())
     return failure();
@@ -1468,13 +1620,15 @@ struct BubbleUpPackOpThroughGenericOpPattern
     : public OpRewritePattern<linalg::PackOp> {
 public:
   BubbleUpPackOpThroughGenericOpPattern(MLIRContext *context,
-                                        ControlPropagationFn fun)
-      : OpRewritePattern<linalg::PackOp>(context), controlFn(std::move(fun)) {}
+                                        ControlPropagationFn fun,
+                                        bool enablePaddedPackPropagation)
+      : OpRewritePattern<linalg::PackOp>(context), controlFn(std::move(fun)),
+        enablePaddedPackPropagation(enablePaddedPackPropagation) {}
 
   LogicalResult matchAndRewrite(linalg::PackOp packOp,
                                 PatternRewriter &rewriter) const override {
-    auto packOpsAndGeneric =
-        bubbleUpPackOpThroughGenericOp(rewriter, packOp, controlFn);
+    auto packOpsAndGeneric = bubbleUpPackOpThroughGenericOp(
+        rewriter, packOp, controlFn, enablePaddedPackPropagation);
     if (failed(packOpsAndGeneric))
       return failure();
 
@@ -1489,6 +1643,7 @@ public:
 
 private:
   ControlPropagationFn controlFn;
+  bool enablePaddedPackPropagation;
 };
 
 /// Propagate a linalg.pack operation up through a tensor.pad. The idea is to
@@ -2331,9 +2486,11 @@ struct HexagonExtendPackPass
       return true;
     };
 
+    propagationPatterns.add<BubbleUpPackOpThroughGenericOpPattern>(
+        context, upperFrontierFn, enablePaddedPackPropagation);
     propagationPatterns
-        .add<BubbleUpPackOpThroughGenericOpPattern, BubbleUpPackThroughPadOp,
-             BubbleUpPackOpThroughReshapeOp>(context, upperFrontierFn);
+        .add<BubbleUpPackThroughPadOp, BubbleUpPackOpThroughReshapeOp>(
+            context, upperFrontierFn);
 
     propagationPatterns
         .add<PushDownUnPackOpThroughReshapeOp, PushDownUnPackOpThroughGenericOp,

@@ -1,3 +1,12 @@
+//===- div-to-mul-fill_extract.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -split-input-file -div-to-mul-optimization -cse -canonicalize | FileCheck %s
 
 // This test verifies div-to-mul optimization for divisions where the divisor is

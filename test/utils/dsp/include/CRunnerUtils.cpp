@@ -52,13 +52,31 @@ extern "C" void memrefCopy(int64_t elemSize, UnrankedMemRefType<char> *srcArg,
     dstStrides[rankp] = dst.strides[rankp] * elemSize;
   }
 
-  int64_t readIndex = 0, writeIndex = 0;
+  // Coalesce the maximal run of trailing dimensions that is contiguous in both
+  // operands into one memcpy. A trailing axis joins the block when its byte
+  // stride equals the block's current byte size in both src and dst.
+  int64_t copyBytes = elemSize;
+  int64_t outerRank = rank;
+  for (int64_t axis = rank - 1; axis >= 0; --axis) {
+    if (srcStrides[axis] != copyBytes || dstStrides[axis] != copyBytes)
+      break;
+    copyBytes *= src.sizes[axis];
+    --outerRank;
+  }
 
+  // Fully contiguous in both operands -> a single bulk copy.
+  if (outerRank == 0) {
+    memcpy(dstPtr, srcPtr, copyBytes);
+    return;
+  }
+
+  // Iterate only the leading (non-coalesced) axes, copying one contiguous block
+  // of copyBytes per step.
+  int64_t readIndex = 0, writeIndex = 0;
   for (;;) {
-    // Copy over the element, byte by byte.
-    memcpy(dstPtr + writeIndex, srcPtr + readIndex, elemSize);
-    // Advance index and read position.
-    for (int64_t axis = rank - 1; axis >= 0; --axis) {
+    memcpy(dstPtr + writeIndex, srcPtr + readIndex, copyBytes);
+    // Advance index and read position over the outer axes only.
+    for (int64_t axis = outerRank - 1; axis >= 0; --axis) {
       // Advance at current axis.
       auto newIndex = ++indices[axis];
       readIndex += srcStrides[axis];

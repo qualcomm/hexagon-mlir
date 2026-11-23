@@ -9,6 +9,8 @@
 
 #include "triton_qcom_hexagon_backend_api.h"
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
+#include "hexagon/Dialect/Composite/IR/CompositeDialect.h"
+#include "hexagon/Dialect/Composite/Transforms/BufferizableOpInterfaceImpl.h"
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexKL/Transforms/BufferizableOpInterfaceImpl.h"
@@ -18,6 +20,7 @@
 #include "hexagon/Dialect/TmTensor/IR/TmTensorDialect.h"
 #include "hexagon/Target/HEX_LLVMIR/LLVMIRTranslation.h"
 #include "hexagon/Target/Linalg_MLLVMIR/MLLVMIRTranslation.h"
+#include "hexagon/Transforms/Transforms.h"
 #include "triton/Dialect/Triton/IR/Dialect.h" // added this for the loadDialect
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -68,6 +71,24 @@
 void fail(const std::string &message) { throw std::runtime_error(message); }
 
 std::unique_ptr<llvm::Module>
+loadLLVMIRFromFile(const char *path, llvm::LLVMContext &llvmContext,
+                   std::string *errOut = nullptr) {
+  llvm::SMDiagnostic diag;
+  auto llvmModule = llvm::parseIRFile(path, diag, llvmContext);
+  if (!llvmModule) {
+    if (errOut) {
+      std::string msg;
+      llvm::raw_string_ostream os(msg);
+      diag.print(path, os);
+      os.flush();
+      *errOut = msg;
+    }
+    return nullptr;
+  }
+  return llvmModule;
+}
+
+std::unique_ptr<llvm::Module>
 fixAlignedAllocTypes(llvm::LLVMContext &context, llvm::Module *originalModule,
                      const std::string &outputFilePath) {
 
@@ -114,6 +135,12 @@ fixAlignedAllocTypes(llvm::LLVMContext &context, llvm::Module *originalModule,
 }
 
 namespace hexagon_backend {
+
+bool runLowerLibdevice(mlir::ModuleOp &module_op) {
+  mlir::PassManager pm(module_op.getContext());
+  pm.addPass(mlir::hexagon::createLowerLibdevicePass());
+  return mlir::succeeded(pm.run(module_op));
+}
 
 /// Classify argument types. We treat tensors, memrefs, and LLVM pointers as
 /// "buffer-like". Everything else (integers, floats, index, vectors, etc.)
@@ -332,6 +359,30 @@ getReturnList(mlir::ModuleOp module_op, const std::string &fName) {
   return resultList;
 }
 
+// Reads a named i64 attribute off the MODULE, not the function -- discardable
+// function attributes don't reliably survive the rest of the lowering
+// pipeline (some pass rebuilds the func op), while the module is never
+// rebuilt this way and always has exactly one function. fName is accepted
+// for API stability but unused. Returns defaultValue if absent (the common
+// case, e.g. for a non-LHS-multicast compile).
+int64_t getFuncI64Attr(mlir::ModuleOp module_op, const std::string &fName,
+                       const std::string &attrName, int64_t defaultValue) {
+  (void)fName;
+  if (auto attr = module_op->getAttrOfType<mlir::IntegerAttr>(attrName))
+    return attr.getInt();
+  return defaultValue;
+}
+
+// String counterpart of getFuncI64Attr; same module-not-function rationale.
+std::string getFuncStrAttr(mlir::ModuleOp module_op, const std::string &fName,
+                           const std::string &attrName,
+                           const std::string &defaultValue) {
+  (void)fName;
+  if (auto attr = module_op->getAttrOfType<mlir::StringAttr>(attrName))
+    return attr.getValue().str();
+  return defaultValue;
+}
+
 std::string extractSingleFuncName(mlir::ModuleOp &module_op) {
   std::string module_func_name;
   std::vector<std::string> vector_func_names;
@@ -349,6 +400,7 @@ void loadDialects(mlir::MLIRContext &context) {
   mlir::registerAllDialects(registry);   // TODO: restrict
   mlir::registerAllExtensions(registry); // TODO: restrict
 
+  registry.insert<mlir::composite::CompositeDialect>();
   registry.insert<mlir::crouton::CroutonDialect>();
   registry.insert<mlir::hexagonmem::HexagonMemDialect>();
   registry.insert<mlir::hexkl::HexKLDialect>();
@@ -358,6 +410,7 @@ void loadDialects(mlir::MLIRContext &context) {
 
   // Register all external models.
   mlir::hexkl::registerBufferizableOpInterfaceExternalModels(registry);
+  mlir::composite::registerBufferizableOpInterfaceExternalModels(registry);
 
   context.appendDialectRegistry(registry);
   context.loadDialect<mlir::triton::TritonDialect>();
@@ -382,6 +435,17 @@ mlir::ModuleOp parseMlirFromString(const std::string &src,
   return module->clone();
 }
 
+// TODO: refactor translateLinalgToObj() into a series of pybind functions
+// callable from compiler.py::ttsharedir_to_obj(). They should individually
+// cover:
+//     1. linalg_to_llvmmlir
+//     2. llvmmlir_to_llvmir
+//     3. llvmir_to_obj
+// The current organization is not well-abstracted and could be much more
+// modular. As it is, it's difficult to add support to new features and
+// workflows without fear of breaking working ones. After this is done, we can
+// fully separate out the workflow to compile from LLVM IR, avoiding compiling
+// the given Triton kernel at all.
 std::vector<std::vector<char>> translateLinalgToObj(
     mlir::ModuleOp &linalg_module,
     const std::unordered_map<std::string, std::string> &options_map) {
@@ -462,9 +526,28 @@ std::vector<std::vector<char>> translateLinalgToObj(
       mlir::hexagon::cond_run_inliner(current_llvm_mod,
                                       optionsLinalgToLLVM.enableHVXInlining);
 
-      // Dumping of the principal module if requested
+      const char *subLLFile = std::getenv("LLVM_IR_SUB_FROM_FILE");
       const char *dumpFile = std::getenv("LLVM_IR_DUMP_TO_FILE");
-      if (dumpFile && dumpFile[0] != '\0') {
+      bool enableSubLL = subLLFile && subLLFile[0] != '\0';
+      bool enableDumpLL = dumpFile && dumpFile[0] != '\0';
+      if (enableSubLL && enableDumpLL) {
+        fail("Environment variables LLVM_IR_DUMP_TO_FILE and "
+             "LLVM_IR_SUB_FROM_FILE are mutually exclusive. Enable at most 1 "
+             "of these options.");
+      }
+
+      // Inject custom LLVM IR from .ll file if requested
+      if (enableSubLL) {
+        std::string err;
+        current_llvm_mod = loadLLVMIRFromFile(subLLFile, llvmContext, &err);
+        if (!current_llvm_mod) {
+          llvm::errs() << "Error reading from LLVM IR file: " << err << "\n";
+          fail("Error in custom LLVM IR debug workflow");
+        }
+      }
+
+      // Dumping of the principal module if requested
+      if (enableDumpLL) {
         std::error_code EC;
         llvm::raw_fd_ostream outFile(dumpFile, EC, llvm::sys::fs::OF_Text);
         if (EC) {

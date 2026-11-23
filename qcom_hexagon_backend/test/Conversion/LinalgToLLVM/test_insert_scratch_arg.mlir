@@ -1,3 +1,12 @@
+//===- test_insert_scratch_arg.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -split-input-file %s \
 // RUN:   -pass-pipeline='builtin.module(func.func(insert-scratch-arg{scratch=4096}))' \
 // RUN: | FileCheck %s --check-prefix=INSERT
@@ -107,5 +116,28 @@ func.func @kernel_pipeline(
   %0 = memref.alloc() : memref<32xf32, 1>
   memref.copy %A, %0 : memref<32xf32> to memref<32xf32, 1>
   memref.dealloc %0 : memref<32xf32, 1>
+  return
+}
+
+// -----
+
+// Mixed-width scalar args (i64 strides + i32 size) before the trailing
+// program-info pack. The scratch arg must be inserted AFTER all scalar args
+// and BEFORE the 6 trailing i32s.
+// INSERT-LABEL: func.func @kernel_i64_scalars(
+// INSERT-SAME:  {{.*}}: memref<32xf32>,
+// INSERT-SAME:  {{.*}}: memref<64xf32>,
+// INSERT-SAME:  {{%[^:]+}}: i64,
+// INSERT-SAME:  {{%[^:]+}}: i64,
+// INSERT-SAME:  {{%[^:]+}}: i64,
+// INSERT-SAME:  {{%[^:]+}}: i32,
+// INSERT-SAME:  {{.*}}: memref<4096xi8, 1> {hexagon.scratch},
+// INSERT-SAME:  {{.*}}: i32, {{.*}}: i32, {{.*}}: i32, {{.*}}: i32, {{.*}}: i32, {{.*}}: i32)
+func.func @kernel_i64_scalars(
+    %A: memref<32xf32>,
+    %B: memref<64xf32>,
+    %ks0: i64, %ks1: i64, %ks2: i64, %xnumel: i32,
+    %num_programs_x: i32, %num_programs_y: i32, %num_programs_z: i32,
+    %pid_x: i32, %pid_y: i32, %pid_z: i32) {
   return
 }

@@ -1,3 +1,12 @@
+//===- exp_hexagon_routines.mlir ------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(llvm-intr-to-hexagon-routines)' | FileCheck %s -check-prefixes=CHECK
 
 // CHECK-LABEL: llvm.func @_hexagon_runtime_exp__vf(vector<32xi32>) -> vector<32xi32> attributes {sym_visibility = "private"}
@@ -12,12 +21,12 @@ llvm.func @foo(%arg0: vector<64xf16>, %arg1: vector<64xf32>) -> vector<64xf16> {
 
  %47 = llvm.intr.exp(%arg0)  {fastmathFlags = #llvm.fastmath<fast>} : (vector<64xf16>) -> vector<64xf16>
 
- // CHECK: [[EXTRACTV:%.+]] = llvm.intr.vector.extract %arg1[0] : vector<32xf32> from vector<64xf32>
+ // CHECK: [[EXTRACTV:%.+]] = llvm.shufflevector %arg1, {{%.+}} [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31] : vector<64xf32>
  // CHECK-NEXT: [[BITCAST1:%.+]] = llvm.bitcast [[EXTRACTV]] : vector<32xf32> to vector<32xi32>
  // CHECK-NEXT: [[EXP21:%.+]] = llvm.call @_hexagon_runtime_exp__vf([[BITCAST1]]) : (vector<32xi32>) -> vector<32xi32>
  // CHECK-NEXT: [[BITCAST2:%.+]] = llvm.bitcast [[EXP21]] : vector<32xi32> to vector<32xf32>
  // CHECK-NEXT: [[INSERTV:%.+]] = llvm.intr.vector.insert [[BITCAST2]], [[UNDEF]][0] : vector<32xf32> into vector<64xf32>
- // CHECK-NEXT: [[EXTRACTV2:%.+]] = llvm.intr.vector.extract %arg1[32] : vector<32xf32> from vector<64xf32>
+ // CHECK-NEXT: [[EXTRACTV2:%.+]] = llvm.shufflevector %arg1, {{%.+}} [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63] : vector<64xf32>
  // CHECK-NEXT: [[BITCAST3:%.+]] = llvm.bitcast [[EXTRACTV2]] : vector<32xf32> to vector<32xi32>
  // CHECK-NEXT: [[EXP22:%.+]] = llvm.call @_hexagon_runtime_exp__vf([[BITCAST3]]) : (vector<32xi32>) -> vector<32xi32>
  // CHECK-NEXT: [[BITCAST4:%.+]] = llvm.bitcast [[EXP22]] : vector<32xi32> to vector<32xf32>

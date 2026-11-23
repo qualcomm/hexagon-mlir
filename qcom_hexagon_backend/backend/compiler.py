@@ -10,20 +10,24 @@
 import functools
 import os
 import re
+import subprocess
 import tempfile
 from dataclasses import replace
 from pathlib import Path
-import subprocess
-from typing import Any, Dict, no_type_check
 from types import ModuleType
+from typing import Any, no_type_check
 
 from triton._C.libtriton import ir, passes, qcom_hexagon_backend  # type: ignore
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton.backends.qcom_hexagon_backend.utils import parse_return_types
 
 # Temporary measure to compile .so for HTP without calling the Triton driver
-from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
-from .hexagon_options import HexagonOptions
+from triton.backends.qcom_hexagon_backend import knobs
+from triton.backends.qcom_hexagon_backend.utils import (
+    PackedMetadata,
+    parse_return_types,
+)
+
+from .hexagon_options import HexagonOptions, is_mlir_nsp_sharded
 
 # This file is part of a small subset of python files that uses some type-annotations
 # and it passes type-verification with mypy (a type checker).
@@ -31,15 +35,72 @@ from .hexagon_options import HexagonOptions
 # mypy compiler.py hexagon_executor.py hexagon_launcher_base.py torch_mlir_hexagon_launcher.py triton_hexagon_launcher.py --follow-untyped-imports --check-untyped-defs
 
 
-def _get_triton_shared_opt_path(device_type: str) -> str:
-    path = os.getenv(
-        "TRITON_SHARED_OPT_PATH",
-        "",
-    )
-    if path == "":
-        raise Exception("TRITON_SHARED_OPT_PATH is not set.")
+# Triton signature dtype string -> natural element alignment in bytes.
+# A leading "*" denotes a pointer; we use the pointee's element size, which is
+# the safe lower bound on a pointer's divisibility (the C alignment of any T*).
+_DTYPE_BYTE_SIZES: dict[str, int] = {
+    "i1": 1,
+    "u1": 1,
+    "i8": 1,
+    "u8": 1,
+    "i16": 2,
+    "u16": 2,
+    "fp16": 2,
+    "bf16": 2,
+    "i32": 4,
+    "u32": 4,
+    "fp32": 4,
+    "i64": 8,
+    "u64": 8,
+    "fp64": 8,
+}
 
-    bin_path = Path(path).resolve()
+
+def _natural_alignment_for_dtype(dtype) -> int:
+    if isinstance(dtype, str):
+        s = dtype.lstrip("*")
+        if s in _DTYPE_BYTE_SIZES:
+            return _DTYPE_BYTE_SIZES[s]
+    # No reliable dtype info -> fall back to the lowest-common-denominator
+    # divisibility (1 byte) so we never overstate alignment.
+    return 1
+
+
+# Upstream Triton per-tensor element limit.  raise_max_tensor_numel.patch lifts
+# it so that MLIR-level NSP sharding can take whole matrices as single blocks;
+# every other kernel keeps the upstream limit.
+UPSTREAM_MAX_TENSOR_NUMEL = 1048576
+
+_TENSOR_SHAPE_RE = re.compile(r"tensor<((?:\d+x)+)")
+
+
+def check_tensor_numel(mod, opt) -> None:
+    """Reject tensors above the upstream limit unless NSP sharding splits them.
+
+    Only MLIR-level NSP sharding (enableNSPSharding without
+    nspShardingSemantics) partitions whole-matrix blocks across the workers,
+    so each worker only loads its shard.  Without it, such a tensor would be
+    materialized in full.
+    """
+    if is_mlir_nsp_sharded(
+        getattr(opt, "enableNSPSharding", False),
+        getattr(opt, "nspShardingSemantics", False),
+    ):
+        return
+    for match in _TENSOR_SHAPE_RE.finditer(str(mod)):
+        numel = 1
+        for dim in match.group(1).rstrip("x").split("x"):
+            numel *= int(dim)
+        if numel > UPSTREAM_MAX_TENSOR_NUMEL:
+            raise ValueError(
+                f"tensor<{match.group(1)}...> has {numel} elements, above the "
+                f"limit of {UPSTREAM_MAX_TENSOR_NUMEL}; larger blocks are only "
+                "supported with enableNSPSharding"
+            )
+
+
+def _get_triton_shared_opt_path() -> str:
+    bin_path = knobs.triton_shared.opt_path.resolve()
 
     if not bin_path.exists() or not bin_path.is_file():
         raise FileNotFoundError(
@@ -50,17 +111,31 @@ def _get_triton_shared_opt_path(device_type: str) -> str:
             f"'triton-shared-opt' exists but is not executable: {bin_path}"
         )
 
-    return str(bin_path)
+    return bin_path
 
 
-def ttir_to_ttsharedir(mod: str, options):
+def ttir_to_ttsharedir(mod, options):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
+    # Strip debug barriers — no-op on Hexagon, unsupported by triton-shared
+    ttir_code = re.sub(
+        r"^\s*ttg\.barrier all\b.*$\n?", "", ttir_code, flags=re.MULTILINE
+    )
+    # Strip llvm.intr.assume — LLVM dialect is not registered in triton-shared-opt
+    # so it cannot parse these ops.  They are pure hints with no semantic effect.
+    ttir_code = re.sub(
+        r"^\s*llvm\.intr\.assume\b.*$\n?", "", ttir_code, flags=re.MULTILINE
+    )
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, "tt.mlir")
-        dst_path = os.path.join(tmpdir, "ttshared.mlir")
-        Path(src_path).write_text(ttir_code)
-        triton_shared_opt_path = _get_triton_shared_opt_path(options.device_type)
+        tmpdir = Path(tmpdir)
+        src_path = tmpdir / "tt.mlir"
+        dst_path = tmpdir / "ttshared.mlir"
+        src_path.write_text(ttir_code)
+        triton_shared_opt_path = _get_triton_shared_opt_path()
+        # Note: enable-modulo-support was moved to --triton-to-structured in
+        # triton_shared; --triton-to-linalg-experimental no longer exposes it
+        # and always enables modulo support internally via its sub-pass.
         subprocess.check_call(
             [
                 triton_shared_opt_path,
@@ -71,7 +146,24 @@ def ttir_to_ttsharedir(mod: str, options):
             ]
         )
 
-        return Path(dst_path).read_text()
+        return dst_path.read_text()
+
+
+def _populate_metadata_after_lowering(mlir_mod, options, metadata):
+    """Populate metadata after lowering."""
+    # Small matmuls may be sharded over fewer cores than requested. The
+    # launcher must dispatch exactly the grid selected by the sharding pass.
+    metadata["nspCores"] = (
+        qcom_hexagon_backend.get_func_i64_attr(
+            mlir_mod, metadata["name"], "nsp.num_cores", 0
+        )
+        or options.nspCores
+    )
+
+
+def _preprocess_ttsharedir(mod: str) -> str:
+    """Apply temporary textual rewrites required by Hexagon lowering."""
+    return re.sub(r"\btt\.scan\b", "ttx.scan", mod)
 
 
 # NOTE: This func has significant overlap with ttsharedir_to_obj(). This is intentional.
@@ -81,6 +173,7 @@ def ttir_to_ttsharedir(mod: str, options):
 def ttsharedir_to_llir(mod: str, options, metadata={}):
     context = ir.context()
     qcom_hexagon_backend.load_dialects(context)
+    mod = _preprocess_ttsharedir(mod)
     mlir_mod = qcom_hexagon_backend.parse_mlir_module_from_str(mod, context)
 
     metadata["name"] = qcom_hexagon_backend.extract_func_name_from_mlir_module(mlir_mod)
@@ -88,14 +181,15 @@ def ttsharedir_to_llir(mod: str, options, metadata={}):
     metadata["return_types"] = parse_return_types(return_values)
 
     options_map = {k: str(v) for k, v in (options.__dict__).items()}
-    return qcom_hexagon_backend.translate_linalg_to_llvmir(mlir_mod, options_map)
+    llir = qcom_hexagon_backend.translate_linalg_to_llvmir(mlir_mod, options_map)
+    _populate_metadata_after_lowering(mlir_mod, options, metadata)
+    return llir
 
 
 def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
     context = ir.context()
     qcom_hexagon_backend.load_dialects(context)
-    # Temporary regex substitution to lower tt.scan
-    mod = re.sub(r"\btt\.scan\b", "ttx.scan", mod)
+    mod = _preprocess_ttsharedir(mod)
     mlir_mod = qcom_hexagon_backend.parse_mlir_module_from_str(mod, context)
 
     # Parses kernel name and return signature from mlir module
@@ -104,19 +198,13 @@ def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
     metadata["return_types"] = parse_return_types(return_values)
 
     options_map = {k: str(v) for k, v in (options.__dict__).items()}
-    # TODO: Move setting benchmarking iterations when additional stage for shared object creation is part of compilation pipeline.
-    metadata["iterations"] = options_map["iterations"]
-    metadata["scratch"] = options_map["scratch"]
-    metadata["enableMultiThreading"] = options_map["enableMultiThreading"]
-    metadata["enableThreadedDispatch"] = options_map["enableThreadedDispatch"]
-    metadata["enableLWP"] = options_map["enableLWP"]
-
     # TODO: The lowering pipeline needs to be refactored similar to other Triton backends to
     # have a dynamic pipeline filtered by options with each pass represented by a pybind function.
     # See make_ttgir() in nvidia backend as an example.
     mods_llvmir_bytes = qcom_hexagon_backend.translate_linalg_to_obj(
         mlir_mod, options_map
     )
+    _populate_metadata_after_lowering(mlir_mod, options, metadata)
     # Note: translate_linalg_to_obj() now returns a collection of object codes in general,
     # which in the case of the triton flow will only contain one element (i.e. one object code)
     # since there is no separation of constants for the triton flow.
@@ -127,19 +215,31 @@ def ttsharedir_to_obj(mod: str, options, metadata={}) -> bytes:
 
 # Temporary measure for .so generation, only for Triton-HTP integration
 def obj_to_so(mod, metadata={}) -> str:
-    tmpdir = tempfile.mkdtemp()
-    kernel_code = os.path.join(tmpdir, metadata["name"] + ".o")
-    Path(kernel_code).write_bytes(mod)
-    so_path = HexagonExecutor(compile_only=True).generate_shared_object(
-        "", kernel_code, htp_kernel_gen=True
-    )
-    return so_path
+    from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecutor
+    tmpdir = Path(tempfile.mkdtemp())
+    kernel_code = tmpdir / f"{metadata['name']}.o"
+    kernel_code.write_bytes(mod)
+    so_path = HexagonExecutor(
+        "", compile_only=True, enable_lwp=metadata.get("enableLWP", False)
+    ).generate_shared_object("", kernel_code, htp_kernel_gen=True)
+    # Triton's build pipeline caches this stage's output as the compiled
+    # artifact, so keep the return type str regardless of what
+    # generate_shared_object() hands back internally.
+    return str(so_path)
 
 
 class HexagonBackend(BaseBackend):
     # TODO: Setting the binary extension of the final executable as .o,
     # to be updated to .so if additional stages are added.
     binary_ext = "o"
+
+    # Force the python specialization slow-path in triton's specialize.cc.
+    # The native fast path hardcodes a 16-byte alignment check and never
+    # returns "D128", which would prevent tt.divisibility=128 from ever being
+    # emitted. We need the slow path so backend.get_tensor_specialization is
+    # actually called and parse_attr below sees a "D128" key for 128-aligned
+    # tensor pointers.
+    supports_native_tensor_specialization = False
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
@@ -152,16 +252,42 @@ class HexagonBackend(BaseBackend):
 
     # TODO: set version to hexagon version
     #       compute_core_version_key() seems to deprecated, need new approach
-    @functools.lru_cache()
+    @functools.lru_cache
     def hash(self):
         version = "TODO"
         return f"{version}-{self.target}"
 
+    def parse_attr(self, desc, dtype=None):
+        # Delegate to BaseBackend; the Triton patch already wires D128 →
+        # tt.divisibility=128, so no extra downgrade logic is needed here.
+        # The `specializeKernelToArgAlignment` flag now solely controls whether
+        # the llvm-alignment-propagation pass runs in the MLIR pipeline
+        # (gated in setLinalgToLLVMOptions / LinalgToLLVMPass), not whether the
+        # divisibility annotation is emitted.
+        from triton.backends.compiler import BaseBackend
+
+        return BaseBackend.parse_attr(desc, dtype)
+
     def parse_options(self, opts) -> Any:
-        assert self.target.backend == "hexagon"
+        # HEXAGON_ENABLE_ACCURACY lets the user opt out of optimizations that
+        # trade numerical accuracy for speed and can therefore cause result
+        # mismatches. It maps onto the erf/gelu tanh-composite approximations,
+        # which are the fast default and are disabled here when accuracy is
+        # requested so those ops fall back to their eager-consistent variants.
+        # Setting the option bools here (in addition to the trace-time selection
+        # in libdevice.py) folds the choice into the compile hash, so accurate
+        # and fast kernels are cached separately. setdefault leaves any explicit
+        # per-kernel override in opts untouched.
+        enable_accuracy = knobs.hexagon.enable_accuracy
+
         args = {
-            k: opts[k] for k in HexagonOptions.__dataclass_fields__.keys() if k in opts
+            k: opts[k]
+            for k in HexagonOptions.__dataclass_fields__.keys()
+            if k in opts
         }
+        if enable_accuracy:
+            args.setdefault("enableErfTanhApprox", False)
+            args.setdefault("enableGeluTanhApprox", False)
         hexagon_opts = HexagonOptions(**args)
 
         # When external VTCM scratch is enabled (scratch > 0), automatically
@@ -189,7 +315,20 @@ class HexagonBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
-        passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm, False)
+        passes.ttir.add_rewrite_tensor_descriptor_to_pointer(
+            pm, opt.rewriteDescriptorInboundsFastPath
+        )
+        # Eliminate bounds check related code, when user asserts absence of
+        # partial tiles. Must run AFTER rewrite-tensor-descriptor-to-pointer:
+        # TMA-style tt.descriptor_load masks are only materialized by that pass,
+        # so running earlier would see no masked loads. block_ptr masks from the
+        # frontend survive the rewrite, so this placement handles both paths.
+        if opt.eliminateSafeBoundaryChecks:
+            qcom_hexagon_backend.add_eliminate_safe_boundary_checks(pm)
+        # Split inductor's single-sided masked tt.load/store into a per-program
+        # scalar in-bounds scf.if (perfect-tile fast path + masked remainder).
+        if opt.rewriteMaskedAccessToInboundsFastPath:
+            qcom_hexagon_backend.add_rewrite_masked_access_to_inbounds_fast_path(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_reorder_broadcast(pm)
@@ -199,6 +338,7 @@ class HexagonBackend(BaseBackend):
         passes.ttir.add_loop_unroll(pm)
         passes.common.add_cse(pm)
         pm.run(mod, "make_ttir")
+        check_tensor_numel(mod, opt)
         return mod
 
     # May need to add num_warps
@@ -228,7 +368,6 @@ class HexagonBackend(BaseBackend):
                 )
         else:  # Default compilation pipeline
             assert options.device_type == "hexagon"
-
             stages["o"] = lambda src, metadata: ttsharedir_to_obj(
                 src, options, metadata
             )
@@ -267,25 +406,27 @@ class HexagonBackend(BaseBackend):
         return codegen_fns
 
     def pack_metadata(self, metadata):
-        # Putting these in so we're
-        # consistent with other backends
-        return (
-            metadata.num_warps,
-            metadata.num_ctas,
-            metadata.shared,
-            metadata.cluster_dims[0],
-            metadata.cluster_dims[1],
-            metadata.cluster_dims[2],
-            metadata.name,
-            metadata.return_types,
-            metadata.iterations,
-            metadata.scratch,
-            metadata.enableMultiThreading,
-            metadata.enableThreadedDispatch,
-            metadata.enableLWP,
+        # The first six fields keep us consistent with other backends.
+        return PackedMetadata(
+            num_warps=metadata.num_warps,
+            num_ctas=metadata.num_ctas,
+            shared=metadata.shared,
+            cluster_dim_x=metadata.cluster_dims[0],
+            cluster_dim_y=metadata.cluster_dims[1],
+            cluster_dim_z=metadata.cluster_dims[2],
+            name=metadata.name,
+            return_types=metadata.return_types,
+            iterations=metadata.iterations,
+            scratch=metadata.scratch,
+            enableMultiThreading=metadata.enableMultiThreading,
+            enableThreadedDispatch=metadata.enableThreadedDispatch,
+            enableLWP=metadata.enableLWP,
+            enableHexKL=metadata.enableHexKL,
+            hexKLMode=metadata.hexKLMode,
+            num_threads=metadata.num_threads,
         )
 
-    def get_module_map(self) -> Dict[str, ModuleType]:
+    def get_module_map(self) -> dict[str, ModuleType]:
         from triton.backends.qcom_hexagon_backend.hexagon_extern.hexagon import (
             libdevice,
         )

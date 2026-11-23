@@ -1,3 +1,12 @@
+//===- form-async-threads.mlir --------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -one-shot-bufferize -cse -canonicalize -form-async-threads | FileCheck %s
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module {
@@ -24,6 +33,16 @@ module {
     bufferization.materialize_in_destination %3 in writable %arg2 : (tensor<1024x2048xf32>, memref<1024x2048xf32>) -> ()
     return
   }
+
+  func.func @ceil_group_size(%arg0: memref<512xi32>) {
+    %c0_i32 = arith.constant 0 : i32
+    scf.forall (%iv) = (0) to (512) step (85) {
+      memref.store %c0_i32, %arg0[%iv] : memref<512xi32>
+      scf.forall.in_parallel {
+      }
+    }
+    return
+  }
 }
 
 // CHECK-LABEL: func.func @kernel(
@@ -31,7 +50,7 @@ module {
 // CHECK:   %[[B0:.+]] = arith.constant 0 : index
 // CHECK:   %[[B1024:.+]] = arith.constant 1024 : index
 // CHECK:   %[[B1:.+]] = arith.constant 1 : index
-// CHECK:   %[[N_THREADS:.+]] = arith.divui %[[B1024]], %[[B1]] : index
+// CHECK:   %[[N_THREADS:.+]] = arith.ceildivui %[[B1024]], %[[B1]] : index
 // CHECK:   %[[G:.+]] = async.create_group %[[N_THREADS]] : !async.group
 // CHECK:   scf.for %[[A3:.+]] = %[[B0]] to %[[B1024]] step %[[B1]] {
 // CHECK:     %[[T0:.+]] = async.execute {
@@ -51,6 +70,22 @@ module {
 // CHECK:   %[[T1:.+]] = async.add_to_group %[[T0]], %[[G]] : !async.token
 // CHECK:   }
 // CHECK:   async.await_all %[[G]]
+// CHECK:   return
+// CHECK: }
+
+// CHECK-LABEL: func.func @ceil_group_size(
+// CHECK-SAME: %[[OUTPUT:.+]]: memref<512xi32>)
+// CHECK:   %[[CEIL_B0:.+]] = arith.constant 0 : index
+// CHECK:   %[[CEIL_B512:.+]] = arith.constant 512 : index
+// CHECK:   %[[CEIL_B85:.+]] = arith.constant 85 : index
+// CHECK:   %[[CEIL_N_THREADS:.+]] = arith.ceildivui %[[CEIL_B512]], %[[CEIL_B85]] : index
+// CHECK:   %[[CEIL_GROUP:.+]] = async.create_group %[[CEIL_N_THREADS]] : !async.group
+// CHECK:   scf.for %[[CEIL_IV:.+]] = %[[CEIL_B0]] to %[[CEIL_B512]] step %[[CEIL_B85]] {
+// CHECK:     async.execute {
+// CHECK:       memref.store %{{.*}}, %[[OUTPUT]][%[[CEIL_IV]]] : memref<512xi32>
+// CHECK:       async.yield
+// CHECK:     }
+// CHECK:   async.await_all %[[CEIL_GROUP]]
 // CHECK:   return
 // CHECK: }
 // CHECK: }

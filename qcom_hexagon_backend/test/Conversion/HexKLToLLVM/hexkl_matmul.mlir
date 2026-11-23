@@ -1,3 +1,12 @@
+//===- hexkl_matmul.mlir --------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -hexkl-to-llvm | FileCheck %s
 
 func.func @hexkl_matmul(%arg0: memref<32x64xf16>, %arg1: memref<64x128xf16>, %output: memref<32x128xf32>) {

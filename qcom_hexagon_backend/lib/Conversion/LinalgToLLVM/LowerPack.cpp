@@ -39,16 +39,26 @@ namespace {
 struct LowerPackPass : public ::impl::LowerPackBase<LowerPackPass> {
   void runOnOperation() override {
     auto funcOp = getOperation();
-    funcOp.walk([&](linalg::PackOp op) {
+    auto packResult = funcOp.walk([&](linalg::PackOp op) {
       IRRewriter rewriter(op.getContext());
-      FailureOr<LowerPackResult> res = lowerPack(rewriter, op);
-      assert(!failed(res));
+      if (failed(lowerPack(rewriter, op))) {
+        op.emitError("failed to lower linalg.pack");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
     });
-    funcOp.walk([&](linalg::UnPackOp op) {
+    if (packResult.wasInterrupted())
+      return signalPassFailure();
+    auto unpackResult = funcOp.walk([&](linalg::UnPackOp op) {
       IRRewriter rewriter(op.getContext());
-      FailureOr<LowerUnPackOpResult> res = lowerUnPack(rewriter, op);
-      assert(!failed(res));
+      if (failed(lowerUnPack(rewriter, op))) {
+        op.emitError("failed to lower linalg.unpack");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
     });
+    if (unpackResult.wasInterrupted())
+      return signalPassFailure();
   }
 };
 

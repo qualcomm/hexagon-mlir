@@ -141,6 +141,13 @@ void AffineTileMemoryPass::runOnOperation() {
 void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
   LLVM_DEBUG(llvm::dbgs() << "Processing loop " << band.front()
                           << " with band size " << band.size() << "\n");
+  // Compute the band domain before creating any IR.
+  FlatAffineValueConstraints bandDomain;
+  for (AffineForOp forOp : band) {
+    bandDomain.appendDimVar(forOp.getInductionVar());
+    if (failed(bandDomain.addAffineForOpDomain(forOp)))
+      return;
+  }
   // Gather all memrefs and calculate reuse
   llvm::SmallDenseMap<Value, MemRefData> memrefData;
   llvm::SmallVector<double, 4> stack;
@@ -225,8 +232,7 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
                   0, access.getRank(), band.size()));
         }
       }
-    } else if (!isa<AffineMapAccessInterface, memref::LoadOp, memref::StoreOp>(
-                   op)) {
+    } else if (!isa<AffineMapAccessInterface>(op)) {
       // Non-dereferencing op; disqualify all used memrefs
       for (Value value : op->getOperands()) {
         if (isa<MemRefType>(value.getType())) {
@@ -477,21 +483,23 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
     builder.setInsertionPointAfter(band.front());
     memref::DeallocOp::create(builder, band.front().getLoc(), cached);
     if (data.state == MemRefState::Full) {
-      // Replace loop body
-      assert(succeeded(
-          replaceAllMemRefUsesWith(entry.first, cached, band.front())));
-      // Generate copies to/from cache
+      // Copy into the cache before the band.
       builder.setInsertionPoint(band.front());
       memref::CopyOp::create(builder, band.front().getLoc(), entry.first,
                              cached);
       builder.setInsertionPointAfter(band.front());
       if (data.hasWrite) {
+        // Copy the modified cache back after the band.
         memref::CopyOp::create(builder, band.front().getLoc(), cached,
                                entry.first);
-        Block *block = band.back().getBody();
-        auto userFilterFn = genDomFilterFn(block);
-        assert(succeeded(replaceAllMemRefUsesWith(entry.first, cached, {}, {},
-                                                  {}, {}, userFilterFn)));
+      }
+      // Replace the band's uses with the cache.
+      Block *block = band.back().getBody();
+      auto userFilterFn = genDomFilterFn(block);
+      if (failed(replaceAllMemRefUsesWith(entry.first, cached, {}, {}, {}, {},
+                                          userFilterFn))) {
+        band.front().emitError("failed to replace memref uses");
+        return signalPassFailure();
       }
     } else {
       // Generate remap map
@@ -522,8 +530,11 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
       }
       Block *block = band.back().getBody();
       auto userFilterFn = genDomFilterFn(block);
-      assert(succeeded(replaceAllMemRefUsesWith(
-          entry.first, cached, {}, remap, extraOperands, {}, userFilterFn)));
+      if (failed(replaceAllMemRefUsesWith(entry.first, cached, {}, remap,
+                                          extraOperands, {}, userFilterFn))) {
+        band.front().emitError("failed to replace memref uses");
+        return signalPassFailure();
+      }
       // Generate copies to/from cache
       builder.setInsertionPointToStart(band.back().getBody());
 
@@ -543,11 +554,7 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
 
       // Temporary polyhedron of calculated lower bounds, given original loop
       // bounds.
-      FlatAffineValueConstraints offsetSpace;
-      for (AffineForOp forOp : band) {
-        offsetSpace.appendDimVar(forOp.getInductionVar());
-        assert(succeeded(offsetSpace.addAffineForOpDomain(forOp)));
-      }
+      FlatAffineValueConstraints offsetSpace = bandDomain;
       assert(offsetSpace.getNumRangeVars() == band.size());
       offsetSpace.convertVarKind(VarKind::Range, 0, band.size(),
                                  VarKind::Symbol);
@@ -719,8 +726,7 @@ void AffineTileMemoryPass::processLoop(SmallVectorImpl<AffineForOp> &band) {
       // If any offset or size is dynamic, need to create subview of cached.
       Value cachedSubview = cached;
       if (isDynamic) {
-        SmallVector<int64_t> cachedStrides;
-        assert(succeeded(type.getStridesAndOffset(cachedStrides, srcOffset)));
+        SmallVector<int64_t> cachedStrides = type.getStridesAndOffset().first;
         int64_t offsetValue = isOffsetZero ? 0 : ShapedType::kDynamic;
         MemRefType cachedSubviewType =
             MemRefType::get(subviewTypeSizes, elType,

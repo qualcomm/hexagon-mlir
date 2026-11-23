@@ -1,4 +1,13 @@
-// RUN: linalg-hexagon-opt %s -linalg-to-llvm | FileCheck %s
+//===- multi_func_mod.mlir ------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: linalg-hexagon-opt %s -linalg-to-llvm="dealloc-after-last-use=false" | FileCheck %s
 // This test checks that we can run linalg-to-llvm pass pipeline on a module
 // with multiple functions
 module {

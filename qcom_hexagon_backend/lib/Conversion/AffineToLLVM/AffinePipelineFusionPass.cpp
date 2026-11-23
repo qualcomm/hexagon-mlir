@@ -828,50 +828,23 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
   assert(loopDepth >= 0);
 
   MLIRContext *ctx = srcLoopIVs.front()->getContext();
-  Block *dstBlock = dstLoopIVs[loopDepth - 1].getBody();
-  OpBuilder builder(dstBlock, dstBlock->begin());
 
-  // Array of currently known vars
-  SmallVector<AffineExpr, 4> srcVars;
-  srcVars.resize(numSrcLoopIVs + 1);
-  srcVars[numSrcLoopIVs] = getAffineConstantExpr(1, ctx);
-
-  // Generate loops for free vars.
-  for (unsigned varIdx : freeVars) {
-    AffineForOp srcLoop = srcLoopIVs[varIdx];
-    auto loop = AffineForOp::create(
-        builder, srcLoop.getLoc(), srcLoop.getLowerBoundOperands(),
-        srcLoop.getLowerBoundMap(), srcLoop.getUpperBoundOperands(),
-        srcLoop.getUpperBoundMap(), srcLoop.getStepAsInt());
-    builder.setInsertionPoint(loop.getBody(), loop.getBody()->begin());
-    srcVars[varIdx] = getAffineDimExpr((unsigned)srcOperands.size(), ctx);
-    srcOperands.push_back(loop.getBody()->getArgument(0));
-  }
-
-  // Set pivot vars.
-  for (auto pivot : pivots) {
-    unsigned i = pivot.first;
-    AffineExpr result = Udst[i];
-    for (unsigned j = pivot.second + 1; j <= numSrcLoopIVs; j++) {
-      result =
-          result - getAffineConstantExpr((int64_t)H.at(i, j), ctx) * srcVars[j];
-    }
-    srcVars[pivot.second] = result;
-  }
-
-  // Generate loops for unused src domain.
+  // Compute domains before creating any IR.
   FlatAffineValueConstraints srcDomain, dstDomain;
   SmallVector<Operation *, 4> srcLoopOps, dstLoopOps;
   srcLoopOps.resize(srcLoopIVs.size());
   dstLoopOps.resize(loopDepth);
-  for (unsigned i = 0; i < srcLoopIVs.size(); i++) {
+  for (unsigned i = 0; i < srcLoopIVs.size(); i++)
     srcLoopOps[i] = srcLoopIVs[i];
-  }
-  for (unsigned i = 0; i < loopDepth; i++) {
+  for (unsigned i = 0; i < loopDepth; i++)
     dstLoopOps[i] = dstLoopIVs[i];
+  if (failed(getIndexSet(srcLoopOps, &srcDomain)) ||
+      failed(getIndexSet(dstLoopOps, &dstDomain))) {
+    LLVM_DEBUG(llvm::dbgs() << "Failed to get loop domains\n");
+    return failure();
   }
-  assert(!failed(getIndexSet(srcLoopOps, &srcDomain)));
-  assert(!failed(getIndexSet(dstLoopOps, &dstDomain)));
+
+  // Compute the unused source domain.
   IntegerRelation dstToSrcRel(
       PresburgerSpace::getRelationSpace(loopDepth, numSrcLoopIVs));
   SmallVector<int64_t, 4> relRow;
@@ -914,7 +887,6 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
     llvm::dbgs() << "unused space:\n";
     unused.dump();
   });
-  OpBuilder unusedBuilder(dstLoopIVs.front());
   SmallVector<IntegerSet, 2> unusedLoops;
   for (const IntegerRelation &rel : unused.getAllDisjuncts()) {
     if (rel.isIntegerEmpty())
@@ -989,8 +961,10 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
       if (allKnown) {
         break;
       }
-      assert(changed &&
-             "Could not iteratively find affine maps for each local var\n");
+      if (!changed) {
+        LLVM_DEBUG(llvm::dbgs() << "Failed to find local var maps\n");
+        return failure();
+      }
     }
 
     SmallVector<bool, 16> eqFlags;
@@ -1017,8 +991,41 @@ LogicalResult pipelineFuse(MutableArrayRef<AffineForOp> srcLoopIVs,
     unusedLoops.push_back(
         IntegerSet::get(rel.getNumDimVars(), 0, exprs, eqFlags));
   }
+
+  Block *dstBlock = dstLoopIVs[loopDepth - 1].getBody();
+  OpBuilder builder(dstBlock, dstBlock->begin());
+
+  // Array of currently known vars
+  SmallVector<AffineExpr, 4> srcVars;
+  srcVars.resize(numSrcLoopIVs + 1);
+  srcVars[numSrcLoopIVs] = getAffineConstantExpr(1, ctx);
+
+  // Generate loops for free vars.
+  for (unsigned varIdx : freeVars) {
+    AffineForOp srcLoop = srcLoopIVs[varIdx];
+    auto loop = AffineForOp::create(
+        builder, srcLoop.getLoc(), srcLoop.getLowerBoundOperands(),
+        srcLoop.getLowerBoundMap(), srcLoop.getUpperBoundOperands(),
+        srcLoop.getUpperBoundMap(), srcLoop.getStepAsInt());
+    builder.setInsertionPoint(loop.getBody(), loop.getBody()->begin());
+    srcVars[varIdx] = getAffineDimExpr((unsigned)srcOperands.size(), ctx);
+    srcOperands.push_back(loop.getBody()->getArgument(0));
+  }
+
+  // Set pivot vars.
+  for (auto pivot : pivots) {
+    unsigned i = pivot.first;
+    AffineExpr result = Udst[i];
+    for (unsigned j = pivot.second + 1; j <= numSrcLoopIVs; j++) {
+      result =
+          result - getAffineConstantExpr((int64_t)H.at(i, j), ctx) * srcVars[j];
+    }
+    srcVars[pivot.second] = result;
+  }
+
   // Note: subtraction implementation only performs union
   // on disjoint parts, so this *should* be disjoint.
+  OpBuilder unusedBuilder(dstLoopIVs.front());
   SmallVector<Value, 4> ifOperands;
   ifOperands.resize(numSrcLoopIVs);
   for (IntegerSet &condition : unusedLoops) {

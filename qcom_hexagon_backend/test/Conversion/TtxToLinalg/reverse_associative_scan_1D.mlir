@@ -1,3 +1,12 @@
+//===- reverse_associative_scan_1D.mlir -----------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s  -pass-pipeline='builtin.module(func.func(lower-ttx),cse,canonicalize)' \
 // RUN:     | FileCheck %s -check-prefixes=CHECK
 

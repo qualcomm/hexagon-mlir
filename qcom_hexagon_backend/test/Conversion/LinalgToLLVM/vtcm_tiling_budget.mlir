@@ -1,3 +1,12 @@
+//===- vtcm_tiling_budget.mlir --------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // Verify that the vtcm-budget option controls tile sizes.
 //
 // Default (2 MB) budget: tiles to 64×4096 / 4096×64 / 64×64.

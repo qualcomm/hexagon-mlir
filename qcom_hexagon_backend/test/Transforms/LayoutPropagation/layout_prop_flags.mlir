@@ -1,3 +1,12 @@
+//===- layout_prop_flags.mlir ---------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=true}))' | FileCheck %s --check-prefixes=CHECK_PAR_ONLY
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=false}))' | FileCheck %s --check-prefixes=CHECK_PAR_RED
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{upper=false}))' | FileCheck %s --check-prefixes=CHECK_NOT_UPPER
@@ -10,7 +19,7 @@
   func.func @parallels_only(
       %arg0 : tensor<8x7x5xi32>,
       %arg1 : tensor<8x7xi32>,
-      %arg2 : tensor<8x8xi32>) -> tensor<8xi32> {
+      %arg2 : tensor<8x7xi32>) -> tensor<8xi32> {
 
     // Pre: reduce over the last dim to get A : 8x7
     %0 = tensor.empty() : tensor<8x7xi32>
@@ -29,17 +38,17 @@
       inner_dims_pos = [0, 1] inner_tiles = [4, 4] into %2
       : tensor<8x7xi32> -> tensor<2x2x4x4xi32>
     
-    %3 = tensor.empty() : tensor<8x8xi32>
+    %3 = tensor.empty() : tensor<8x7xi32>
     %unpack = linalg.unpack %pack 
       inner_dims_pos = [0, 1] inner_tiles = [4, 4] into %3
-      : tensor<2x2x4x4xi32> -> tensor<8x8xi32>
-    %4 = tensor.empty() : tensor<8x8xi32>
+      : tensor<2x2x4x4xi32> -> tensor<8x7xi32>
+    %4 = tensor.empty() : tensor<8x7xi32>
     %sub_post = linalg.sub
-           ins(%unpack, %arg2 : tensor<8x8xi32>, tensor<8x8xi32>)
-           outs(%4 : tensor<8x8xi32>) -> tensor<8x8xi32>
+           ins(%unpack, %arg2 : tensor<8x7xi32>, tensor<8x7xi32>)
+           outs(%4 : tensor<8x7xi32>) -> tensor<8x7xi32>
     %5 = tensor.empty() : tensor<8xi32>
     %reduce_post = linalg.reduce { arith.maxsi }
-           ins(%sub_post : tensor<8x8xi32>) outs(%5 : tensor<8xi32>) dimensions = [1]
+           ins(%sub_post : tensor<8x7xi32>) outs(%5 : tensor<8xi32>) dimensions = [1]
     return %reduce_post : tensor<8xi32>
 }
 
@@ -55,12 +64,12 @@
 // CHECK_PAR_ONLY: linalg.generic
 // CHECK_PAR_ONLY-SAME: iterator_types = ["parallel", "reduction"]
 
-// CHECK_PAR_RED: linalg.pack
 // CHECK_PAR_RED: linalg.generic
-// CHECK_PAR_RED-SAME: iterator_types = ["parallel", "parallel", "reduction", "parallel", "parallel"] 
-// CHECK_PAR_RED: linalg.pack
+// CHECK_PAR_RED-SAME: iterator_types = ["parallel", "parallel", "reduction"]
 // CHECK_PAR_RED: linalg.generic
-// CHECK_PAR_RED-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel"]
+// CHECK_PAR_RED-SAME: iterator_types = ["parallel", "parallel"]
+// CHECK_PAR_RED: linalg.pack
+// CHECK_PAR_RED: linalg.pack
 // CHECK_PAR_RED: linalg.generic
 // CHECK_PAR_RED-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel"]
 // CHECK_PAR_RED: linalg.generic

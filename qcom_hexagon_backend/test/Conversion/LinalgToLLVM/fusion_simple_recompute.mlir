@@ -1,3 +1,12 @@
+//===- fusion_simple_recompute.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexagon-fusion{far=false fdmu=false}))' | FileCheck %s -check-prefix FAR_OFF_FDMU_OFF
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexagon-fusion{far=true fdmu=false}))' | FileCheck %s -check-prefix FAR_ON_FDMU_OFF
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexagon-fusion{far=true fdmu=true}))' | FileCheck %s -check-prefix FAR_ON_FDMU_ON

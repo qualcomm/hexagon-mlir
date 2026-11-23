@@ -1,3 +1,12 @@
+//===- conversionToFp16.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(conversion-to-fp16,canonicalize,cse,optimize-extf-truncf-op,canonicalize,cse))' | FileCheck %s
 
 // CHECK-LABEL:   func.func @test_generic_extf_truncf

@@ -21,8 +21,10 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include <mlir/Transforms/GreedyPatternRewriteDriver.h>
+#include <optional>
 
 #define DEBUG_TYPE "hexagon-llvm-use-hexagon-routines"
 
@@ -77,6 +79,8 @@ static FailureOr<std::string> LLVMOpToHexagonRountineName(const Operation *op) {
           [](auto ty) { return FailureOr<std::string>(std::string("exp")); })
       .Case<LLVM::Exp2Op>(
           [](auto ty) { return FailureOr<std::string>(std::string("pow")); })
+      .Case<LLVM::PowOp>(
+          [](auto ty) { return FailureOr<std::string>(std::string("pow")); })
       .Case<LLVM::SinOp>(
           [](auto ty) { return FailureOr<std::string>(std::string("sin")); })
       .Case<LLVM::CosOp>(
@@ -119,6 +123,11 @@ static std::string getSuffix(Type t) {
 
 // Generate suffix for each operand type in the opertion.
 static std::string getSuffix(Operation *op) {
+  // For two-arg ops where both operands have the same type (e.g. PowOp), the
+  // runtime symbol uses a single suffix based on the element type, not one per
+  // operand. Use the result type suffix in that case.
+  if (isa<LLVM::PowOp>(op))
+    return getSuffix(op->getResult(0).getType());
   std::string suffix = "";
   for (const auto &operandType : op->getOperandTypes())
     suffix += getSuffix(operandType);
@@ -171,13 +180,14 @@ static bool allNativeVectorFactorTypes(Operation *op) {
 }
 
 Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
-                           Value operand1, Type nativeVectorType,
-                           std::string fnName, Type elemType) {
+                           Value operand1, std::optional<Value> operand2,
+                           Type nativeVectorType, std::string fnName,
+                           Type elemType) {
 
   Value Result = nullptr;
   if (isa<LLVM::Exp2Op>(op)) {
     // Logic to handle Exp2Op
-
+    //
     // Before Transformation:
     //  %0 = llvm.intr.exp2(%arg0) : (vector<64xf16>) -> vector<64xf16>
     //
@@ -223,6 +233,38 @@ Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
     auto bitcastResult = LLVM::BitcastOp::create(
         rewriter, op->getLoc(), nativeVectorType, callOp.getResults());
     Result = bitcastResult.getResult();
+  } else if (isa<LLVM::PowOp>(op)) {
+    // Logic to handle PowOp: both operands are runtime vectors.
+    //
+    // Before Transformation:
+    //  %0 = llvm.intr.pow(%base, %exp) : (vector<32xf32>, vector<32xf32>)
+    //                                  -> vector<32xf32>
+    //
+    // After Transformation:
+    //  %1 = llvm.bitcast %base : vector<32xf32> to vector<32xi32>
+    //  %2 = llvm.bitcast %exp  : vector<32xf32> to vector<32xi32>
+    //  %3 = llvm.call @_hexagon_runtime_pow__vf(%1, %2) : (vector<32xi32>,
+    //       vector<32xi32>) -> vector<32xi32>
+    //  %4 = llvm.bitcast %3 : vector<32xi32> to vector<32xf32>
+
+    auto intVectorType = mlir::VectorType::get({32}, rewriter.getI32Type());
+    auto fnType = LLVM::LLVMFunctionType::get(intVectorType,
+                                              {intVectorType, intVectorType});
+    auto fnNameRefAttr = getOrCreateFunc(op, fnName, rewriter, fnType);
+
+    auto bitcastBase = LLVM::BitcastOp::create(rewriter, op->getLoc(),
+                                               intVectorType, operand1);
+    assert(operand2 && "PowOp rewrite requires its exponent operand");
+    auto bitcastExp = LLVM::BitcastOp::create(rewriter, op->getLoc(),
+                                              intVectorType, *operand2);
+
+    auto callOp = LLVM::CallOp::create(rewriter, op->getLoc(), intVectorType,
+                                       fnNameRefAttr,
+                                       ValueRange{bitcastBase, bitcastExp});
+
+    auto bitcastResult = LLVM::BitcastOp::create(
+        rewriter, op->getLoc(), nativeVectorType, callOp.getResults());
+    Result = bitcastResult.getResult();
   } else {
     auto intVectorType = mlir::VectorType::get({32}, rewriter.getI32Type());
     // Create the function type with single operand
@@ -246,9 +288,10 @@ Value replaceWithHexRTCall(Operation *op, PatternRewriter &rewriter,
 }
 
 Value multiVectorHandle(Operation *op, PatternRewriter &rewriter,
-                        Value operand1, Value destOp, Type nativeVectorType,
-                        std::string fnName, Type elemType, int idx) {
-  Value bitCastOp = replaceWithHexRTCall(op, rewriter, operand1,
+                        Value operand1, std::optional<Value> operand2,
+                        Value destOp, Type nativeVectorType, std::string fnName,
+                        Type elemType, int idx) {
+  Value bitCastOp = replaceWithHexRTCall(op, rewriter, operand1, operand2,
                                          nativeVectorType, fnName, elemType);
 
   Value insertOp = LLVM::vector_insert::create(rewriter, op->getLoc(), destOp,
@@ -260,9 +303,28 @@ Value multiVectorHandle(Operation *op, PatternRewriter &rewriter,
 Value singleVectorHandle(Operation *op, PatternRewriter &rewriter,
                          Type nativeVectorType, std::string fnName,
                          Type elemType) {
-  Value bitCastOp = replaceWithHexRTCall(op, rewriter, op->getOperand(0),
-                                         nativeVectorType, fnName, elemType);
+  std::optional<Value> operand2;
+  if (isa<LLVM::PowOp>(op))
+    operand2 = op->getOperand(1);
+  Value bitCastOp =
+      replaceWithHexRTCall(op, rewriter, op->getOperand(0), operand2,
+                           nativeVectorType, fnName, elemType);
   return bitCastOp;
+}
+
+static Value extractNativeVectorSlice(PatternRewriter &rewriter, Location loc,
+                                      Value input, Type sliceType,
+                                      unsigned start) {
+  auto inputType = cast<VectorType>(input.getType());
+  auto sliceVectorType = cast<VectorType>(sliceType);
+  auto undef = LLVM::UndefOp::create(rewriter, loc, inputType);
+  SmallVector<int32_t, 64> mask;
+  mask.reserve(sliceVectorType.getNumElements());
+  for (int64_t lane = 0; lane < sliceVectorType.getNumElements(); ++lane)
+    mask.push_back(start + lane);
+  return LLVM::ShuffleVectorOp::create(rewriter, loc, sliceType, input, undef,
+                                       mask)
+      .getRes();
 }
 
 // Helper to check if a value is constant 1.0 or a splat of 1.0
@@ -309,11 +371,16 @@ replaceOpWithHexagonRuntimeCall(Operation *op, PatternRewriter &rewriter,
     Value destOp = undefOp;
 
     for (int idx = 0; idx < elemCount; idx += nativeVectorWidth) {
-      LLVM::vector_extract extractOp = LLVM::vector_extract::create(
-          rewriter, loc, nativeVectorType, inputOperand, idx);
+      Value operand1 = extractNativeVectorSlice(rewriter, loc, inputOperand,
+                                                nativeVectorType, idx);
+      std::optional<Value> operand2;
+      if (isa<LLVM::PowOp>(op)) {
+        operand2 = extractNativeVectorSlice(rewriter, loc, op->getOperand(1),
+                                            nativeVectorType, idx);
+      }
 
       Value insertOp =
-          multiVectorHandle(op, rewriter, extractOp.getResult(), destOp,
+          multiVectorHandle(op, rewriter, operand1, operand2, destOp,
                             nativeVectorType, fnName, elemType, idx);
 
       destOp = insertOp;
@@ -322,7 +389,10 @@ replaceOpWithHexagonRuntimeCall(Operation *op, PatternRewriter &rewriter,
     rewriter.replaceOp(op, destOp);
   } else {
     // Single native vector case
-    Value bitCastOp = replaceWithHexRTCall(op, rewriter, inputOperand,
+    std::optional<Value> operand2;
+    if (isa<LLVM::PowOp>(op))
+      operand2 = op->getOperand(1);
+    Value bitCastOp = replaceWithHexRTCall(op, rewriter, inputOperand, operand2,
                                            nativeVectorType, fnName, elemType);
 
     rewriter.replaceOp(op, bitCastOp);
@@ -455,22 +525,27 @@ public:
                                 PatternRewriter &rewriter) const override {
     // Check if we have custom Hexagon implementation for this routine.
     // Only process ops with native vector( or size that is factor of native
-    // vector width) operands and results and with #results and #operands == 1.
+    // vector width) operands and results and with #results == 1 and
+    // #operands == 1 or 2.
     FailureOr<std::string> fnName = getFnName(op);
     if (failed(fnName) || op->getNumResults() != 1 ||
-        op->getNumOperands() != 1 || !allNativeVectorFactorTypes(op)) {
+        (op->getNumOperands() != 1 && op->getNumOperands() != 2) ||
+        !allNativeVectorFactorTypes(op)) {
       return failure();
     }
 
     auto returnTyElementInfo = getVectorElementInfo(op->getResult(0).getType());
-    auto operandTyElementInfo =
-        getVectorElementInfo(op->getOperand(0).getType());
-
-    if (!returnTyElementInfo || !operandTyElementInfo) {
+    if (!returnTyElementInfo) {
       return failure();
-    } else if (returnTyElementInfo != operandTyElementInfo) {
-      DBG(" -> operand and return type of operation is not the same. Aborting");
-      return failure();
+    }
+    for (Value operand : op->getOperands()) {
+      auto operandTyElementInfo = getVectorElementInfo(operand.getType());
+      if (!operandTyElementInfo ||
+          returnTyElementInfo != operandTyElementInfo) {
+        DBG(" -> operand and return type of operation is not the same. "
+            "Aborting");
+        return failure();
+      }
     }
 
     // Use common helper to perform the replacement
@@ -487,6 +562,7 @@ void populateEnableHexagonRoutinesPattern(RewritePatternSet &patterns) {
   // Add patterns to convert intrinsics to Hexagon runtime calls
   patterns.insert<NativeVectorFloatOps<LLVM::ExpOp>>(patterns.getContext());
   patterns.insert<NativeVectorFloatOps<LLVM::Exp2Op>>(patterns.getContext());
+  patterns.insert<NativeVectorFloatOps<LLVM::PowOp>>(patterns.getContext());
   patterns.insert<NativeVectorFloatOps<LLVM::SinOp>>(patterns.getContext());
   patterns.insert<NativeVectorFloatOps<LLVM::ASinOp>>(patterns.getContext());
   patterns.insert<NativeVectorFloatOps<LLVM::CosOp>>(patterns.getContext());

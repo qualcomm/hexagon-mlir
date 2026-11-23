@@ -1,3 +1,12 @@
+//===- broadcast-div-to-mul-generic-colwise.mlir --------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -div-to-mul-optimization -cse | FileCheck %s
 
 // This test verifies div-to-mul optimization for column-wise broadcast division where

@@ -18,14 +18,19 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "fast-inverse"
@@ -39,9 +44,9 @@ using namespace hexagon;
 #define GEN_PASS_DEF_FASTINVERSE
 #include "hexagon/Transforms/Passes.h.inc"
 
-namespace {
+#include "hexagon/Common/SignInference.h"
 
-// Returns true if 'ty' is f32 or vector of f32.
+namespace {
 static bool isF32OrF32Vector(Type ty) {
   if (auto ft = dyn_cast<FloatType>(ty))
     return ft.isF32();
@@ -138,6 +143,31 @@ static Value buildQuakeRsqrt(PatternRewriter &rewriter, Location loc, Value x) {
   return yrefb;
 }
 
+// Given rsqrtResult = 1/|denom| (always positive), transfer the sign bit of
+// denom into rsqrtResult to produce 1/denom without a branch. Used when we
+// cannot statically prove the sign of denom.
+//   signedInv = bitcast_f32((bitcast_i32(rsqrtResult) & 0x7fffffff)
+//                           | (bitcast_i32(denom)     & 0x80000000))
+static Value buildRuntimeSignTransfer(PatternRewriter &rewriter, Location loc,
+                                      Value rsqrtResult, Value denom) {
+  Type fTy = rsqrtResult.getType();
+  assert(isF32OrF32Vector(fTy) && "expected f32 or vector of f32");
+  Type iTy = getI32LikeType(fTy, rewriter.getContext());
+
+  Value rsqrtI = arith::BitcastOp::create(rewriter, loc, iTy, rsqrtResult);
+  Value denomI = arith::BitcastOp::create(rewriter, loc, iTy, denom);
+
+  Value signMask =
+      makeI32LikeConst(rewriter, loc, fTy, static_cast<int32_t>(0x80000000u));
+  Value absMask = makeI32LikeConst(rewriter, loc, fTy, 0x7fffffff);
+
+  Value signBit = arith::AndIOp::create(rewriter, loc, denomI, signMask);
+  Value rsqrtAbs = arith::AndIOp::create(rewriter, loc, rsqrtI, absMask);
+  Value resultI = arith::OrIOp::create(rewriter, loc, rsqrtAbs, signBit);
+
+  return arith::BitcastOp::create(rewriter, loc, fTy, resultI);
+}
+
 // Return true if 'value' is the LLVM intrinsic llvm.intr.sqrt
 static bool isLLVMSqrt(Value value) {
   if (auto *op = value.getDefiningOp()) {
@@ -165,12 +195,22 @@ static bool isSqrt(Value value) {
   return false;
 }
 
-// Pattern: arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)
+// Pattern: arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)  [q >= 0, static]
+//                           --> -(p * Quake_rsqrt(%q * %q)) [q < 0, static]
+//                           --> p * sign_transfer(Quake_rsqrt(%q*%q), q)
+//                           [unknown sign]
 // that avoids a division (expensive and without HVX support),
 // by instead using one multiplication and the inexpensive Quake_rsqrt().
 // Note that we do not apply this pattern when %q is of the form sqrt(%a),
 // to avoid the anti-optimization of getting back to %a, to then circle
-// back to something related to sqrt(%a) which we already had to start with
+// back to something related to sqrt(%a) which we already had to start with.
+//
+// Correctness: Quake_rsqrt(q*q) computes 1/|q|. When q >= 0, |q|==q so
+// p/q == p * rsqrt(q*q). When q < 0, |q|==-q so p/q == -(p * rsqrt(q*q)).
+// When the sign cannot be proved statically, buildRuntimeSignTransfer() copies
+// the sign bit of q into the rsqrt result via integer bit manipulation:
+//   signedInv = bitcast_f32((bitcast_i32(rsqrt(q*q)) & 0x7fffffff)
+//                           | (bitcast_i32(q)        & 0x80000000))
 struct DivToQuakeAndSquaringAndMult : public OpRewritePattern<arith::DivFOp> {
   using OpRewritePattern<arith::DivFOp>::OpRewritePattern;
 
@@ -199,17 +239,28 @@ struct DivToQuakeAndSquaringAndMult : public OpRewritePattern<arith::DivFOp> {
       if (isSqrt(scalarDenom))
         return failure();
 
+      Sign denomSign = inferSign(scalarDenom);
+
       Type vectorType = broadcastOp.getType();
 
-      // 1. Compute denom * denom.
+      // 1. Compute denom * denom (always non-negative).
       Value denom2 =
           arith::MulFOp::create(rewriter, loc, scalarDenom, scalarDenom);
-      // 2. Apply fast inverse square root to get 1/(denom*denom).
+      // 2. Apply fast inverse square root to get 1/|denom|.
       Value invScalar = buildQuakeRsqrt(rewriter, loc, denom2);
-      // 3. Broadcast the inverse to vector type.
-      Value invVec =
-          vector::BroadcastOp::create(rewriter, loc, vectorType, invScalar);
-      // 4. Multiply num with the broadcasted inverse.
+      // 3. Apply sign correction (scalar, before broadcast).
+      Value signedInvScalar;
+      if (denomSign == Sign::Unknown)
+        signedInvScalar =
+            buildRuntimeSignTransfer(rewriter, loc, invScalar, scalarDenom);
+      else if (denomSign == Sign::Negative)
+        signedInvScalar = arith::NegFOp::create(rewriter, loc, invScalar);
+      else
+        signedInvScalar = invScalar;
+      // 4. Broadcast the signed inverse to vector type.
+      Value invVec = vector::BroadcastOp::create(rewriter, loc, vectorType,
+                                                 signedInvScalar);
+      // 5. Multiply num with the broadcasted inverse.
       Value mul = arith::MulFOp::create(rewriter, loc, num, invVec);
 
       rewriter.replaceOp(divOp, mul);
@@ -218,7 +269,8 @@ struct DivToQuakeAndSquaringAndMult : public OpRewritePattern<arith::DivFOp> {
 
     // SCALAR CASE: LHS is "num / denom"
     // with denom NOT of the form sqrt(a), and the rewrite will be:
-    // num / denom --> num * Quake_rsqrt(denom*denom)
+    //   q >= 0: num / denom --> num * Quake_rsqrt(denom*denom)
+    //   q < 0:  num / denom --> -(num * Quake_rsqrt(denom*denom))
     // ----------------------------------------
     // Do NOT rewrite x / sqrt(a), which would otherwise lead to
     // an anti-optimization: first getting back to 'a' by squaring it, to then
@@ -226,12 +278,22 @@ struct DivToQuakeAndSquaringAndMult : public OpRewritePattern<arith::DivFOp> {
     if (isSqrt(denom))
       return failure();
 
-    // 1. Compute denom * denom.
+    Sign denomSign = inferSign(denom);
+
+    // 1. Compute denom * denom (always non-negative).
     Value denom2 = arith::MulFOp::create(rewriter, loc, denom, denom);
-    // 2. Apply fast inverse square root to get 1/(denom*denom).
+    // 2. Apply fast inverse square root to get 1/|denom|.
     Value invDenom2 = buildQuakeRsqrt(rewriter, loc, denom2);
-    // 3 Multiply num with the inverse.
-    Value newMul = arith::MulFOp::create(rewriter, loc, num, invDenom2);
+    // 3. Apply sign correction.
+    Value signedInv;
+    if (denomSign == Sign::Unknown)
+      signedInv = buildRuntimeSignTransfer(rewriter, loc, invDenom2, denom);
+    else if (denomSign == Sign::Negative)
+      signedInv = arith::NegFOp::create(rewriter, loc, invDenom2);
+    else
+      signedInv = invDenom2;
+    // 4. Multiply num with the signed inverse.
+    Value newMul = arith::MulFOp::create(rewriter, loc, num, signedInv);
     rewriter.replaceOp(divOp, newMul);
     return success();
   }
@@ -393,8 +455,10 @@ struct FastInversePass : public ::impl::FastInverseBase<FastInversePass> {
     // arith.divf x, sqrt(%a) --> x * Quake_rsqrt(%a)
     patterns.insert<DivWithSqrtDenom>(patterns.getContext());
     // -----
-    // 2. More general rewrite rule, producing a product and the square of the
-    // denom arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)
+    // 2. The general rewrite using tri-state sign inference (inferSign()):
+    //   q >= 0: arith.divf %p, %q --> %p * Quake_rsqrt(%q * %q)
+    //   q <  0: arith.divf %p, %q --> -(p * Quake_rsqrt(%q * %q))
+    //   Unknown: left intact as arith.divf.
     patterns.insert<DivToQuakeAndSquaringAndMult>(patterns.getContext());
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       return signalPassFailure();

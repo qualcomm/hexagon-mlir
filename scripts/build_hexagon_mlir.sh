@@ -151,7 +151,7 @@ LLVM_SHA=$(cat $TRITON_DIR/cmake/llvm-hash.txt)
 git checkout $LLVM_SHA
 
 
-if [[ ! -f "${LLVM_PROJECT_BUILD_DIR}/bin/mlir-opt" ]]; then
+if [[ ! -f "${LLVM_PROJECT_BUILD_DIR}/bin/mlir-opt" ]] || [[ ! -f "${LLVM_INSTALL_DIR}/bin/mlir-opt" ]]; then
   mkdir -p ${LLVM_PROJECT_BUILD_DIR}
   cd  ${LLVM_PROJECT_BUILD_DIR} 
   echo "Configuring CMake..."

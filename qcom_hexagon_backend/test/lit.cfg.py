@@ -28,8 +28,17 @@ config.suffixes = [".mlir", ".mllvm"]
 
 config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
+# Path to the triton-pass-opt.py runner for Triton-dialect lit tests.
+config.substitutions.append(
+    (
+        "%triton_pass_opt",
+        os.path.join(os.path.dirname(__file__), "Triton", "triton-pass-opt.py"),
+    )
+)
 
-llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
+llvm_config.with_system_environment(
+    ["HOME", "INCLUDE", "LIB", "TMP", "TEMP", "PYTHONPATH"]
+)
 
 # excludes: A list of directories to exclude from the testsuite. The 'Inputs'
 # subdirectories contain auxiliary inputs for various tests in their parent
@@ -50,6 +59,13 @@ tool_dirs = [config.triton_tools_dir, config.llvm_tools_dir, config.filecheck_di
 # Tweak the PATH to include the tools dir.
 for d in tool_dirs:
     llvm_config.with_environment("PATH", d, append_path=True)
+
+triton_install_path = os.environ.get("TRITON_INSTALL_PATH")
+if triton_install_path:
+    triton_bin = os.path.join(triton_install_path, "bin")
+    if os.path.isdir(triton_bin):
+        llvm_config.with_environment("PATH", triton_bin, append_path=True)
+
 tools = [
     "linalg-hexagon-translate",
     ToolSubst("%PYTHON", config.python_executable, unresolved="ignore"),
@@ -65,6 +81,14 @@ llvm_config.with_environment(
     ],
     append_path=True,
 )
+
+if triton_install_path:
+    triton_python_paths = [
+        triton_install_path,
+        os.path.join(triton_install_path, "python"),
+        os.path.join(triton_install_path, "lib"),
+    ]
+    llvm_config.with_environment("PYTHONPATH", triton_python_paths, append_path=True)
 
 # Pass external env flags to lit test config
 config.environment["HEXAGON_ARCH_VERSION"] = os.environ.get("HEXAGON_ARCH_VERSION")

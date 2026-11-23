@@ -1,3 +1,9 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+
 set(LLVM_TARGET_DEFINITIONS HexagonMemDialect.td)
 mlir_tablegen(HexagonMemDialect.h.inc -gen-dialect-decls -dialect=hexagonmem)
 mlir_tablegen(HexagonMemDialect.cpp.inc -gen-dialect-defs -dialect=hexagonmem)

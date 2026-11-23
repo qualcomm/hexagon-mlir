@@ -1,0 +1,32 @@
+diff --git a/include/triton/Dialect/Triton/IR/Traits.h b/include/triton/Dialect/Triton/IR/Traits.h
+index 392436308b..7a4b561fd6 100644
+--- a/include/triton/Dialect/Triton/IR/Traits.h
++++ b/include/triton/Dialect/Triton/IR/Traits.h
+@@ -21,7 +21,11 @@ namespace impl {
+ // of size up to 256K elements. It will spill for datatypes wider than 1B,
+ // but we probably should limit number of elements (rather than bytes) to
+ // keep specs simple
+-int constexpr maxTensorNumElements = 1048576;
++// The Hexagon backend raises the limit to 64M elements: with MLIR-level NSP
++// sharding a whole-matrix block is never materialized as a single tensor,
++// each worker only loads its shard. The backend rejects tensors above the
++// upstream 1M-element limit when NSP sharding is off.
++int constexpr maxTensorNumElements = 67108864;
+ 
+ LogicalResult verifyTensorSize(Operation *op);
+ LogicalResult verifyTensorLayouts(Operation *op);
+diff --git a/python/triton/_utils.py b/python/triton/_utils.py
+index aac0e676fe..716dfe0f18 100644
+--- a/python/triton/_utils.py
++++ b/python/triton/_utils.py
+@@ -8,7 +8,9 @@ if TYPE_CHECKING:
+     IterableType = Union[list[Any], tuple[Any, ...], core.tuple, core.tuple_type]
+     ObjPath = tuple[int, ...]
+ 
+-TRITON_MAX_TENSOR_NUMEL = 1048576
++# Raised from the upstream 1048576 for the Hexagon backend's MLIR-level NSP
++# sharding (see Traits.h); the backend enforces the upstream limit otherwise.
++TRITON_MAX_TENSOR_NUMEL = 67108864
+ 
+ 
+ def get_iterable_path(iterable: IterableType, path: ObjPath) -> Any:

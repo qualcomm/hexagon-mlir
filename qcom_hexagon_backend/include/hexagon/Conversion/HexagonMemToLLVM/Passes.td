@@ -1,3 +1,12 @@
+//===- Passes.td - HexagonMem to LLVM passes ---------------*- tablegen -*-===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef HEXAGON_CONVERSION_HEXAGONMEMTOLLVM_PASSES_TD
 #define HEXAGON_CONVERSION_HEXAGONMEMTOLLVM_PASSES_TD
 

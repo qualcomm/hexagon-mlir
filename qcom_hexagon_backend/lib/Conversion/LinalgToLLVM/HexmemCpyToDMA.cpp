@@ -13,10 +13,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "hexagon/Common/Common.h"
+#include "hexagon/Common/Utils.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "hexmem-cpy-to-dma"
@@ -46,6 +48,47 @@ static Value getI32Const(Location loc, IRRewriter &rewriter, int val) {
   return arith::ConstantIndexOp::create(rewriter, loc, val);
 }
 
+// Trace a memref value back through view-like ops (subview/view/cast/
+// reinterpret_cast) to its defining op and report whether it is a function-
+// local DDR allocation (memref.alloc / memref.alloca in the default address
+// space).
+//
+// Such DDR buffers are written on the DSP (e.g. linalg.fill + memref.copy used
+// to materialize masked loads, or reduction scalar temporaries) and live in
+// the DSP cache. The UDMA engine reads/writes DDR directly and is not coherent
+// with that cache, so converting a copy whose DDR endpoint is one of these
+// freshly written local allocations into a DMA reads/writes stale DDR (observed
+// as all-zero reduction inputs/outputs for masked tl.sum / rms_norm). Leaving
+// these as memref.copy keeps them as a coherent DSP-side copy.
+//
+// Local allocations in VTCM are fine: VTCM is the UDMA engine's own fast memory
+// and is the intended DMA endpoint, so only DDR (default address space) local
+// allocations are flagged here.
+static bool isLocalDDRAllocation(mlir::Value memref) {
+  auto memrefType = mlir::dyn_cast<mlir::MemRefType>(memref.getType());
+  if (!memrefType)
+    return false;
+  int memSpace;
+  if (!isMemorySpaceIntTypeOrDefault(memrefType, memSpace) ||
+      memSpace != hexagon::DEFAULT_DDR_ADDRESS_SPACE)
+    return false;
+
+  mlir::Value cur = memref;
+  while (cur) {
+    mlir::Operation *def = cur.getDefiningOp();
+    if (!def)
+      return false; // block argument (e.g. function argument) - not local
+    if (mlir::isa<mlir::memref::AllocOp, mlir::memref::AllocaOp>(def))
+      return true;
+    if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(def)) {
+      cur = view.getViewSource();
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
 template <typename CopyOpTy> static bool isValidCandidate(CopyOpTy op) {
   auto sourceType = op.getSource().getType();
   auto targetType = op.getTarget().getType();
@@ -62,6 +105,16 @@ template <typename CopyOpTy> static bool isValidCandidate(CopyOpTy op) {
 
   // Skip lowering for non-static
   if (!sourceMemRefType.hasStaticShape() || !targetMemRefType.hasStaticShape())
+    return false;
+
+  // Do not lower copies whose DDR endpoint is a function-local allocation.
+  // These buffers are written on the DSP and are not cache-coherent with the
+  // UDMA engine, so a DMA would read/write stale DDR. See
+  // isLocalDDRAllocation(). This covers masked-load staging buffers
+  // (linalg.fill + partial copy) and reduction scalar temporaries, both of
+  // which otherwise produced all-zero results (tl.sum / softmax / rms_norm).
+  if (isLocalDDRAllocation(op.getSource()) ||
+      isLocalDDRAllocation(op.getTarget()))
     return false;
 
   int sourceMemSpace, targetMemSpace;
@@ -132,7 +185,7 @@ void replaceWithDMA(CopyOpTy copyOp, FunctionOpInterface funcOp,
   // All early returns above are before any IR modification.
   // Allocate a tag buffer for DMA operations
   auto tagType = MemRefType::get({1}, rewriter.getI32Type());
-  Value tagAlloc = memref::AllocOp::create(rewriter, loc, tagType);
+  Value tagAlloc = memref::AllocOp::create(rewriter, loc << "dma_tag", tagType);
 
   // Reuse shared constants for tag and index access
   SmallVector<Value, 1> tagIndex = {zero};
@@ -185,8 +238,8 @@ void replaceWithDMA(CopyOpTy copyOp, FunctionOpInterface funcOp,
     if (sourceMemSpace == DEFAULT_DDR_ADDRESS_SPACE &&
         targetMemSpace == VTCM_ADDRESS_SPACE) {
       int64_t numElements = targetStrides[rank - 3];
-      Value numElementsVal =
-          arith::ConstantIndexOp::create(rewriter, loc, numElements);
+      Value numElementsVal = arith::ConstantIndexOp::create(
+          rewriter, loc << "dma_num_elements", numElements);
       auto shape = targetMemRefType.getShape();
       sizes[rank - 1] = rewriter.getIndexAttr(shape[rank - 1]);
       sizes[rank - 2] = rewriter.getIndexAttr(shape[rank - 2]);
@@ -203,8 +256,8 @@ void replaceWithDMA(CopyOpTy copyOp, FunctionOpInterface funcOp,
               getI32Const(loc, rewriter, width));
     } else {
       int64_t numElements = sourceStrides[rank - 3];
-      Value numElementsVal =
-          arith::ConstantIndexOp::create(rewriter, loc, numElements);
+      Value numElementsVal = arith::ConstantIndexOp::create(
+          rewriter, loc << "dma_num_elements", numElements);
       auto shape = sourceMemRefType.getShape();
       sizes[rank - 1] = rewriter.getIndexAttr(shape[rank - 1]);
       sizes[rank - 2] = rewriter.getIndexAttr(shape[rank - 2]);
@@ -225,8 +278,8 @@ void replaceWithDMA(CopyOpTy copyOp, FunctionOpInterface funcOp,
     rewriter.setInsertionPointAfter(outerLoop);
     memref::DeallocOp::create(rewriter, loc, tagAlloc);
   } else {
-    Value numElements =
-        getI32Const(loc, rewriter, sourceMemRefType.getNumElements());
+    Value numElements = getI32Const(loc << "dma_num_elements", rewriter,
+                                    sourceMemRefType.getNumElements());
     if (isContiguousMemrefType(sourceMemRefType) &&
         isContiguousMemrefType(targetMemRefType)) {
 

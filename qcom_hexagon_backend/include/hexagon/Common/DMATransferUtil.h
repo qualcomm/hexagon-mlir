@@ -10,6 +10,9 @@
 #ifndef HEXAGON_COMMON_DMA_TRANSFER_UTIL_H
 #define HEXAGON_COMMON_DMA_TRANSFER_UTIL_H
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/PatternMatch.h"
+
 namespace mlir {
 namespace hexagon {
 
@@ -17,6 +20,12 @@ namespace hexagon {
 // computes and returns number of elements in the memref.
 // TODO : For Rank > 2 we need to refactor DMA runtime first.
 Value createNumElements(Location loc, IRRewriter &rewriter, Value view);
+
+// Returns true if a DMA from `sourceType` to `targetType` can be created.
+bool canCreateDMAStart(Type sourceType, Type targetType);
+
+// Returns true if `copyOp` copies from VTCM to DDR.
+bool isVTCMtoDDR(memref::CopyOp copyOp);
 
 // Create DMA start op to initiate asynchronous data transfer
 // from `source` to `target` memref using the specified tag.

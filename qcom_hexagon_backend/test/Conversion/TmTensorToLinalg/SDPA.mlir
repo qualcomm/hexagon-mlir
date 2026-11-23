@@ -1,3 +1,12 @@
+//===- SDPA.mlir ----------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(hexagon-lower-tm-tensor))' %s | FileCheck %s
 
 func.func @SDPA(%arg0: tensor<2x4x8xf32>, %arg1: tensor<2x4x8xf32>,

@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "HexagonAPI.h"
 #include "HexagonBufferAlias.h"
@@ -23,6 +24,7 @@ HexagonAPI *HexagonAPI::Global() {
 }
 // DataSpace: static allocations for Hexagon
 void *HexagonAPI::Alloc(size_t nbytes, uint64_t alignment, bool isVtcm) {
+  std::lock_guard<std::mutex> lock(mu_);
   // Allocate a single, contiguous memory region.
   void *base_ptr = bufferManager->AllocateHexagonBuffer(
       nbytes, static_cast<size_t>(alignment), isVtcm);
@@ -69,6 +71,7 @@ uint32_t HexagonAPI::initialize_and_acquire_hmx() {
 
 void *HexagonAPI::Alloc(size_t nallocs, size_t nbytes, uint64_t alignment,
                         bool isVtcm) {
+  std::lock_guard<std::mutex> lock(mu_);
   // Allocate the region(s) needed for Hexagon's indirect-tensor format.
   void *base_ptr = bufferManager->AllocateHexagonBuffer(
       nallocs, nbytes, static_cast<size_t>(alignment), isVtcm);
@@ -78,16 +81,19 @@ void *HexagonAPI::Alloc(size_t nallocs, size_t nbytes, uint64_t alignment,
 /// Takes a `ptr` to the base of the memref and returns a pointer to the
 /// crouton table
 void *HexagonAPI::CreateBufferAlias(void *ptr, size_t nbytes) {
+  std::lock_guard<std::mutex> lock(mu_);
   return bufferManager->CreateBufferAlias(ptr, nbytes);
 }
 
 /// Takes the pointer to crouton table that was created as an alias and returns
 /// the base pointer to the memref
 void *HexagonAPI::GetOrigBufferFromAlias(void *aliasPtr) {
+  std::lock_guard<std::mutex> lock(mu_);
   return bufferManager->GetOrigBufferFromAlias(aliasPtr);
 }
 
 void HexagonAPI::Free(void *ptr) {
+  std::lock_guard<std::mutex> lock(mu_);
   if (bufferManager) {
     bufferManager->FreeHexagonBuffer(ptr);
   } else {
@@ -100,6 +106,7 @@ void HexagonAPI::Free(void *ptr) {
 
 // TODO: Add support to handle buffer aliases on copying
 void HexagonAPI::Copy(void *dst, void *src, size_t nbytes) {
+  std::lock_guard<std::mutex> lock(mu_);
   if (bufferManager) {
     bufferManager->Copy(dst, src, nbytes);
   } else {
