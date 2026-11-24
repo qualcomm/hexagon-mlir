@@ -36,6 +36,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
+#include <algorithm>
 
 #define DEBUG_TYPE "form-async-threads"
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
