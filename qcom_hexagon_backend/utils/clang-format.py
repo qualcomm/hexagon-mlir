@@ -98,7 +98,9 @@ def main():
     else:
         add_to_git = False
 
-    files_to_format = find_files_to_format(hexagon_mlir_root + "/qcom_hexagon_backend")
+    files_to_format = []
+    for subdir in ("qcom_hexagon_backend", "test"):
+        files_to_format += find_files_to_format(os.path.join(hexagon_mlir_root, subdir))
     if files_to_format:
         logging.info(f"Found {len(files_to_format)} files to format.")
         format_files(files_to_format, add_to_git=add_to_git)

@@ -1,3 +1,12 @@
+//===- attention_simple.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s | FileCheck %s
 
 // Test that tm_tensor.attention operation passes verification and is printed correctly

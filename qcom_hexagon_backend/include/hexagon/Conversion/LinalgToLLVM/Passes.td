@@ -12,6 +12,17 @@
 
 include "mlir/Pass/PassBase.td"
 
+// -- Standalone cleanup used before SCF control-flow lowering --
+def FlattenZeroLoopLinalg : Pass<"flatten-zero-loop-linalg", "mlir::func::FuncOp"> {
+  let summary = "Flatten side-effect-only zero-loop linalg.generic wrappers";
+  let description = [{
+    Triton can wrap scalar assertions in zero-loop linalg.generic operations.
+    Flattening these wrappers before SCF-to-control-flow conversion prevents
+    the conversion from creating invalid multi-block linalg regions.
+  }];
+  let constructor = "hexagon::createFlattenZeroLoopLinalgPass()";
+}
+
 // -- The main linalg-to-llvm pass-pipeline --
 def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
   let summary = "Convert Linalg to LLVM";
@@ -51,6 +62,9 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableMultiThreading", "enable-multi-threading", "bool",
           /*default=*/"false",
           "Enable asnyc multi-threading">,
+    Option<"numThreads", "num-threads", "int64_t",
+          /*default=*/"4",
+          "Preferred number of virtual threads for async multi-threading">,
     Option<"addFastMath", "add-fastmath", "bool",
            /*default=*/"true",
            "Add Fast Math Flag to HexagonAddFastMath Pass.">,
@@ -101,9 +115,14 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableHexKL", "enable-hexkl", "bool",
           /*default=*/"false",
           "Enable linalg matmul to hexkl dialect lowering">,
+    Option<"relaxFP32MatmulToFP16", "relax-fp32-matmul-to-fp16", "bool",
+          /*default=*/"false",
+          "When HexKL lowering is enabled, relax fp32 matmul inputs to fp16 "
+          "while keeping fp32 accumulation/output.">,
     Option<"hexKLMode", "hexkl-mode", "std::string",
           /*default=*/"\"micro\"",
-          "HexKL API mode: 'micro' (default) or 'macro'">,
+          "HexKL API mode: 'micro' (default), 'macro', or 'micro-daemon' "
+          "(dedicated-HMX-thread model)">,
     Option<"enableCollapseAddressSpace", "enable-collapse-address-space", "bool",
           /*default=*/"true",
           "replace llvm.ptr<1> with llvm.ptr at last stage of convert-to-llvm">,
@@ -125,12 +144,36 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableLWP", "enable-lwp", "bool",
            /*default=*/"false",
            "Flag to enable/disable lwp instrumentation">,
+    Option<"enableBroadcastedReductionToButterfly",
+           "enable-broadcasted-reduction-to-butterfly", "bool",
+           /*default=*/"false",
+           "Run the broadcasted-reduction-to-butterfly pass before "
+           "SCFToControlFlow (in scf form). Rewrites "
+           "vector.reduction + (optional scalar arith/math chain) + "
+           "vector.broadcast as an elementwise butterfly reduction with the "
+           "scalar chain ops vectorized lane-wise.">,
+    Option<"enableCompositeOps", "enable-composite-ops", "bool",
+           /*default=*/"false",
+           "Recognize composite patterns (e.g. softmax) and replace "
+           "with optimized composite ops, then lower to vectorized loops.">,
     Option<"disableLWPLoop", "loop", "bool",
            /*default=*/"false",
            "Turn on or off loop level instrumentation">,
     Option<"LWPloopDepth", "depth", "int",
            /*default=*/"1",
            "Depth level instrumentation">,
+    Option<"setMemrefAllocAlignment", "localMemrefAlignment", "bool",
+           /*default=*/"false",
+           "Set alignment for intermediate tensors to 128 in alignment pass">,
+    Option<"specializeKernelToArgAlignment", "specialize-kernel-to-arg-alignment",
+           "bool", /*default=*/"false",
+           "Run the llvm-alignment-propagation pass assuming 128-byte alignment "
+           "on kernel pointer arguments. When false, the pass is omitted.">,
+    Option<"enableSetAliasScopes", "enable-set-alias-scopes", "bool",
+           /*default=*/"false",
+           "Run set-alias-scopes to emit per-access alias_scopes/noalias_scopes "
+           "metadata on LLVM memory ops. Enabling assumes distinct function "
+           "arguments satisfy the no-alias contract.">,
     Option<"extendPackUpperFrontier", "upper", "bool",
            /*default=*/"true",
            "Look for opportunities to extend linalg.pack frontiers.">,
@@ -142,12 +185,25 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
            "Allow un-staging linalg ops that resolve to reduction "
            "generics even when it is possibly to pack those. This impacts "
            "both upper and lower frontier">,
+    Option<"extendPackEnablePaddedPackPropagation", "enable-padded-pack-prop",
+           "bool", /*default=*/"false",
+           "Allow propagation of pack op with padding values without "
+           "checking for safety">,
     Option<"device_type", "device-type", "std::string",
 	   /*default=*/"\"hexagon\"",
            "Target device type for backend-specific lowering">,
     Option<"enableVectorization", "enable-vectorization", "bool",
           /*default=*/"true",
           "Enable vectorization for HVX">,
+    Option<"enablePackedGenericVectorization", "enable-packed-generic-vectorization", "bool",
+          /*default=*/"false",
+          "Enable vectorization of generic ops in packed layouts">,
+    Option<"enablePackedGenericLoopSplitting", "enable-packed-generic-loop-splitting", "bool",
+          /*default=*/"true",
+          "Enable loop splitting to vectorize Nx32 repacked inputs">,
+    Option<"enablePackedGenericEagerVectorization", "enable-packed-generic-eager-vectorization", "bool",
+          /*default=*/"false",
+          "Eagerly vectorize all operands upfront instead of deferring">,
     Option<"enableConversionToFp16", "enable-conversion-to-fp16", "bool",
           /*default=*/"true",
           "Enables the pass which converts fp64/fp32 operations to fp16">,
@@ -157,9 +213,56 @@ def LinalgToLLVM : Pass<"linalg-to-llvm", "mlir::ModuleOp"> {
     Option<"enableSCFLoopUnroll", "enable-scf-loop-unroll", "bool",
           /*default=*/"false",
           "Enable SCF loop unrolling optimization">,
+    Option<"enableUnrollAndJam", "enable-unroll-and-jam", "bool",
+          /*default=*/"false",
+          "Enable outer-loop unroll-and-jam of reduction loops (at linalg "
+          "level, before vectorization) to expose independent reduction "
+          "chains and improve ILP on the in-order VLIW scheduler.">,
+    Option<"unrollAndJamFactor", "unroll-and-jam-factor", "int64_t",
+          /*default=*/"2",
+          "Factor for the unroll-and-jam pass when enableUnrollAndJam is set.">,
+    Option<"enableFastExpApprox", "enable-fast-exp-approx", "bool",
+          /*default=*/"false",
+          "Replace math.exp / math.exp2 with vectorizable polynomial+IEEE-bit approx">,
+    Option<"fastExpApproxDegree", "fast-exp-approx-degree", "unsigned",
+          /*default=*/"3",
+          "Polynomial degree for the 2^f minimax approx in FastExpApproxPass (1..10)">,
     Option<"forceHVXCroutonization", "force-hvx-croutonization", "bool",
           /*default=*/"false",
-          "Force HVX croutonization pass">
+          "Force HVX croutonization pass">,
+    Option<"enablePromoteTiledSCFLoopToVTCM", "enable-promote-tiled-scf-loop-to-vtcm", "bool",
+          /*default=*/"false",
+          "Enable promote tiled SCF loop to VTCM pass">,
+    Option<"enableVectorAccumulatorForReduction", "enable-vector-accumulator-for-reduction", "bool",
+          /*default=*/"false",
+          "Enable vector accumulator optimization for reductions">,
+    Option<"enableFastInverse", "enable-fast-inverse", "bool",
+           /*default=*/"true",
+           "Run FastInversePass (div → Quake_rsqrt multiply). "
+           "Set false to keep scalar sfrecipa division for benchmarking.">,
+    Option<"outlineLinalgGeneric", "outline-linalg-generic", "bool",
+           /*default=*/"false",
+           "Outline every linalg.generic into its own noinline func.func to "
+           "reduce llvm->obj and obj->so compile time.">,
+    // dealloc-after-last-use and the standard buffer-deallocationpipeline
+    // (buildBufferDeallocationPipeline) are mutually exclusive: when
+    // dealloc-after-last-use is true the standard pipeline is skipped entirely,
+    // and when it is false HexagonDeallocAfterLastUse is not run.
+    Option<"deallocAfterLastUse", "dealloc-after-last-use", "bool",
+           /*default=*/"false",
+           "Mutually exclusive with buildBufferDeallocationPipeline: when true, "
+           "runs HexagonDeallocAfterLastUse and skips the standard pipeline; "
+           "when false (default), the standard pipeline runs. "
+           "Inserts a memref.dealloc after the interprocedural last use of each "
+           "large memref.alloc (threshold = dealloc-chunk-bytes), tracking "
+           "through views and pass-through outlined calls. NOTE: only allocs >= "
+           "that threshold are freed on this path.">,
+    Option<"deallocChunkBytes", "dealloc-chunk-bytes", "int64_t",
+           /*default=*/"0",
+           "Byte threshold at or above which HexagonDeallocAfterLastUse tracks "
+           "and deallocates a memref.alloc (0 = disabled). Only meaningful when "
+           "dealloc-after-last-use is true. Independent of va-chunk-bytes (the "
+           "VA tile size).">
    ];
 }
 
@@ -195,6 +298,26 @@ def FormVirtualThreads : Pass<"form-virtual-threads", "func::FuncOp"> {
   ];
 }
 
+def FormCompositeVirtualThreads
+    : Pass<"form-composite-virtual-threads", "func::FuncOp"> {
+  let summary = "Tile composite ops to scf::forall for multi-threading";
+  let description = [{
+    Tiles composite dialect ops (softmax, rms_norm, layer_norm) along their
+    parallel (non-reduction) dimensions using TilingInterface, wrapping the
+    result in scf.forall.  Must run before bufferization at tensor level.
+    FormAsyncThreadsPass later converts the scf.forall to async.execute.
+  }];
+  let constructor = "hexagon::createFormCompositeVirtualThreadsPass()";
+  let options = [
+       Option<"preferredNumThreads", "preferred-num-threads", "int64_t",
+              /*default=*/"4",
+              "Preferred number of virtual threads to create.">,
+       Option<"blockSize", "block-size", "int64_t",
+              /*default=*/"0",
+              "Block size for testing (user-override)">,
+  ];
+}
+
 def HexmemCpyToDMA :
     InterfacePass<"hexmem-cpy-to-dma", "mlir::FunctionOpInterface"> {
   let summary = "Pass to rewrite hexagonmem.copy and memref.copy ops to memref.dma ops";
@@ -218,7 +341,11 @@ def HexagonExtendPack:
            /*default=*/"true",
            "Allow un-staging linalg ops that resolve to reduction "
            "generics even when it is possibly to pack those. This impacts "
-           "both upper and lower frontier">
+           "both upper and lower frontier">,
+    Option<"enablePaddedPackPropagation", "enable-padded-pack-prop",
+           "bool", /*default=*/"false",
+           "Allow propagation of pack op with padding values without "
+           "checking for safety">
   ];
 
   let constructor =
@@ -319,6 +446,35 @@ def RewriteUBPoisonToZero :
   let constructor = "hexagon::createRewriteUBPoisonToZeroPass()";
 }
 
+def VTCMMaskWidening :
+     InterfacePass<"vtcm-mask-widening", "mlir::FunctionOpInterface"> {
+  let summary = "Widen i1 mask operands of VTCM-tiling-selected ops to i8 in place";
+  let description = [{
+    Walks every linalg.generic with pure tensor semantics and, for any
+    operand whose tensor element type is i1, retypes the producer (for outs)
+    or inserts a widening cast (for ins) to i8 in place, reconciling every
+    consumer (linalg.generic ins/outs, tensor.extract) with a transient
+    scalar cast. Must run immediately before VTCMTilingPass so no i1-typed
+    operand remains for it to stage.
+  }];
+  let options = [
+    Option<"tileSizes", "tile-size-override", "std::string",
+           /*default=*/"",
+           "override tile size. Only intended for debugging.">,
+    Option<"vtcmBudget", "vtcm-budget", "int64_t",
+           /*default=*/"0",
+           "per-instance VTCM budget in bytes for tile size computation. "
+           "0 = use default (vtcmSizeInBytes = 2 MB).">
+  ];
+  let constructor = "hexagon::createVTCMMaskWideningPass()";
+}
+
+def SpecializeLinalgMatmul :
+    Pass<"hexagon-specialize-linalg-matmul", "mlir::ModuleOp"> {
+  let summary = "Specialize matching linalg.generics to linalg.matmul";
+  let constructor = "hexagon::createSpecializeLinalgMatmulPass()";
+}
+
 def VTCMTiling :
      InterfacePass<"vtcm-tiling", "mlir::FunctionOpInterface"> {
   let summary = "Lower linalg-on-tensors (DDR) to tiled-compute on VTCM";
@@ -347,5 +503,78 @@ def OptimizeExtfTruncfOp :
         "Pass to optimize IR and remove redundant extf and truncf op";
   let constructor = "hexagon::createOptimizeExtfTruncfOpPass()";
 }
+
+def HexagonVectorizePackedGeneric
+    : Pass<"hexagon-vectorize-packed-generic", "mlir::func::FuncOp"> {
+  let summary = "General-purpose vectorization for linalg.generic ops with packed layouts (32x2)";
+  let description = [{
+    This pass vectorizes linalg.generic operations operating on packed layouts
+    where some inputs/outputs have last 2 dimensions as 32x2. The pass also
+    vectorizes element-wise generic ops operating on unpacked tensors with
+    static shapes, when the number of elements in the tensor >= 64, and when 
+    the number of elements in the last dimension < 64. The pass applies 
+    heuristics to maximize vectorization:
+    
+    1) Prioritize vectorizing loads/stores of tensors with most elements
+       (usually inputs and outputs, so last 2 iterators remain intact)
+    2) Perform reductions in registers by permuting loops to bring reduction
+       dims close together (without changing positions of last 2 iterators)
+    3) Vectorize loads/stores of smaller tensors via loop permutations and
+       splitting (without changing positions of last 2 iterators)
+    4) Use shuffles on loaded values to make them usable in vector computation
+    5) Use shuffles to store results back to memory (if necessary)
+    6) Flatten element-wise generic ops whose tensors' last dim < 64, and 
+       number of elements >=64. These are not handled by the existing
+       vectorizer. Restore the shape after vectorization.
+    
+    The shuffle maps are derived from the affine maps for tensor accesses.
+  }];
+  let constructor = "hexagon::createHexagonVectorizePackedGenericPass()";
+  let options = [
+    Option<"enablePackedGenericLoopSplitting", "enable-packed-generic-loop-splitting", "bool",
+           /*default=*/"true",
+           "Enable loop splitting to vectorize Nx32 repacked inputs">,
+    Option<"enablePackedGenericEagerVectorization", "enable-packed-generic-eager-vectorization", "bool",
+           /*default=*/"false",
+           "Eagerly vectorize all operands upfront instead of deferring">,
+  ];
+}
+
+def PromoteTiledSCFLoopToVTCM :
+    InterfacePass<"promote-tiled-scf-loop-to-vtcm", "mlir::FunctionOpInterface"> {
+  let summary = "Promote tiled SCF loop to VTCM";
+  let constructor = "hexagon::createPromoteTiledSCFLoopToVTCMPass()";
+}
+
+def LinalgToComposite :
+    InterfacePass<"linalg-to-composite", "mlir::FunctionOpInterface"> {
+  let summary = "Recognize composite patterns in linalg and replace with composite ops";
+  let description = [{
+    Identifies operation patterns expressed as DAGs of linalg.generic ops and
+    replaces them with single composite dialect ops.  Currently supports:
+
+      softmax: max-reduce -> broadcast -> sub -> exp -> sum-reduce -> 1/sum -> broadcast -> mul
+               -> composite.softmax
+
+    New recognition patterns are added alongside existing ones.
+  }];
+  let constructor = "hexagon::createLinalgToCompositePass()";
+}
+
+def LowerComposite :
+    InterfacePass<"lower-composite", "mlir::FunctionOpInterface"> {
+  let summary = "Lower composite dialect ops to vectorized loops";
+  let description = [{
+    Lowers memref-form composite ops to vectorized scf.for loops targeting
+    HVX-width vectors.  Currently supports:
+
+      composite.softmax: three vectorized loops (max-reduce, fused exp+sum,
+      normalize) with 2x unrolling.
+
+    New composite op patterns are registered alongside existing ones.
+  }];
+  let constructor = "hexagon::createLowerCompositePass()";
+}
+
 
 #endif

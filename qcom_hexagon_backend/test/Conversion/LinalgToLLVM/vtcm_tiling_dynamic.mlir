@@ -1,3 +1,12 @@
+//===- vtcm_tiling_dynamic.mlir -------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s  -pass-pipeline='builtin.module(linalg-generalize-named-ops,\
 // RUN:   func.func(vtcm-tiling), one-shot-bufferize,\
 // RUN:   func.func(buffer-loop-hoisting), canonicalize, buffer-deallocation-pipeline)' \

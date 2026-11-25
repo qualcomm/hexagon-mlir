@@ -14,6 +14,12 @@
 namespace mlir {
 namespace hexagon {
 
+std::unique_ptr<mlir::Pass> createVectorAccumulatorForReductionPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createOutlineLinalgGenericPass();
+std::unique_ptr<mlir::Pass>
+createHexagonDeallocAfterLastUsePass(int64_t chunkBytes = 0);
+
 #define GEN_PASS_REGISTRATION
 #include "hexagon/Transforms/Passes.h.inc"
 

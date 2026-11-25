@@ -47,7 +47,6 @@ def test_vec_add(num_elements, num_threads, dtype):
 
     block_size = triton.next_power_of_2(num_elements // num_threads)
 
-    true_if_single_threaded = num_threads == 1
     grid = (num_threads,)
     add_kernel_scalar[grid](
         x,
@@ -55,10 +54,10 @@ def test_vec_add(num_elements, num_threads, dtype):
         output,
         num_elements,
         BLOCK_SIZE=block_size,
-        enableMultiThreading=true_if_single_threaded,
+        enableMultiThreading=True,
         enableVTCMTiling=True,
-        enableConvertToHexagonmem=true_if_single_threaded,
-        enableHexagonmemCopyToDMA=true_if_single_threaded,
+        enableConvertToHexagonmem=True,
+        enableHexagonmemCopyToDMA=True,
     )
 
     reference = x + y

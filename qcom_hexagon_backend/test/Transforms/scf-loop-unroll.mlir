@@ -1,3 +1,12 @@
+//===- scf-loop-unroll.mlir -----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -scf-loop-unroll='unroll-factor=4' -cse -canonicalize | FileCheck %s
 
 // Test basic loop unrolling with constant bounds and step

@@ -1,3 +1,12 @@
+//===- broadcast-div-to-mul-3d.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -div-to-mul-optimization -cse | FileCheck %s
 
 // This test verifies div-to-mul optimization for 3D tensors where a 2D tensor is

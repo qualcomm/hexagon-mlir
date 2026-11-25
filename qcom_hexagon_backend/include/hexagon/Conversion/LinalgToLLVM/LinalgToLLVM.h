@@ -20,9 +20,15 @@ namespace hexagon {
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h.inc"
 
 std::unique_ptr<OperationPass<func::FuncOp>> createFormSCFThreadsPass();
+std::unique_ptr<OperationPass<func::FuncOp>> createFlattenZeroLoopLinalgPass();
 std::unique_ptr<OperationPass<func::FuncOp>> createFormAsyncThreadsPass();
 std::unique_ptr<OperationPass<func::FuncOp>> createFormVirtualThreadsPass(
     const FormVirtualThreadsOptions &options = FormVirtualThreadsOptions());
+
+std::unique_ptr<OperationPass<func::FuncOp>>
+createFormCompositeVirtualThreadsPass(
+    const FormCompositeVirtualThreadsOptions &options =
+        FormCompositeVirtualThreadsOptions());
 
 std::unique_ptr<InterfacePass<FunctionOpInterface>> createHexagonExtendPackPass(
     const HexagonExtendPackOptions &options = HexagonExtendPackOptions());
@@ -43,6 +49,8 @@ std::unique_ptr<InterfacePass<FunctionOpInterface>> createHexmemCpyToDMAPass();
 std::unique_ptr<OperationPass<ModuleOp>> createLinalgToLLVMPass(
     const LinalgToLLVMOptions &options = LinalgToLLVMOptions());
 
+std::unique_ptr<OperationPass<ModuleOp>> createSpecializeLinalgMatmulPass();
+
 std::unique_ptr<OperationPass<ModuleOp>> createLowerConstantsSeparatelyPass();
 
 std::unique_ptr<OperationPass<func::FuncOp>> createLowerPackPass();
@@ -54,6 +62,9 @@ createEraseVectorToTensorWritebackPass();
 
 std::unique_ptr<OperationPass<ModuleOp>> createRewriteUBPoisonToZeroPass();
 
+std::unique_ptr<InterfacePass<FunctionOpInterface>> createVTCMMaskWideningPass(
+    const VTCMMaskWideningOptions &options = VTCMMaskWideningOptions());
+
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createVTCMTilingPass(const VTCMTilingOptions &options = VTCMTilingOptions());
 
@@ -62,6 +73,20 @@ createConversionToFp16Pass();
 
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createOptimizeExtfTruncfOpPass();
+
+std::unique_ptr<OperationPass<func::FuncOp>>
+createHexagonVectorizePackedGenericPass(
+    const HexagonVectorizePackedGenericOptions &options =
+        HexagonVectorizePackedGenericOptions());
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createPromoteTiledSCFLoopToVTCMPass();
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
+createLinalgToCompositePass();
+
+std::unique_ptr<InterfacePass<FunctionOpInterface>> createLowerCompositePass();
+
 } // namespace hexagon
 } // namespace mlir
 

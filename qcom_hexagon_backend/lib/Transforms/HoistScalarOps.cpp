@@ -106,6 +106,10 @@ private:
                         SmallVectorImpl<Operation *> &hoistableOps,
                         DenseSet<Operation *> &canHoistSet);
 
+  /// Hoistable ops may only use rank-0 tensor block arguments.
+  bool validateHoistableOps(ArrayRef<Operation *> hoistableOps,
+                            linalg::GenericOp gop, unsigned oldNumInputs);
+
   /// Hoist the identified operations outside the generic and wrap them in
   /// rank-0 tensors
   void hoistOperations(linalg::GenericOp gop, OpBuilder &builder,
@@ -211,16 +215,56 @@ void HoistScalarOpsPass::findHoistableOps(
   }
 }
 
+bool HoistScalarOpsPass::validateHoistableOps(
+    ArrayRef<Operation *> candidateOps, linalg::GenericOp genericOp,
+    unsigned numInputsBeforeHoisting) {
+  Block &regionBlock = genericOp.getRegion().front();
+  return llvm::all_of(candidateOps, [&](Operation *op) {
+    return llvm::all_of(op->getOperands(), [&](Value operand) {
+      auto blockArg = dyn_cast<BlockArgument>(operand);
+      // Only block arguments owned by the generic's region map to its
+      // tensor inputs. A function argument also satisfies
+      // dyn_cast<BlockArgument> but is unrelated to the generic and must not be
+      // indexed into the input list.
+      if (!blockArg || blockArg.getOwner() != &regionBlock)
+        return true;
+
+      unsigned argIdx = blockArg.getArgNumber();
+      if (argIdx >= numInputsBeforeHoisting)
+        return true;
+
+      auto tensorType = dyn_cast<RankedTensorType>(
+          genericOp.getDpsInputOperand(argIdx)->get().getType());
+      if (tensorType && tensorType.getRank() == 0)
+        return true;
+
+      LLVM_DEBUG(llvm::dbgs() << "Skipping hoist: expected rank-0 tensor, got "
+                              << tensorType << "\n");
+      return false;
+    });
+  });
+}
+
 void HoistScalarOpsPass::hoistOperations(
     linalg::GenericOp gop, OpBuilder &builder,
     ArrayRef<Operation *> hoistableOps, unsigned oldNumInputs,
     SmallVectorImpl<Value> &newHoistedTensors,
     DenseMap<Operation *, Value> &hoistedOpResultMap) {
+  Block &regionBlock = gop.getRegion().front();
   for (Operation *op : hoistableOps) {
     IRMapping bvm;
 
     // Remap operands for the cloned operation
     for (Value operand : op->getOperands()) {
+      // Operands defined outside the linalg.generic region (function
+      // arguments, ops produced before the generic) are already valid in
+      // the hoisted scope and need no remapping. Without this guard, a
+      // function argument that happens to have argNumber < oldNumInputs is
+      // a BlockArgument too, and the rank-0 branch below would extract from
+      // the wrong tensor input.
+      if (operand.getParentBlock() != &regionBlock)
+        continue;
+
       // If operand comes from a previously hoisted operation, use the
       // hoisted scalar value
       if (auto defOp = operand.getDefiningOp()) {
@@ -230,20 +274,24 @@ void HoistScalarOpsPass::hoistOperations(
         }
       }
 
-      // If operand is a block argument from a rank-0 tensor input,
-      // extract the scalar value from the tensor
+      // If operand is a block argument of the generic's region from a
+      // rank-0 tensor input, extract the scalar value from the tensor
       if (auto barg = dyn_cast<BlockArgument>(operand)) {
         if (barg.getArgNumber() < oldNumInputs) {
           Value inputTensor =
               gop.getDpsInputOperand(barg.getArgNumber())->get();
-          Value extracted =
-              tensor::ExtractOp::create(builder, gop.getLoc(), inputTensor);
+          SmallVector<Value> extractIndices;
+          if (auto rankedTy = dyn_cast<RankedTensorType>(inputTensor.getType()))
+            for (int64_t i = 0; i < rankedTy.getRank(); ++i)
+              extractIndices.push_back(
+                  arith::ConstantIndexOp::create(builder, gop.getLoc(), 0));
+
+          Value extracted = tensor::ExtractOp::create(
+              builder, gop.getLoc(), inputTensor, extractIndices);
           bvm.map(operand, extracted);
           continue;
         }
       }
-
-      // Otherwise, the operand is from outside and needs no mapping
     }
 
     // Clone the operation outside the linalg.generic
@@ -365,6 +413,12 @@ bool HoistScalarOpsPass::runOnGenericOp(linalg::GenericOp gop,
 
   if (hoistableOps.empty()) {
     LLVM_DEBUG(llvm::dbgs() << "  No hoistable operations found\n");
+    return false;
+  }
+
+  if (!validateHoistableOps(hoistableOps, gop, oldNumInputs)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "  Skipping hoist due to unexpected non-rank-0 operand\n");
     return false;
   }
 

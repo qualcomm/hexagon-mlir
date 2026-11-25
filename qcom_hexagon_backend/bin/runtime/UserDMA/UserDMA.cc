@@ -76,12 +76,10 @@ uint32_t UserDMA::copy(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
   dmaDescSetSrc(dmaDesc, src32);
   dmaDescSetDst(dmaDesc, dst32);
 
-  if (isFirstDMA) {
-    // `dmstart` first descriptor
+  // dmstart if engine is idle (first or post-wait), dmlink if still running.
+  if ((dmpoll() & DM0_STATUS_MASK) == DM0_STATUS_IDLE) {
     dmstart(dmaDesc);
-    isFirstDMA = false;
   } else {
-    // `dmlink` descriptor to tail descriptor
     dmlink(tailDMADesc, dmaDesc);
   }
 
@@ -96,6 +94,28 @@ uint32_t UserDMA::copy2D(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
                          uint32_t dstStride, bool bypassCacheSrc,
                          bool bypassCacheDst, bool isOrdered,
                          uint32_t cacheAllocationPolicy, DMAStatus *status) {
+  // 2D descriptor fields are 16 bits; fall back to one 1D copy per row.
+  constexpr uint32_t kDesc2DFieldMax = 0xFFFF;
+  if (width > kDesc2DFieldMax || height > kDesc2DFieldMax ||
+      srcStride > kDesc2DFieldMax || dstStride > kDesc2DFieldMax) {
+    uint32_t token = 0;
+    auto *srcBytes = static_cast<uint8_t *>(src);
+    auto *dstBytes = static_cast<uint8_t *>(dst);
+    for (uint32_t row = 0; row < height; ++row) {
+      DMAStatus rowStatus = DMAFailure;
+      token = copy(srcBytes + static_cast<uint64_t>(row) * srcStride, srcAS,
+                   dstBytes + static_cast<uint64_t>(row) * dstStride, dstAS,
+                   width, bypassCacheSrc, bypassCacheDst, &rowStatus);
+      if (rowStatus != DMASuccess) {
+        *status = rowStatus;
+        return 0;
+      }
+      if (row != height - 1)
+        wait(token);
+    }
+    *status = DMASuccess;
+    return token;
+  }
 
   *status = DMAFailure;
 
@@ -146,15 +166,10 @@ uint32_t UserDMA::copy2D(void *src, AddrSpace srcAS, void *dst, AddrSpace dstAS,
   dmaDescSetSrc(dmaDesc, src32);
   dmaDescSetDst(dmaDesc, dst32);
 
-  // On first call use dmstart instruction and reset isFirstDMA flag.
-  // On subsequent calls use dmlink instruction, linking previous(tailDMADesc)
-  // to current.
-  if (isFirstDMA) {
-    // `dmstart` first descriptor
+  // dmstart if engine is idle (first or post-wait), dmlink if still running.
+  if ((dmpoll() & DM0_STATUS_MASK) == DM0_STATUS_IDLE) {
     dmstart(dmaDesc);
-    isFirstDMA = false;
   } else {
-    // `dmlink` descriptor to tail descriptor
     dmlink(tailDMADesc, dmaDesc);
   }
 

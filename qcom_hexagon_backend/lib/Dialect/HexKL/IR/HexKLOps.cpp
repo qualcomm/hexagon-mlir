@@ -81,6 +81,25 @@ static LogicalResult verifyNonNegative(Operation *op, Value v, StringRef name,
   return success();
 }
 
+LogicalResult MatmulOp::verify() {
+  Operation *op = getOperation();
+  Type lhsElem = cast<ShapedType>(getLhs().getType()).getElementType();
+  Type rhsElem = cast<ShapedType>(getRhs().getType()).getElementType();
+  Type outsElem = cast<ShapedType>(getOuts().getType()).getElementType();
+
+  bool isF16Combo = lhsElem.isF16() && rhsElem.isF16() &&
+                    (outsElem.isF16() || outsElem.isF32());
+  bool isU8I8Combo =
+      lhsElem.isInteger(8) && rhsElem.isInteger(8) && outsElem.isInteger(32);
+  if (!isF16Combo && !isU8I8Combo)
+    return op->emitOpError("expected (lhs, rhs, outs) element types to be "
+                           "either (f16, f16, "
+                           "f16|f32) or (i8, i8, i32); got (")
+           << lhsElem << ", " << rhsElem << ", " << outsElem << ")";
+
+  return success();
+}
+
 LogicalResult MicroHMXSetupAccReadF16Op::verify() {
   return verifyHmxBlockMemref(getOperation(), getHmxBlock());
 }
@@ -150,4 +169,46 @@ LogicalResult MicroHMXCopyF16ToF32SubmatrixOp::verify() {
                            "tile_row", getTileCol(), "tile_col",
                            getOutputRows(), "output_rows", getOutputCols(),
                            "output_cols");
+}
+
+LogicalResult MicroHMXCopySubmatrixTo8bActivationOp::verify() {
+  Operation *op = getOperation();
+  if (failed(verifyHmxBlockMemref(op, getHmxBlock())))
+    return failure();
+
+  return verifyNonNegative(op, getOutOffset(), "out_offset", getTileRow(),
+                           "tile_row", getTileCol(), "tile_col", getInputRows(),
+                           "input_rows", getInputCols(), "input_cols");
+}
+
+LogicalResult MicroHMXRmToWhI8Op::verify() {
+  Operation *op = getOperation();
+  if (failed(verifyHmxBlockMemref(op, getHmxBlock())))
+    return failure();
+
+  return verifyNonNegative(op, getWeightOffset(), "weight_offset", getTileRow(),
+                           "tile_row", getTileCol(), "tile_col", getWtCols(),
+                           "wt_cols");
+}
+
+LogicalResult MicroHMXCopy32bToSubmatrixOp::verify() {
+  Operation *op = getOperation();
+  if (failed(verifyHmxBlockMemref(op, getHmxBlock())))
+    return failure();
+
+  return verifyNonNegative(op, getInOffset(), "in_offset", getTileRow(),
+                           "tile_row", getTileCol(), "tile_col",
+                           getOutputRows(), "output_rows", getOutputCols(),
+                           "output_cols");
+}
+
+LogicalResult MicroHMXDispatchOp::verify() {
+  // Keep the accepted set closed: the daemon maps this string onto an
+  // HMXMicroJobKind, and an unrecognised value would silently fall back to the
+  // f16 runtime functions and corrupt results rather than fail.
+  StringRef kind = getJobKind();
+  if (kind != "f16" && kind != "u8i8")
+    return emitOpError("job_kind must be \"f16\" or \"u8i8\"; got \"")
+           << kind << "\"";
+  return success();
 }

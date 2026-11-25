@@ -1,3 +1,12 @@
+//===- layout_prop_multi_unpack.mlir --------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -split-input-file -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=true}))' | FileCheck %s
 
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>

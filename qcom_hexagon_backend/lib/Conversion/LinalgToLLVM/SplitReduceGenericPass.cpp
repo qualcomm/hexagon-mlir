@@ -20,6 +20,7 @@
 #include "hexagon/Transforms/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
@@ -54,16 +55,44 @@ LogicalResult splitGenericReduce(RewriterBase &rewriter,
                                  linalg::GenericOp genericOp) {
   DBG("Processing generic op for reduction splitting");
 
-  // Check that the generic op has exactly one loop which is a reduction.
+  // Split one reduction dimension while preserving any surrounding parallel
+  // dimensions.  Attention row reductions, for example, are represented as
+  // [parallel, reduction]: the query-row loop must remain parallel while the
+  // key loop is split for vectorization.
   auto iteratorTypes = genericOp.getIteratorTypesArray();
-  bool hasOnlyOneReductionLoop =
-      iteratorTypes.size() == 1 &&
-      iteratorTypes[0] == utils::IteratorType::reduction;
+  unsigned reductionLoopCount =
+      llvm::count(iteratorTypes, utils::IteratorType::reduction);
+  bool hasOneReductionLoop = reductionLoopCount == 1;
+  bool hasOnlyParallelAndReductionLoops =
+      llvm::all_of(iteratorTypes, [](utils::IteratorType iteratorType) {
+        return iteratorType == utils::IteratorType::parallel ||
+               iteratorType == utils::IteratorType::reduction;
+      });
 
   // This is to avoid successive split-reduction.
-  if (!hasOnlyOneReductionLoop) {
+  if (!hasOneReductionLoop || !hasOnlyParallelAndReductionLoops) {
     return rewriter.notifyMatchFailure(
-        genericOp, "generic op does not have exactly one reduction loop");
+        genericOp,
+        "generic op does not have exactly one reduction loop and only "
+        "parallel surrounding loops");
+  }
+
+  // This pass targets reductions in the innermost loop. Leave column
+  // reductions such as [reduction, parallel] unchanged.
+  if (iteratorTypes.back() != utils::IteratorType::reduction) {
+    return rewriter.notifyMatchFailure(genericOp,
+                                       "reduction loop is not innermost");
+  }
+
+  // Restrict this transformation to associative floating-point reductions.
+  // ExtFOp is a per-element input promotion, not a combiner, and is used by
+  // f16-to-f32 sum reductions such as RMSNorm and LayerNorm.
+  for (Operation &bodyOp : genericOp.getBody()->getOperations()) {
+    if (!isa<arith::AddFOp, arith::ExtFOp, arith::MaxNumFOp, arith::MinNumFOp,
+             arith::MulFOp, linalg::YieldOp>(bodyOp)) {
+      return rewriter.notifyMatchFailure(
+          genericOp, "generic op is not a supported floating-point reduction");
+    }
   }
 
   // Reject ops with dynamic shapes; splitReduction only handles static shapes.
@@ -76,11 +105,22 @@ LogicalResult splitGenericReduce(RewriterBase &rewriter,
   }
 
   // This is to overcome a bug in upstream MLIR split-reduce-generic.
-  // Check if the genericOp has one outs whose defining op is tensor.insert
-  // or tensor.from_elements with a constant value. preserve that value.
+  // Check if the genericOp has one outs whose defining op is tensor.insert,
+  // tensor.from_elements, or linalg.fill with a constant value. preserve that
+  // value.
   TypedAttr preservedConstant = nullptr;
   if (genericOp.getNumDpsInits() == 1) {
     Value output = genericOp.getDpsInitOperand(0)->get();
+
+    // Bufferization can wrap a filled tensor in alloc_tensor copy(...).
+    // Look through copies to recover the original initializer.
+    while (auto allocTensor =
+               output.getDefiningOp<bufferization::AllocTensorOp>()) {
+      Value copy = allocTensor.getCopy();
+      if (!copy)
+        break;
+      output = copy;
+    }
 
     // Check for tensor.insert
     if (auto insertOp = output.getDefiningOp<tensor::InsertOp>()) {
@@ -105,6 +145,13 @@ LogicalResult splitGenericReduce(RewriterBase &rewriter,
         }
       }
     }
+    // Preserve the source fill value for the generated partial reduction.
+    else if (auto fillOp = output.getDefiningOp<linalg::FillOp>()) {
+      if (auto constOp = fillOp.value().getDefiningOp<arith::ConstantOp>()) {
+        preservedConstant = constOp.getValue();
+        DBG("Preserved constant value from linalg.fill: " << preservedConstant);
+      }
+    }
   }
 
   // Create control function for split reduction
@@ -112,12 +159,17 @@ LogicalResult splitGenericReduce(RewriterBase &rewriter,
     SplitReductionOptions options;
     auto tileSize = computeDataTileSize(op); // vector length.
     options.ratio = tileSize.has_value() ? *tileSize : 32;
-    options.index = 0;            // Index for extra dimension
+    // Split the reduction loop, not always loop 0.
+    auto iteratorTypes = op.getIteratorTypesArray();
+    options.index = llvm::find(iteratorTypes, utils::IteratorType::reduction) -
+                    iteratorTypes.begin();
     options.innerParallel = true; // Inner dimension is parallel
     return options;
   };
 
-  // Call the upstream splitReduction function
+  // This utility expands the selected reduction dimension, preserving the
+  // surrounding parallel loops. For [query-row, key], it produces
+  // [query-row, key/32, lane] followed by a final reduction over lane.
   FailureOr<SplitReductionResult> result =
       linalg::splitReduction(rewriter, cast<LinalgOp>(genericOp.getOperation()),
                              controlFn, /*useAlloc=*/false);

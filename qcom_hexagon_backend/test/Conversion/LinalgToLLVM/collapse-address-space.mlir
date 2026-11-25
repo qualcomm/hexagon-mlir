@@ -1,8 +1,23 @@
-// RUN: linalg-hexagon-opt %s -split-input-file -linalg-to-llvm="enable-vtcm-tiling=true enable-convert-to-hexagonmem=true enable-hexagonmem-copy-to-dma=true" \
+//===- collapse-address-space.mlir ----------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
+// `foo` below is a pure elementwise generic, which VTCMTilingPass now skips
+// staging into VTCM by default (see [VTCMTiling] Skip VTCM staging for pure
+// elementwise generics). Force tiling via tile-sizes-override so this test
+// keeps exercising the address-space-collapse behavior downstream of VTCM
+// tiling, which is what this test actually verifies.
+
+// RUN: linalg-hexagon-opt %s -split-input-file -linalg-to-llvm="enable-vtcm-tiling=true enable-convert-to-hexagonmem=true enable-hexagonmem-copy-to-dma=true tile-sizes-override=128,128" \
 // RUN:  | FileCheck %s -check-prefixes=ON
 
 // RUN: linalg-hexagon-opt %s -split-input-file \
-// RUN:   -linalg-to-llvm="enable-vtcm-tiling=true enable-convert-to-hexagonmem=true enable-collapse-address-space=false" \
+// RUN:   -linalg-to-llvm="enable-vtcm-tiling=true enable-convert-to-hexagonmem=true enable-collapse-address-space=false tile-sizes-override=128,128" \
 // RUN:  | FileCheck %s -check-prefixes=OFF
 
 // RUN: linalg-hexagon-opt %s -split-input-file -linalg-to-llvm | FileCheck %s --check-prefixes=CHECK
@@ -51,4 +66,21 @@ module {
 // CHECK-LABEL: llvm.func @hexmem_copy
 // CHECK: %[[SRC_PTR:.*]] = llvm.getelementptr %arg1[{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 // CHECK: %[[DST_PTR:.*]] = llvm.getelementptr %arg10[{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+// CHECK: llvm.return
+
+
+// -----
+
+module {
+ func.func @ptr_roundtrip(
+        %arg0 : memref<1xi32>) -> memref<1xi32> {
+        %0 = memref.memory_space_cast %arg0 : memref<1xi32> to memref<1xi32, #tptr.default_memory_space>
+        %1 = ptr.to_ptr %0 : memref<1xi32, #tptr.default_memory_space> -> <#tptr.default_memory_space>
+        %2 = ptr.from_ptr %1 : !ptr.ptr<#tptr.default_memory_space> -> memref<1xi32, #tptr.default_memory_space>
+        %3 = memref.memory_space_cast %2 : memref<1xi32, #tptr.default_memory_space> to memref<1xi32>
+    return %3 : memref<1xi32>
+ }
+}
+
+// CHECK-LABEL: llvm.func @ptr_roundtrip
 // CHECK: llvm.return

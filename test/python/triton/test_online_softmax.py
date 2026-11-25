@@ -94,6 +94,9 @@ def test_online_softmax(num_threads):
     # since each thread processes all the columns.
     block_col_size = CONSTANTS["NUM_COLS"] // num_threads
 
+    # TODO: Enable MT+DMA for num_threads>1. Currently hits a bufferization
+    # error: "scf.for init_arg and yielded value bufferize to inconsistent
+    # memory spaces" when VTCM tiling is enabled with loop-carried state.
     true_if_single_threaded = num_threads == 1
     grid = (num_threads,)
     online_softmax[grid](

@@ -6,106 +6,132 @@
 //   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 //
 //===----------------------------------------------------------------------===//
+//
+// Persistent-thread ThreadManager for Hexagon DSP.
+//
+// Threads are created ONCE in the constructor and reused across exec() calls
+// via QuRT semaphore-based work dispatch. This eliminates qurt_thread_create /
+// stack-allocation overhead from the benchmark hot path, allowing accurate
+// measurement of compute-only time.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef MULTITHREADING_H
 #define MULTITHREADING_H
 
+#include <atomic>
+#include <qurt.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <vector>
 
 extern void *memalign(size_t, size_t);
 
-struct spawned_thread {
-  void (*f)(void *);
-  void *closure;
-  void *stack;
-  qurt_thread_t tid;
-};
-
 // T -> Closure class
 template <typename T> class ThreadManager {
 public:
-  ThreadManager(int num_threads) : thread_pool(num_threads) {}
-  int thread_cnt() const { return thread_pool.size(); }
-  // Execute the function f for all closures in the collection.
+  explicit ThreadManager(int num_threads);
+  ~ThreadManager();
+
+  int thread_cnt() const { return static_cast<int>(workers_.size()); }
+
+  // Execute f for all closures using persistent threads.
   void exec(void (*f)(void *), T *closures);
-  // Execute the function f serially (does not use qurt threads)
+
+  // Execute f serially (no threads).
   void exec_serial(void (*f)(void *), T *closures);
 
-  // Create qurt threads to execute function f with arguments provided as
-  // the closure. Also (no of closures) == (size of thread_pool)
-  void spawn_threads(void (*f)(void *), T *closures);
-  // Wait for all the specified thread to finish.
-  void join_threads();
-
 private:
-  spawned_thread *spawn_thread(void (*f)(void *), void *closure);
-  // Wait for the specified thread to finish.
-  void join_thread(spawned_thread *thread_arg);
+  // Per-worker state.
+  struct Worker {
+    void (*func)(void *);   // work function (set before signaling start)
+    void *closure;          // argument (set before signaling start)
+    std::atomic<bool> stop; // set to true to terminate worker loop
+    qurt_sem_t start;       // main → worker: "work is ready"
+    qurt_sem_t done;        // worker → main: "work is complete"
+    void *stack;            // stack memory owned by this worker
+    qurt_thread_t tid;      // QuRT thread handle
+  };
 
-  std::vector<spawned_thread *> thread_pool;
-  const unsigned int stack_size = 1024 * 1024;
-  const unsigned short priority = 100;
+  static void worker_entry(void *arg);
+
+  std::vector<Worker *> workers_;
+  const unsigned int stack_size_ = 1024 * 1024;
+  const unsigned short priority_ = 100;
 };
 
-static void spawn_thread_helper(void *arg) {
-  spawned_thread *t = (spawned_thread *)arg;
-  t->f(t->closure);
+template <typename T> void ThreadManager<T>::worker_entry(void *arg) {
+  Worker *w = static_cast<Worker *>(arg);
+  while (true) {
+    qurt_sem_down(&w->start); // wait for main to post work
+    if (w->stop)
+      break;
+    w->func(w->closure);   // execute assigned work item
+    qurt_sem_up(&w->done); // notify main that work is done
+  }
 }
 
-// TODO: Keep the thread pool alive.
+template <typename T> ThreadManager<T>::ThreadManager(int num_threads) {
+  workers_.reserve(num_threads);
+  for (int i = 0; i < num_threads; ++i) {
+    Worker *w = new Worker();
+    w->func = nullptr;
+    w->closure = nullptr;
+    w->stop = false;
+    qurt_sem_init_val(&w->start, 0);
+    qurt_sem_init_val(&w->done, 0);
+    w->stack = memalign(128, stack_size_);
+
+    qurt_thread_attr_t attr;
+    qurt_thread_attr_init(&attr);
+    qurt_thread_attr_set_stack_addr(&attr, w->stack);
+    qurt_thread_attr_set_stack_size(&attr, stack_size_);
+    qurt_thread_attr_set_priority(&attr, priority_);
+    qurt_thread_create(&w->tid, &attr, worker_entry, w);
+
+    workers_.push_back(w);
+  }
+}
+
+template <typename T> ThreadManager<T>::~ThreadManager() {
+  // Signal all workers to exit.
+  for (Worker *w : workers_) {
+    w->stop = true;
+    qurt_sem_up(&w->start);
+  }
+  // Join and free resources.
+  for (Worker *w : workers_) {
+    int ret = 0;
+    qurt_thread_join(w->tid, &ret);
+    free(w->stack);
+    qurt_sem_destroy(&w->start);
+    qurt_sem_destroy(&w->done);
+    delete w;
+  }
+}
+
 template <typename T>
 void ThreadManager<T>::exec(void (*f)(void *), T *closures) {
   if (thread_cnt() == 1) {
-    return f(&closures[0]);
+    f(&closures[0]);
+    return;
   }
-  spawn_threads(f, closures);
-  join_threads();
+  // Post work to all persistent workers.
+  for (int i = 0; i < thread_cnt(); ++i) {
+    workers_[i]->func = f;
+    workers_[i]->closure = &closures[i];
+    qurt_sem_up(&workers_[i]->start); // wake worker i
+  }
+  // Wait for all workers to finish.
+  for (int i = 0; i < thread_cnt(); ++i) {
+    qurt_sem_down(&workers_[i]->done);
+  }
 }
 
 template <typename T>
 void ThreadManager<T>::exec_serial(void (*f)(void *), T *closures) {
-  for (int i = 0; i < thread_cnt(); i++) {
+  for (int i = 0; i < thread_cnt(); ++i) {
     f(&closures[i]);
-  }
-}
-
-template <typename T>
-spawned_thread *ThreadManager<T>::spawn_thread(void (*f)(void *),
-                                               void *closure) {
-  spawned_thread *t = (spawned_thread *)malloc(sizeof(spawned_thread));
-  t->f = f;
-  t->closure = closure;
-  t->stack = memalign(128, ThreadManager<T>::stack_size);
-  qurt_thread_attr_t thread_attr;
-  qurt_thread_attr_init(&thread_attr);
-  qurt_thread_attr_set_stack_addr(&thread_attr, t->stack);
-  qurt_thread_attr_set_stack_size(&thread_attr, ThreadManager<T>::stack_size);
-  qurt_thread_attr_set_priority(&thread_attr, ThreadManager<T>::priority);
-  qurt_thread_create(&t->tid, &thread_attr, spawn_thread_helper, t);
-  return (spawned_thread *)t;
-}
-
-template <typename T>
-void ThreadManager<T>::spawn_threads(void (*f)(void *), T *closures) {
-  for (int i = 0; i < thread_pool.size(); i++) {
-    thread_pool[i] = spawn_thread(f, &closures[i]);
-  }
-}
-
-template <typename T>
-void ThreadManager<T>::join_thread(struct spawned_thread *thread_arg) {
-  spawned_thread *t = (spawned_thread *)thread_arg;
-  int ret = 0;
-  qurt_thread_join(t->tid, &ret);
-  free(t->stack);
-  free(t);
-}
-
-template <typename T> void ThreadManager<T>::join_threads() {
-  for (int i = 0; i < thread_pool.size(); i++) {
-    join_thread(thread_pool[i]);
   }
 }
 

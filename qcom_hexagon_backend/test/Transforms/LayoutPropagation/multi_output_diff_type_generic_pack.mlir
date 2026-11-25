@@ -1,3 +1,12 @@
+//===- multi_output_diff_type_generic_pack.mlir ---------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(extend-pack-frontier{parallels-only=false}))' | FileCheck %s --check-prefixes=CHECK
 
 func.func @multiresult_generic(%arg0: tensor<10xf16>) -> (tensor<5x2xf32>, tensor<5x2xf64>) {

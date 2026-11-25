@@ -94,8 +94,6 @@ private:
   //! \brief Initializes the Hexagon User DMA engine
   unsigned int init();
 
-  bool isFirstDMA = true; // Tracks if the next dma is the first DMA
-
   void *tailDMADesc = nullptr; // Tracks the tail DMA descriptor
 
   RingBuffer<DMADesc2D> *dmaQueue = nullptr; // Storage for all DMA descriptors

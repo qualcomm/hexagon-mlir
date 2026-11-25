@@ -1,3 +1,12 @@
+//===- vtcm_tiling_static_reduction_dim.mlir ------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s  -pass-pipeline='builtin.module(func.func(schedule-matmul-for-hvx,linalg-generalize,vtcm-tiling{tile-size-override=64,64,64}), \
 // RUN:         one-shot-bufferize,func.func(buffer-loop-hoisting),canonicalize,buffer-deallocation-pipeline)' \
 // RUN: | FileCheck %s -check-prefixes=CHECK

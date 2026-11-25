@@ -20,10 +20,13 @@
 // reduction loops, multi-buffering strategies, and broader pattern coverage.
 //===----------------------------------------------------------------------===//
 
+#include "hexagon/Common/DMATransferUtil.h"
+#include "hexagon/Common/Utils.h"
 #include "hexagon/Transforms/Passes.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 #include <optional>
@@ -74,17 +77,30 @@ bool isZeroBasedEvenlyDivisible(scf::ForOp forOp) {
 }
 
 /// Structs to parse and store the schedule.
-enum class ScheduleStage { View, Alloc, Copy, Compute, Store, Unknown };
+enum class ScheduleStage {
+  View,
+  Alloc,
+  Copy,
+  Compute,
+  InlineCompute,
+  Store,
+  Unknown
+};
 struct ScheduleTriplet {
   memref::SubViewOp view;
   memref::AllocOp alloc;
   memref::CopyOp copy;
+  bool writeOnly = false; // for write-only slices.
 };
 
 struct SingleBufferSchedule {
   scf::ForOp forOp;
   SmallVector<ScheduleTriplet> triplets;
-  Operation *compute;
+  // Compute section: either a single ForallOp/tagged-ForOp (legacy path) or a
+  // sequence of inline ops (PromoteTiledSCFLoopToVTCM path tagged all_parallel
+  // + tiled_generic on the outer loop).
+  SmallVector<Operation *> computeOps;
+  SmallVector<memref::SubViewOp> storeViews; // output subviews into the store.
   SmallVector<memref::CopyOp> stores;
 };
 
@@ -99,13 +115,14 @@ Value convertToIndex(OpBuilder &builder, Location loc, Value value) {
 }
 
 // Generate the ping or pong region IR of the double-buffered loop.
-void generatePingPongSubKernel(IRRewriter &rewriter,
-                               SingleBufferSchedule &schedule,
-                               scf::LoopNest &dbLoopNest, scf::IfOp ppongIfOp,
-                               Value nextExists, Value nextIdx,
-                               ArrayRef<Value> thisBuffers,
-                               ArrayRef<Value> nextBuffers, Value toggle,
-                               Value toggleNextStoreValue) {
+// `pongPrologueDone` (ping only): suppresses iter 0's pong prefetch when the
+// deep prologue has already loaded the first pong tile.
+void generatePingPongSubKernel(
+    IRRewriter &rewriter, SingleBufferSchedule &schedule,
+    scf::LoopNest &dbLoopNest, scf::IfOp ppongIfOp, Value nextExists,
+    Value nextIdx, ArrayRef<Value> thisBuffers, ArrayRef<Value> nextBuffers,
+    Value toggle, Value toggleNextStoreValue, Value pongPrologueDone = nullptr,
+    Value falseVal = nullptr) {
   auto forOp = schedule.forOp;
   auto loc = forOp.getLoc();
   auto context = forOp.getContext();
@@ -119,11 +136,22 @@ void generatePingPongSubKernel(IRRewriter &rewriter,
 
   // Create prefetch section: executes if this is not the last iteration.
   rewriter.setInsertionPointToStart(&ppongIfOp.getThenRegion().front());
+  Value doPrefetch = nextExists;
+  if (pongPrologueDone) {
+    Value trueVal =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(true));
+    Value done = memref::LoadOp::create(rewriter, loc, rewriter.getI1Type(),
+                                        pongPrologueDone);
+    Value notDone = arith::XOrIOp::create(rewriter, loc, done, trueVal);
+    doPrefetch = arith::AndIOp::create(rewriter, loc, nextExists, notDone);
+  }
   auto ifNotLastIter =
-      scf::IfOp::create(rewriter, loc, TypeRange(), nextExists, false);
+      scf::IfOp::create(rewriter, loc, TypeRange(), doPrefetch, false);
   ifNotLastIter->setAttr("db_prefetch", UnitAttr::get(context));
   rewriter.setInsertionPointToStart(&ifNotLastIter.getThenRegion().front());
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
+    if (schedule.triplets[i].writeOnly)
+      continue; // write-only outputs have no prefetch copy
     IRMapping mapping;
     mapping.map(indVar, nextIdx);
     auto view = schedule.triplets[i].view;
@@ -135,15 +163,34 @@ void generatePingPongSubKernel(IRRewriter &rewriter,
 
   // Re-map the compute.
   rewriter.setInsertionPointAfter(ifNotLastIter);
+  // Clear suppression flag for iter 1+.
+  if (pongPrologueDone)
+    memref::StoreOp::create(rewriter, loc, falseVal, pongPrologueDone,
+                            ValueRange{});
   IRMapping mapping2;
   mapping2.map(indVar, newDBLoopIndVar);
   for (auto i = 0; i < schedule.triplets.size(); ++i)
     mapping2.map(schedule.triplets[i].alloc, thisBuffers[i]);
-  Operation *newComputeOp = schedule.compute->clone(mapping2);
-  rewriter.insert(newComputeOp);
+  for (Operation *computeOp : schedule.computeOps) {
+    Operation *newComputeOp = computeOp->clone(mapping2);
+    rewriter.insert(newComputeOp);
+    for (auto [oldVal, newVal] :
+         llvm::zip(computeOp->getResults(), newComputeOp->getResults()))
+      mapping2.map(oldVal, newVal);
+  }
 
   // Store the results.
+  for (auto &storeView : schedule.storeViews) {
+    IRMapping mapping;
+    mapping.map(indVar, newDBLoopIndVar);
+    Operation *newViewOp = storeView->clone(mapping);
+    rewriter.insert(newViewOp);
+    mapping2.map(storeView.getResult(), newViewOp->getResult(0));
+  }
+  // Clone input triplet views (skip write-only) for stores.
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
+    if (schedule.triplets[i].writeOnly)
+      continue;
     IRMapping mapping;
     mapping.map(indVar, newDBLoopIndVar);
     auto view = schedule.triplets[i].view;
@@ -191,10 +238,12 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   SmallVector<Value, 3> pongBuffers;
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
     auto alloc = schedule.triplets[i].alloc;
-    Value ping = memref::AllocOp::create(rewriter, loc, alloc.getType(),
-                                         mlir::ValueRange{}, alignmentAttr);
-    Value pong = memref::AllocOp::create(rewriter, loc, alloc.getType(),
-                                         mlir::ValueRange{}, alignmentAttr);
+    Value ping =
+        memref::AllocOp::create(rewriter, loc << "ping_buffer", alloc.getType(),
+                                mlir::ValueRange{}, alignmentAttr);
+    Value pong =
+        memref::AllocOp::create(rewriter, loc << "pong_buffer", alloc.getType(),
+                                mlir::ValueRange{}, alignmentAttr);
     pingBuffers.push_back(ping);
     pongBuffers.push_back(pong);
   }
@@ -221,6 +270,8 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   ifMayLoop->setAttr("db_prologue", UnitAttr::get(context));
   rewriter.setInsertionPointToStart(&ifMayLoop.getThenRegion().front());
   for (auto i = 0; i < schedule.triplets.size(); ++i) {
+    if (schedule.triplets[i].writeOnly)
+      continue; // write-only outputs need no prologue prefetch
     IRMapping mapping;
     mapping.map(indVar, lowerBoundIdx);
     auto view = schedule.triplets[i].view;
@@ -228,6 +279,54 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
     rewriter.insert(newViewOp);
     Value cloneResult = newViewOp->getResult(0);
     memref::CopyOp::create(rewriter, loc, cloneResult, pingBuffers[i]);
+  }
+
+  // Deep prologue: prefetch tile 1 into pong so pong iter 0 has input ready.
+  // Suppression flag is allocated outside ifMayLoop so the main loop sees it.
+  rewriter.setInsertionPoint(ifMayLoop);
+  Value pongPrologueDone =
+      memref::AllocOp::create(rewriter, loc, boolMemrefType);
+  memref::StoreOp::create(rewriter, loc, falseVal, pongPrologueDone,
+                          ValueRange{});
+
+  rewriter.setInsertionPoint(ifMayLoop.getThenRegion().front().getTerminator());
+  {
+    Value tile1Idx =
+        arith::AddIOp::create(rewriter, loc, lowerBoundIdx, stepIdx)
+            .getResult();
+    // Fold tile1Exists when bounds are static; canonicalizer folds the
+    // resulting scf.if, and S2 picks up the inlined copies.
+    Value tile1Exists;
+    auto lowerCst = getConstantIntValue(lowerBoundIdx);
+    auto upperCst = getConstantIntValue(upperBoundIdx);
+    auto stepCst = getConstantIntValue(stepIdx);
+    if (lowerCst && upperCst && stepCst)
+      tile1Exists = arith::ConstantOp::create(
+          rewriter, loc,
+          rewriter.getBoolAttr((*lowerCst + *stepCst) < *upperCst));
+    else
+      tile1Exists =
+          arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::slt,
+                                tile1Idx, upperBoundIdx)
+              .getResult();
+    // Record so ping iter 0 can skip its pong prefetch.
+    memref::StoreOp::create(rewriter, loc, tile1Exists, pongPrologueDone,
+                            ValueRange{});
+    auto ifTile1 =
+        scf::IfOp::create(rewriter, loc, TypeRange(), tile1Exists, false);
+    ifTile1->setAttr("db_prologue_pong", UnitAttr::get(context));
+    rewriter.setInsertionPointToStart(&ifTile1.getThenRegion().front());
+    for (auto i = 0; i < schedule.triplets.size(); ++i) {
+      if (schedule.triplets[i].writeOnly)
+        continue;
+      IRMapping mapping;
+      mapping.map(indVar, tile1Idx);
+      auto view = schedule.triplets[i].view;
+      Operation *newViewOp = view->clone(mapping);
+      rewriter.insert(newViewOp);
+      Value cloneResult = newViewOp->getResult(0);
+      memref::CopyOp::create(rewriter, loc, cloneResult, pongBuffers[i]);
+    }
   }
 
   // Kernel: create the new double-buffered top-loop.
@@ -246,20 +345,19 @@ void rewriteAsDoubleBuffered(IRRewriter &rewriter, scf::ForOp sbForOp,
   // Check if next preload should happen (or this is last iteration).
   Value nextIdx =
       arith::AddIOp::create(rewriter, loc, dbIndVar, stepIdx).getResult();
-  Value nextIdxPlusTileSize =
-      arith::AddIOp::create(rewriter, loc, nextIdx, stepIdx).getResult();
   Value nextExists =
-      arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::sle,
-                            nextIdxPlusTileSize, upperBoundIdx)
+      arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::slt,
+                            nextIdx, upperBoundIdx)
           .getResult();
 
-  // Ping sub-kernel.
+  // Ping sub-kernel: pass pongPrologueDone so iter 0 skips its pong prefetch.
   auto pingIfOp =
       scf::IfOp::create(rewriter, loc, TypeRange(), toggleVal, false);
   pingIfOp->setAttr("db_ping_kernel", UnitAttr::get(context));
   generatePingPongSubKernel(rewriter, schedule, loopNest, pingIfOp, nextExists,
                             nextIdx, pingBuffers, pongBuffers, toggle,
-                            falseVal /*toggleNextStoreValue*/);
+                            falseVal /*toggleNextStoreValue*/, pongPrologueDone,
+                            falseVal);
 
   // Pong sub-kernel.
   rewriter.setInsertionPointAfter(pingIfOp);
@@ -285,7 +383,11 @@ bool generateSchedule(IRRewriter &rewriter, scf::ForOp forOp,
   if (forOp->hasAttr("tiled_generic") && forOp->hasAttr("all_parallel"))
     verifiedTiledGenericParallel = true;
 
-  if (!isZeroBasedEvenlyDivisible(forOp))
+  // For loops tagged by PromoteTiledSCFLoopToVTCM we trust the tile structure
+  // and skip the zero-based / evenly-divisible guard (the loop may start at a
+  // non-zero grid offset and have runtime bounds).  For all other loops keep
+  // the existing guard to avoid false matches.
+  if (!verifiedTiledGenericParallel && !isZeroBasedEvenlyDivisible(forOp))
     return false;
 
   Block *forBody = forOp.getBody();
@@ -297,12 +399,36 @@ bool generateSchedule(IRRewriter &rewriter, scf::ForOp forOp,
     case ScheduleStage::View: {
       auto viewOp = llvm::dyn_cast<memref::SubViewOp>(op);
       if (!viewOp) {
-        if (schedule.triplets.empty())
+        // A standalone AllocOp (without a preceding subview/copy) is a
+        // write-only output: it gets VTCM space but no DDR->VTCM prefetch.
+        if (auto allocOp = llvm::dyn_cast<memref::AllocOp>(op)) {
+          ScheduleTriplet woTriplet;
+          woTriplet.alloc = allocOp;
+          woTriplet.writeOnly = true;
+          schedule.triplets.push_back(woTriplet);
+          break; // stay in View state, more triplets or compute may follow
+        }
+        // Skip preamble ops (e.g. index_cast of the loop IV) that appear
+        // before the first SubView in tagged loops.
+        if (schedule.triplets.empty()) {
+          if (verifiedTiledGenericParallel)
+            break; // skip silently and stay in View
           return false;
+        }
+        // After at least one triplet: a ForallOp or a single tagged ForOp is
+        // the (legacy) compute wrapper — go to Store expecting a direct copy.
         if (llvm::isa<scf::ForallOp>(op) ||
             (llvm::isa<scf::ForOp>(op) && verifiedTiledGenericParallel)) {
-          schedule.compute = &op;
+          schedule.computeOps.push_back(&op);
           stage = ScheduleStage::Store;
+          break;
+        }
+        // For PromoteTiledSCFLoopToVTCM the compute is a sequence of inline ops
+        // (linalg.generic, linalg.fill, allocs, copies, …).  Transition to
+        // InlineCompute to collect them; first top-level SubViewOp = store.
+        if (verifiedTiledGenericParallel && !llvm::isa<scf::YieldOp>(op)) {
+          schedule.computeOps.push_back(&op);
+          stage = ScheduleStage::InlineCompute;
           break;
         }
         return false;
@@ -321,11 +447,26 @@ bool generateSchedule(IRRewriter &rewriter, scf::ForOp forOp,
     }
     case ScheduleStage::Copy: {
       auto copyOp = llvm::dyn_cast<memref::CopyOp>(op);
-      if (!copyOp)
+      // S2 turns this copy into a DMA.
+      if (!copyOp || !canCreateDMAStart(copyOp.getSource().getType(),
+                                        copyOp.getTarget().getType()))
         return false;
       triplet.copy = copyOp;
       schedule.triplets.push_back(triplet);
       stage = ScheduleStage::View;
+      break;
+    }
+    case ScheduleStage::InlineCompute: {
+      // Collect inline compute ops until the first SubViewOp, which signals
+      // the start of the store section.
+      if (auto viewOp = llvm::dyn_cast<memref::SubViewOp>(op)) {
+        schedule.storeViews.push_back(viewOp);
+        stage = ScheduleStage::Store;
+        break;
+      }
+      if (llvm::isa<scf::YieldOp>(op))
+        return false; // no store section — not supported
+      schedule.computeOps.push_back(&op);
       break;
     }
     case ScheduleStage::Store: {
@@ -334,9 +475,29 @@ bool generateSchedule(IRRewriter &rewriter, scf::ForOp forOp,
           return false;
         return true; // done!
       }
+      // A SubViewOp in the store section is the DDR slice for a write-only.
+      if (auto viewOp = llvm::dyn_cast<memref::SubViewOp>(op)) {
+        schedule.storeViews.push_back(viewOp);
+        break; // from switch
+      }
       auto copyOp = llvm::dyn_cast<memref::CopyOp>(op);
       // TODO: more checks about what is being stored.
-      if (!copyOp)
+      if (!copyOp) {
+        // For the vectorized PromoteTiledSCFLoopToVTCM path, the first ForOp in
+        // View state took us to Store, but more compute ops follow before the
+        // real store SubViewOp.  Step back into InlineCompute to collect them;
+        // the next top-level SubViewOp will re-trigger the Store transition.
+        if (verifiedTiledGenericParallel) {
+          schedule.computeOps.push_back(&op);
+          stage = ScheduleStage::InlineCompute;
+          break;
+        }
+        return false;
+      }
+      // S2 turns VTCM->DDR stores into DMAs.
+      if (isVTCMtoDDR(copyOp) &&
+          !canCreateDMAStart(copyOp.getSource().getType(),
+                             copyOp.getTarget().getType()))
         return false;
       schedule.stores.push_back(copyOp);
       break;

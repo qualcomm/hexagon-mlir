@@ -24,14 +24,44 @@
 
 #include "RuntimeDMA.h"
 #include "UserDMA.h"
+#include <cassert>
 
 namespace hexagon {
 namespace userdma {
 
-// Create a static object of HexagonUserDMA to be used in DMAStart and
-// DMAWait APIs. TODO: Make HexagonUserDMA class as a singleton and
-// call its static member function to get its unique instance
-static UserDMA hexDMA(hexagon::userdma::MAX_NUM_DMA_DESCRIPTORS);
+// Workers use ids 0..total-1; main uses -1. +1 gives main its own slot.
+// Main blocks in join() while workers run, so live contexts <= MAX_HW_THREADS.
+#define MAX_HW_THREADS 6
+#define MAX_DMA_WORKERS (MAX_HW_THREADS + 1)
+
+// Per-SW-thread id, set once by the launcher. -1 = main thread.
+// thread_local so it survives QuRT migrating the SW thread across HW threads.
+thread_local int dma_worker_id = -1;
+
+// id in [0, total); total is num_threads (== HW thread count). Validated here,
+// the one place the count enters the runtime, so a bad config fails at entry.
+extern "C" void hexagon_runtime_set_dma_worker_id(int id, int total) {
+  assert(id < total && total <= MAX_HW_THREADS &&
+         "DMA worker id/count invalid");
+  dma_worker_id = id;
+}
+
+// One slot per thread, so lazy init needs no lock. Engines are never freed:
+// a thread_local unique_ptr crashed on TLS teardown (TLBMISS).
+static UserDMA *workerDMA[MAX_DMA_WORKERS] = {nullptr};
+
+static UserDMA &getThreadDMA() {
+  // main thread (-1) → slot 0, worker N → slot N+1.
+  int slot = (dma_worker_id < 0) ? 0 : (dma_worker_id + 1);
+  if (slot >= MAX_DMA_WORKERS) {
+    assert(false && "DMA worker ID exceeds MAX_DMA_WORKERS");
+    slot = 0; // safe release fallback (no OOB)
+  }
+  if (!workerDMA[slot]) {
+    workerDMA[slot] = new UserDMA(hexagon::userdma::MAX_NUM_DMA_DESCRIPTORS);
+  }
+  return *workerDMA[slot];
+}
 
 /*!
  * Initiate DMA to copy memory from source to destination address
@@ -48,8 +78,8 @@ extern "C" uint32_t
 hexagon_runtime_dma_start(void *src, AddrSpace srcAS, void *dst,
                           AddrSpace dstAS, uint32_t length, bool bypassCacheSrc,
                           bool bypassCacheDst, DMAStatus *status) {
-  return hexDMA.copy(src, srcAS, dst, dstAS, length, bypassCacheSrc,
-                     bypassCacheDst, status);
+  return getThreadDMA().copy(src, srcAS, dst, dstAS, length, bypassCacheSrc,
+                             bypassCacheDst, status);
 }
 
 /*!
@@ -83,9 +113,9 @@ extern "C" uint32_t hexagon_runtime_dma2d_start(
     uint32_t height, uint32_t srcStride, uint32_t dstStride,
     bool bypassCacheSrc, bool bypassCacheDst, bool isOrdered,
     uint32_t cacheAllocationPolicy, DMAStatus *status) {
-  return hexDMA.copy2D(src, srcAS, dst, dstAS, width, height, srcStride,
-                       dstStride, bypassCacheSrc, bypassCacheDst, isOrdered,
-                       cacheAllocationPolicy, status);
+  return getThreadDMA().copy2D(src, srcAS, dst, dstAS, width, height, srcStride,
+                               dstStride, bypassCacheSrc, bypassCacheDst,
+                               isOrdered, cacheAllocationPolicy, status);
 }
 
 /*!
@@ -93,7 +123,9 @@ extern "C" uint32_t hexagon_runtime_dma2d_start(
  * complete
  * token: token corresponding to the DMA transfer to wait
  */
-extern "C" void hexagon_runtime_dma_wait(uint32_t token) { hexDMA.wait(token); }
+extern "C" void hexagon_runtime_dma_wait(uint32_t token) {
+  getThreadDMA().wait(token);
+}
 
 } // namespace userdma
 } // namespace hexagon

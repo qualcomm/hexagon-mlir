@@ -1,3 +1,12 @@
+//===- matmul_to_hexkl_macro.mlir -----------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s --pass-pipeline="builtin.module(func.func(matmul-to-hexkl{mode=macro}))" -split-input-file | FileCheck %s
 
 // ============================================================================

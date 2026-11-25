@@ -176,13 +176,6 @@ struct FoldCastsIntoMatmulPass
       return;
     }
 
-    // Clean up dead cast operations
-    func.walk([](linalg::GenericOp genericOp) {
-      if (genericOp.use_empty()) {
-        genericOp.erase();
-      }
-    });
-
     LLVM_DEBUG(llvm::dbgs() << "=== FoldCastsIntoMatmulPass Complete ===\n");
   }
 

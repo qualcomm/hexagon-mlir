@@ -17,7 +17,11 @@
 
 // Returns the average time, in microseconds, taken to run
 // op for the given number of iterations.
+// The first iteration is treated as warmup and excluded from timing.
 template <typename F> uint64_t benchmark_time_us(int iterations, F op) {
+  // Warmup: run once to fill caches, excluded from measurement.
+  op();
+
   uint64_t start_time = HAP_perf_get_time_us();
 
   for (int i = 0; i < iterations; ++i) {
@@ -30,7 +34,11 @@ template <typename F> uint64_t benchmark_time_us(int iterations, F op) {
 
 // Returns the average cycles taken to run
 // op for the given number of iterations.
+// The first iteration is treated as warmup and excluded from timing.
 template <typename F> uint64_t benchmark_pcycles(int iterations, F op) {
+  // Warmup: run once to fill caches, excluded from measurement.
+  op();
+
   uint64_t start_cycle = HAP_perf_get_pcycles();
 
   for (int i = 0; i < iterations; ++i) {

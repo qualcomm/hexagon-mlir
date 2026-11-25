@@ -1,3 +1,12 @@
+//===- Passes.td - Affine to LLVM passes -------------------*- tablegen -*-===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef HEXAGON_AFFINE_TO_LLVM_CONVERSION_PASSES
 #define HEXAGON_AFFINE_TO_LLVM_CONVERSION_PASSES
 

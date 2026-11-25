@@ -14,11 +14,14 @@
 // The arg is inserted before the trailing 6 Triton program-info args:
 //   [num_programs_x, num_programs_y, num_programs_z, pid_x, pid_y, pid_z]
 //
-// The wrapper allocates scratch * prod(grid) bytes total and passes each
-// instance a non-overlapping slice of size `scratch` bytes.
+// The wrapper allocates scratch * actual_threads bytes total and passes each
+// active thread a non-overlapping slice of size `scratch` bytes. With grid
+// oversubscription, a thread reuses its slice for multiple program IDs
+// sequentially.
 //
 //===----------------------------------------------------------------------===//
 
+#include "hexagon/Common/Utils.h"
 #include "hexagon/Transforms/Transforms.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -90,7 +93,7 @@ struct InsertScratchArgPass
 
     unsigned insertIdx = func.getNumArguments() - 6;
     (void)func.insertArgument(insertIdx, scratchType, scratchAttrs,
-                              func.getLoc());
+                              func.getLoc() << "scratch");
   }
 };
 

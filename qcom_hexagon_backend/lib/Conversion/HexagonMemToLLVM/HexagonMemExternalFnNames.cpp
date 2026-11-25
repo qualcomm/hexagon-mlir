@@ -17,6 +17,7 @@ using namespace mlir;
 
 std::string hexagonmem::getAllocFnName(bool isCroutonType,
                                        const std::string &deviceType) {
+  (void)deviceType;
   if (isCroutonType) {
     return "hexagon_runtime_alloc_2d_dsp";
   } else {
@@ -26,6 +27,7 @@ std::string hexagonmem::getAllocFnName(bool isCroutonType,
 
 std::string hexagonmem::getDeallocFnName(bool isCroutonType,
                                          const std::string &deviceType) {
+  (void)deviceType;
   if (isCroutonType) {
     return "hexagon_runtime_free_2d_dsp";
   } else {
@@ -34,15 +36,18 @@ std::string hexagonmem::getDeallocFnName(bool isCroutonType,
 }
 
 std::string hexagonmem::getCopyFnName(const std::string &deviceType) {
+  (void)deviceType;
   return "hexagon_runtime_copy_dsp";
 }
 
 std::string
 hexagonmem::getMemrefToCroutonFnName(const std::string &deviceType) {
+  (void)deviceType;
   return "hexagon_runtime_build_crouton_dsp";
 }
 
 std::string
 hexagonmem::getCroutonToMemrefFnName(const std::string &deviceType) {
+  (void)deviceType;
   return "hexagon_runtime_get_contiguous_memref_dsp";
 }

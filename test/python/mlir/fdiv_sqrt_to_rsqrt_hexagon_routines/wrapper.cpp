@@ -1,11 +1,12 @@
 //===-- fdiv_sqrt_to_rsqrt_hexagon_routines/wrapper.cpp -------------------===//
-////
-//// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
-//// SPDX-License-Identifier: BSD-3-Clause.
-//// For more license information:
-////   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
-////
-////===----------------------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 #include <cmath>
 #include <random>
 #define FARF_ALWAYS 1

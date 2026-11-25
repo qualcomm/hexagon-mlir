@@ -76,8 +76,9 @@ LogicalResult formAsyncThreads(RewriterBase &rewriter, scf::ForallOp forallOp) {
   SmallVector<Value> steps = forallOp.getStep(rewriter);
 
   // %group_id = async.create_group %num_threads : !async.group
-  // For virtual threads lbs is '0' and range is affine map.
-  Value nThreads = arith::DivUIOp::create(rewriter, loc, ubs[0], steps[0]);
+  // Virtual threads have a zero lower bound. Use the same ceiling division as
+  // scf.for so the group contains one token for every loop iteration.
+  Value nThreads = arith::CeilDivUIOp::create(rewriter, loc, ubs[0], steps[0]);
   auto groupId =
       async::CreateGroupOp::create(rewriter, loc, nThreads).getResult();
 

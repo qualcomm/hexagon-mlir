@@ -103,12 +103,20 @@ isaViewOfFuncInputBuffer(Value value, FunctionOpInterface funcOp) {
 // func-arg memref and its singular view.
 void populateCandidate(MaterializeOpTy op, FunctionOpInterface funcOp,
                        CandidatesTy &candidates) {
-  auto castOp = op.getDest().getDefiningOp<ReinterpretOpTy>();
+  // Look through single-use subviews: NSP sharding materializes each worker's
+  // tile into a subview of the output buffer.
+  Value dest = op.getDest();
+  while (auto subview = dest.getDefiningOp<memref::SubViewOp>()) {
+    if (!subview.getResult().hasOneUse())
+      return;
+    dest = subview.getSource();
+  }
+  auto castOp = dest.getDefiningOp<ReinterpretOpTy>();
   if (!castOp)
     return;
   auto memref = castOp.getSource();
   auto [isViewOf, funcArg] = isaViewOfFuncInputBuffer(memref, funcOp);
-  if (!isViewOf || !funcArg.hasOneUse())
+  if (!isViewOf || !funcArg.hasOneUse() || !castOp.getResult().hasOneUse())
     return;
   candidates.emplace_back(op, castOp, funcArg);
 }

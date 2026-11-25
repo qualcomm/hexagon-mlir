@@ -1,3 +1,12 @@
+//===- tile-not-perfectly-tileable-e2e.mlir -------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -split-input-file %s -linalg-to-llvm="split-tiling-range=false enable-split-reduction=false" | FileCheck %s
 
 #map = affine_map<(d0,d1) -> (d0,d1)>
@@ -11,7 +20,7 @@ func.func @vecadd_40by40(
     return %0 : tensor<40x40xf32>
 }
 // CHECK-LABEL: @vecadd_40by40
-// CHECK: %{{[0-9]+}} = llvm.fadd {{.*}}, {{.*}}  {fastmathFlags = #llvm.fastmath<fast>} : vector<32xf32>
+// CHECK: %{{[0-9]+}} = llvm.fadd {{.*}}, {{.*}}  {fastmathFlags = #llvm.fastmath<reassoc>} : vector<32xf32>
 
 // -----
 
@@ -25,4 +34,4 @@ func.func @matmul(
 }
 
 // CHECK-LABEL: @matmul
-// CHECK: %{{[0-9]+}} = llvm.fmul %{{[0-9]+}}, %{{[0-9]+}}  {fastmathFlags = #llvm.fastmath<fast>} : vector<32xf32>
+// CHECK: %{{[0-9]+}} = llvm.fmul %{{[0-9]+}}, %{{[0-9]+}}  {fastmathFlags = #llvm.fastmath<reassoc>} : vector<32xf32>

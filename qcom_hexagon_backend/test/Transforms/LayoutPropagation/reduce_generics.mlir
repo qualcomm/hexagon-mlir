@@ -1,3 +1,12 @@
+//===- reduce_generics.mlir -----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -split-input-file %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=false}))' | FileCheck %s --check-prefixes=CHECK
 //===------------------------------------------------------------------===//
 // Unpack with i in inner_dims_pos -> linalg.generic with "reduction" in i'th element of iterator_types

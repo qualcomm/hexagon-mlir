@@ -50,13 +50,44 @@ Value createNumElements(Location loc, IRRewriter &rewriter, Value view) {
   return getI32Const(loc, rewriter, memrefType.getNumElements());
 }
 
+bool canCreateDMAStart(Type sourceType, Type targetType) {
+  if (!isSafe(sourceType) || !isSafe(targetType) ||
+      getMemorySpace(sourceType) == getMemorySpace(targetType))
+    return false;
+  auto sourceMemRefType = cast<MemRefType>(sourceType);
+  auto targetMemRefType = cast<MemRefType>(targetType);
+  SmallVector<int64_t, 4> sourceStrides, targetStrides;
+  int64_t srcOffset, targetOffset;
+  if (failed(sourceMemRefType.getStridesAndOffset(sourceStrides, srcOffset)) ||
+      failed(targetMemRefType.getStridesAndOffset(targetStrides, targetOffset)))
+    return false;
+  // Unknown memory space - don't lower
+  int sourceMemSpace, targetMemSpace;
+  if (!isMemorySpaceIntTypeOrDefault(sourceMemRefType, sourceMemSpace) ||
+      !isMemorySpaceIntTypeOrDefault(targetMemRefType, targetMemSpace))
+    return false;
+  // Contiguous copies use a 1D DMA; otherwise one side must be 2D strided.
+  int64_t stride, width;
+  return (isContiguousMemrefType(sourceMemRefType) &&
+          isContiguousMemrefType(targetMemRefType)) ||
+         isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
+         isStridedMultiDimMemrefType(targetMemRefType, stride, width);
+}
+
+bool isVTCMtoDDR(memref::CopyOp copyOp) {
+  auto srcType = dyn_cast<MemRefType>(copyOp.getSource().getType());
+  auto dstType = dyn_cast<MemRefType>(copyOp.getTarget().getType());
+  if (!srcType || !dstType)
+    return false;
+  return srcType.getMemorySpaceAsInt() == 1 &&
+         dstType.getMemorySpaceAsInt() == 0;
+}
+
 bool createDMAStartOp(Location loc, IRRewriter &rewriter, Value source,
                       Value target, Value tagAlloc) {
   auto sourceType = source.getType();
   auto targetType = target.getType();
-
-  if (!isSafe(sourceType) || !isSafe(targetType) ||
-      getMemorySpace(sourceType) == getMemorySpace(targetType))
+  if (!canCreateDMAStart(sourceType, targetType))
     return false;
 
   MemRefType sourceMemRefType = cast<MemRefType>(sourceType);
@@ -68,21 +99,7 @@ bool createDMAStartOp(Location loc, IRRewriter &rewriter, Value source,
   SmallVector<Value, 1> tagIndex = {zero};
 
   SmallVector<Value, 8> zeroIndices(rank, zero);
-  SmallVector<Value, 8> tileIndices(rank, zero);
   SmallVector<Value, 2> zeroIndex(1, zero);
-
-  // Extract strides and offsets for source and target memrefs
-  SmallVector<int64_t, 4> sourceStrides, targetStrides;
-  int64_t srcOffset, targetOffset;
-  if (failed(sourceMemRefType.getStridesAndOffset(sourceStrides, srcOffset)) ||
-      failed(targetMemRefType.getStridesAndOffset(targetStrides, targetOffset)))
-    return false;
-
-  int sourceMemSpace, targetMemSpace;
-  // Unknown memory space - don't lower
-  if (!(isMemorySpaceIntTypeOrDefault(sourceMemRefType, sourceMemSpace)) ||
-      !(isMemorySpaceIntTypeOrDefault(targetMemRefType, targetMemSpace)))
-    return false;
 
   Value numElements =
       getI32Const(loc, rewriter, sourceMemRefType.getNumElements());
@@ -94,9 +111,10 @@ bool createDMAStartOp(Location loc, IRRewriter &rewriter, Value source,
     return true;
   }
 
-  int64_t stride, width;
-  assert(isStridedMultiDimMemrefType(sourceMemRefType, stride, width) ||
-         isStridedMultiDimMemrefType(targetMemRefType, stride, width));
+  int64_t stride = 0, width = 0;
+  if (!isStridedMultiDimMemrefType(sourceMemRefType, stride, width) &&
+      !isStridedMultiDimMemrefType(targetMemRefType, stride, width))
+    return false;
   memref::DmaStartOp::create(rewriter, loc, source, zeroIndices, target,
                              zeroIndices, numElements, tagAlloc, zeroIndex,
                              getI32Const(loc, rewriter, stride),

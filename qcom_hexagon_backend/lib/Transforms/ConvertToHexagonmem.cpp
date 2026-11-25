@@ -59,8 +59,13 @@ struct AllocConverter : public OpRewritePattern<memref::AllocOp> {
   LogicalResult matchAndRewrite(memref::AllocOp op,
                                 PatternRewriter &rewriter) const final {
     Type type = op.getType();
-    if (!isSafe(type) || getMemorySpace(type) != VTCM_ADDRESS_SPACE)
+    if (getMemorySpace(type) != VTCM_ADDRESS_SPACE || !isSafe(type)) {
+      if (getMemorySpace(type) == VTCM_ADDRESS_SPACE) {
+        op.emitWarning("unsafe alloc in VTCM address space detected; "
+                       "not converting to hexagonmem.alloc");
+      }
       return failure();
+    }
     rewriter.replaceOpWithNewOp<hexagonmem::AllocOp>(op, type,
                                                      op.getDynamicSizes());
     return success();
@@ -72,8 +77,13 @@ struct DeAllocConverter : public OpRewritePattern<memref::DeallocOp> {
   LogicalResult matchAndRewrite(memref::DeallocOp op,
                                 PatternRewriter &rewriter) const final {
     Type type = op.getMemref().getType();
-    if (!isSafe(type) || getMemorySpace(type) != VTCM_ADDRESS_SPACE)
+    if (getMemorySpace(type) != VTCM_ADDRESS_SPACE || !isSafe(type)) {
+      if (getMemorySpace(type) == VTCM_ADDRESS_SPACE) {
+        op.emitWarning("unsafe dealloc in VTCM address space detected; "
+                       "not converting to hexagonmem.dealloc");
+      }
       return failure();
+    }
     rewriter.replaceOpWithNewOp<hexagonmem::DeallocOp>(op, op.getMemref());
     return success();
   }

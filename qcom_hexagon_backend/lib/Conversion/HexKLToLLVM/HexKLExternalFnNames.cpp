@@ -66,6 +66,32 @@ std::string hexkl::getHmxCopyF16ToF32SubmatrixFnName() {
   return fnName;
 }
 
+std::string hexkl::getHmxCopySubmatrixTo8bActivationFnName() {
+  static const std::string fnName =
+      "hexkl_micro_hmx_copy_submatrix_to_8b_activation";
+  return fnName;
+}
+
+std::string hexkl::getHmxRmToWhI8FnName() {
+  static const std::string fnName = "hexkl_micro_hmx_rm_to_wh_i8";
+  return fnName;
+}
+
+std::string hexkl::getHmxCopy32bToSubmatrixFnName() {
+  static const std::string fnName = "hexkl_micro_hmx_copy_32b_to_submatrix";
+  return fnName;
+}
+
+std::string hexkl::getHmxMicroDispatchFnName() {
+  static const std::string fnName = "hmx_micro_dispatch";
+  return fnName;
+}
+
+std::string hexkl::getHmxMicroWaitIdleFnName() {
+  static const std::string fnName = "hmx_micro_wait_idle";
+  return fnName;
+}
+
 std::string hexkl::getMacroInitializeFnName() {
   static const std::string fnName = "hexkl_macro_initialize";
   return fnName;

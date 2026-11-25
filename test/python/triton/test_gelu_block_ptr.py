@@ -1,4 +1,4 @@
-# ===- est_gelu_block_ptr.py   ----------------------------------------------===
+# ===-test_gelu_block_ptr.py   ----------------------------------------------===
 #
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause.
@@ -6,9 +6,11 @@
 #   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
 #
 # ===------------------------------------------------------------------------===
-# This test is implemented with a block pointer construct to simulate a 4D tensor operation
-# and was motivated by the need to test standalone HVX Croutonization, which is triggered
-# on matching FP16 4D tensor patterns. The pass can be inspected in ForceHVXCrouton.cpp
+#
+# This test is implemented with a block pointer construct to simulate
+# a 4D tensor operation and was motivated by the need to test standalone
+# HVX Croutonization, which is triggered on matching FP16 4D tensor patterns.
+# The pass can be inspected in ForceHVXCrouton.cpp
 
 import torch
 import triton

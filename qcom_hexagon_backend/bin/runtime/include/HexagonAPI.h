@@ -15,6 +15,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -47,6 +48,7 @@ public:
     CHECK_EQ(bufferManager, nullptr);
     bufferManager = std::make_unique<BufferManager>();
 
+    // TODO: Acquire HMX only when the kernel uses it.
     hmx_context_id = initialize_and_acquire_hmx();
   }
 
@@ -106,6 +108,11 @@ private:
 
   /// VTCM memory manager
   std::unique_ptr<VtcmPool> runtimeVtcm;
+
+  /// Mutex protecting all mutable state (VtcmPool, BufferManager).
+  /// Required for thread-safety when multiple threads (e.g., from
+  /// ThreadManager or async runtime) call Alloc/Free concurrently.
+  std::mutex mu_;
 
   /// HMX Context
   uint32_t hmx_context_id = 0;

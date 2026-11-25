@@ -7,68 +7,75 @@
 #
 # ===------------------------------------------------------------------------===
 
+import json
+import shlex
 import subprocess
 import time
-import os
-import json
 from pathlib import Path
+
+from triton.backends.qcom_hexagon_backend import knobs
 
 
 class HexagonProfiler:
     """Hexagon Profiler"""
 
-    def __init__(self, etm_local_dir, profiling_mode=None, kernel_name=""):
+    _SYSMON_ELF_NAME_MAXLEN = 30
+
+    def __init__(
+        self,
+        etm_local_dir: Path,
+        profiling_mode=None,
+        device_lib_path="",
+        local_lib_filename="",
+    ):
         if profiling_mode not in ["etm"]:
             raise RuntimeError("Profiling mode was not set or was not a valid one.")
 
-        self.env_vars = os.environ.copy()
-
         # Validate required environment variables
-        required_vars = [
-            "ANDROID_HOST",
-            "ANDROID_SERIAL",
-            "HEXAGON_ARCH_VERSION",
-            "PYETM",
-            "CDSP_PATH",
-            "HEXAGON_SDK_ROOT",
-        ]
-        missing_vars = [var for var in required_vars if var not in self.env_vars]
+        required_vars = {
+            "ANDROID_HOST": knobs.hexagon.android_host,
+            "ANDROID_SERIAL": knobs.hexagon.android_serial,
+            "HEXAGON_ARCH_VERSION": knobs.hexagon.arch_version,
+            "PYETM": knobs.hexagon_profiler.pyetm,
+            "CDSP_PATH": knobs.hexagon_profiler.cdsp_path,
+            "HEXAGON_SDK_ROOT": knobs.hexagon.sdk_root,
+        }
+        missing_vars = [name for name, value in required_vars.items() if value is None]
         if missing_vars:
             raise RuntimeError(
                 f"Missing required environment variables: {', '.join(missing_vars)}. "
                 "Please source local_env.sh before running."
             )
 
-        self.ANDROID_HOST = self.env_vars["ANDROID_HOST"]
-        self.ANDROID_SERIAL = self.env_vars["ANDROID_SERIAL"]
-        self.Q6_VERSION = self.env_vars["HEXAGON_ARCH_VERSION"]
-        self.PYETM = Path(self.env_vars["PYETM"])
-        self.CDSP_PATH = Path(self.env_vars["CDSP_PATH"])
-        self.HEXAGON_SDK_ROOT = self.env_vars["HEXAGON_SDK_ROOT"]
+        self.ANDROID_HOST = knobs.hexagon.android_host
+        self.ANDROID_SERIAL = knobs.hexagon.android_serial
+        self.Q6_VERSION = knobs.hexagon.arch_version
+        self.PYETM = str(knobs.hexagon_profiler.pyetm)
+        self.CDSP_PATH = str(knobs.hexagon_profiler.cdsp_path)
+        self.HEXAGON_SDK_ROOT = str(knobs.hexagon.sdk_root)
 
-        self.ETM_FILES_PATH = os.path.join(etm_local_dir, "etm_files")
-        self.APP_BINS = os.path.join(etm_local_dir, "app_bins")
-        self.PYETM_RESULTS = os.path.join(etm_local_dir, "pyetm_results")
+        self.ETM_FILES_PATH = etm_local_dir / "etm_files"
+        self.APP_BINS = etm_local_dir / "app_bins"
+        self.PYETM_RESULTS = etm_local_dir / "pyetm_results"
         self._profiling_mode = profiling_mode
         self.reboot_device()
         self.enable_etm_trace_ca()
         self.etm_prep()
-        self.kernel_name = kernel_name
+        self.device_lib_path = device_lib_path
+        self.local_lib_filename = local_lib_filename
 
     def run_bash_command(
         self, command, adb: bool = True, capture_output=False, text=False
     ):
         try:
             if adb:
-                full_command = (
-                    f"adb -H {self.ANDROID_HOST} -s {self.ANDROID_SERIAL} {command}"
-                )
+                cmd = ["adb", "-H", self.ANDROID_HOST, "-s", self.ANDROID_SERIAL,
+                       *shlex.split(command)]
             else:
-                full_command = command
-            print(f"Running: {full_command}", flush=True)
+                cmd = shlex.split(command)
+            print(f"Running: {shlex.join(cmd)}", flush=True)
             return subprocess.run(
-                full_command,
-                shell=True,
+                cmd,
                 check=True,
                 capture_output=capture_output,
                 text=text,
@@ -158,13 +165,10 @@ class HexagonProfiler:
             )
             return result.stdout.strip()
 
-        if self.kernel_name == "":  # torch_mlir path
-            main_lib_regex = "_mlir_ciface"
-        else:
-            main_lib_regex = self.kernel_name
-
         addresses = {
-            "APP_SO_LOAD_ADDRESS": run_command(f"lib{main_lib_regex}"),
+            "APP_SO_LOAD_ADDRESS": run_command(
+                self.device_lib_path[: self._SYSMON_ELF_NAME_MAXLEN]
+            ),
             "librun_main_on_hexagon_skel": run_command("librun_main_on_hexagon_skel"),
             "fastrpc_shell_3_la": run_command("fastrpc_shell_unsigned_3"),
             "libcpp_abi_la": run_command("libc++abi.so.1"),
@@ -175,23 +179,12 @@ class HexagonProfiler:
 
     # Create config.json file needed for pyetm.
     def write_config_lanai(self, addresses):
-        config_path = os.path.join(self.ETM_FILES_PATH, "config.json")
-
-        if self.kernel_name == "":  # torch_mlir path
-            main_lib_regex = "_mlir_ciface*"
-        else:
-            main_lib_regex = f"{self.kernel_name}*"
-        cmd = (
-            f'find "{self.APP_BINS}" -maxdepth 1 -type f -name "lib{main_lib_regex}" | '
-            "head -n 1 | xargs basename"
-        )
-        result = self.run_bash_command(cmd, adb=False, capture_output=True, text=True)
-        mlir_file = result.stdout.strip()
+        config_path = self.ETM_FILES_PATH / "config.json"
 
         config = {
             "elf_list": [
                 f"{self.ETM_FILES_PATH}/cdsp.mdt",
-                f"{self.APP_BINS}/{mlir_file}",
+                f"{self.APP_BINS}/{self.local_lib_filename}",
                 f"{self.APP_BINS}/librun_main_on_hexagon_skel.so",
                 f"{self.ETM_FILES_PATH}/fastrpc_shell_unsigned_3",
                 f"{self.ETM_FILES_PATH}/libc++abi.so.1",
@@ -216,6 +209,7 @@ class HexagonProfiler:
             ],
             "ver": "v75",
             "target": "Hexagon",
+            "llvm_flag": "--mattr=hmx,hlx,hvx",
         }
 
         with open(config_path, "w") as f:
@@ -251,7 +245,7 @@ class HexagonProfiler:
         result = self.run_bash_command(cmd, capture_output=True, text=True)
         cdsp_version = result.stdout.strip()
 
-        expected = "CDSP.HT.3.0-00724.1-LANAI-1"
+        expected = "CDSP.HT.3.0-00953-LANAI-1"
         if cdsp_version == expected:
             print(f"==> CDSP bins are used from {self.CDSP_PATH}")
         else:

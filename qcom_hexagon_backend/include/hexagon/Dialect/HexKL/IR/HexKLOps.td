@@ -27,19 +27,28 @@ class HexKL_Op<string mnemonic, list<Trait> traits> :
 def HexKL_MatmulOp
   : HexKL_Op<"matmul",
       [DestinationStyleOpInterface,MemoryEffects<[MemRead, MemWrite]>]> {
+  let hasVerifier = 1;
 
   let summary = "HexKL Matmul op";
   let description = [{
-    Performs matrix multiplication on F16 inputs and F32 output using HexKL APIs.
+    Performs matrix multiplication using HexKL APIs. Two type combinations are
+    supported: F16 lhs/rhs with F16 or F32 outs (the existing HMX F16 path),
+    and I8 lhs/rhs with I32 outs (u8 activation x i8 weight -> i32, the HMX
+    quantized path). Both operands are the signless `i8` MLIR type; "u8
+    activation" vs "i8 weight" is a semantic contract carried by operand
+    position, not the MLIR type, matching the rest of this dialect's micro
+    ops (e.g. micro_hmx_copy_submatrix_to_8b_activation takes the u8
+    activation, micro_hmx_rm_to_wh_i8 the i8 weight). Mixed combinations
+    (e.g. F16 lhs with I8 rhs) are rejected by the verifier.
   }];
 
   let arguments = (ins
-    AnyTypeOf<[Non0RankedTensorOf<[F16]>, Non0RankedMemRefOf<[F16]>]>:$lhs,
-    AnyTypeOf<[Non0RankedTensorOf<[F16]>, Non0RankedMemRefOf<[F16]>]>:$rhs,
-    AnyTypeOf<[Non0RankedTensorOf<[F16,F32]>, Non0RankedMemRefOf<[F16,F32]>]>:$outs
+    AnyTypeOf<[Non0RankedTensorOf<[F16, I8]>, Non0RankedMemRefOf<[F16, I8]>]>:$lhs,
+    AnyTypeOf<[Non0RankedTensorOf<[F16, I8]>, Non0RankedMemRefOf<[F16, I8]>]>:$rhs,
+    AnyTypeOf<[Non0RankedTensorOf<[F16, F32, I32]>, Non0RankedMemRefOf<[F16, F32, I32]>]>:$outs
   );
 
-  let results = (outs Variadic<Non0RankedTensorOf<[F16,F32]>>:$result);
+  let results = (outs Variadic<Non0RankedTensorOf<[F16, F32, I32]>>:$result);
 
   let assemblyFormat = [{
     `ins` `(`  $lhs `,` $rhs`:` type($lhs) `,` type($rhs) `)`
@@ -236,6 +245,97 @@ def HexKL_MicroHMXAhToRmF16Op
     "`(` $hmx_block `,` $flat_out_offset `,` $activation_in_offset `)` `:` type($hmx_block) `,` type($flat_out_offset) `,` type($activation_in_offset) attr-dict";
 }
 
+//===----------------------------------------------------------------------===//
+// HexKL micro HMX quantized (u8 activation x i8 weight) ops
+//
+// Data-movement ops used by the u8i8 micro-daemon path. Activation load and
+// result store fuse layout conversion. Offsets are VTCM byte offsets.
+//===----------------------------------------------------------------------===//
+
+def HexKL_MicroHMXCopySubmatrixTo8bActivationOp
+  : HexKL_Op<"micro_hmx_copy_submatrix_to_8b_activation",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let hasVerifier = 1;
+
+  let summary = "Copy submatrix to 8-bit activation-horizontal layout";
+  let description = [{
+    Copies a 64x32 uint8 DDR tile directly into activation-horizontal VTCM.
+    Copy and layout are fused; the 2048-byte destination must be aligned.
+  }];
+
+  let arguments = (ins
+    AnyNon0RankedMemRef:$hmx_block,
+    I32:$out_offset,
+    AnyNon0RankedMemRef:$src,
+    I32:$tile_row,
+    I32:$tile_col,
+    I32:$input_rows,
+    I32:$input_cols
+  );
+
+  let results = (outs);
+
+  let assemblyFormat =
+    "`(` $hmx_block `,` $out_offset `,` $src `,` $tile_row `,` $tile_col `,` $input_rows `,` $input_cols `)` `:` type($hmx_block) `,` type($out_offset) `,` type($src) `,` type($tile_row) `,` type($tile_col) `,` type($input_rows) `,` type($input_cols) attr-dict";
+}
+
+def HexKL_MicroHMXRmToWhI8Op
+  : HexKL_Op<"micro_hmx_rm_to_wh_i8",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let hasVerifier = 1;
+
+  let summary = "Transform row-major to weight-horizontal I8";
+  let description = [{
+    Converts a flat int8 weight tile in DDR to the HMX weight-horizontal layout
+    and writes it to VTCM at the given destination offset. I8 analog of
+    micro_hmx_rm_to_wh_f16; lowers to hexkl_micro_hmx_rm_to_wh_i8.
+  }];
+
+  let arguments = (ins
+    AnyNon0RankedMemRef:$hmx_block,
+    I32:$weight_offset,
+    AnyNon0RankedMemRef:$src,
+    I32:$tile_row,
+    I32:$tile_col,
+    I32:$wt_cols
+  );
+
+  let results = (outs);
+
+  let assemblyFormat =
+    "`(` $hmx_block `,` $weight_offset `,` $src `,` $tile_row `,` $tile_col `,` $wt_cols `)` `:` type($hmx_block) `,` type($weight_offset) `,` type($src) `,` type($tile_row) `,` type($tile_col) `,` type($wt_cols) attr-dict";
+}
+
+def HexKL_MicroHMXCopy32bToSubmatrixOp
+  : HexKL_Op<"micro_hmx_copy_32b_to_submatrix",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let hasVerifier = 1;
+
+  let summary = "Copy shuffled 32-bit accumulator tile to a DDR submatrix";
+  let description = [{
+    Copies a shuffled 64x32 int32 accumulator tile (8192 bytes) from VTCM to a
+    submatrix in DDR, unshuffling and writing out in one fused call (no separate
+    ah_to_rm/flat-copy step, unlike the F16 path's ah_to_rm_f16 +
+    copy_f16_to_f32_submatrix pair). Lowers to
+    hexkl_micro_hmx_copy_32b_to_submatrix.
+  }];
+
+  let arguments = (ins
+    AnyNon0RankedMemRef:$hmx_block,
+    I32:$in_offset,
+    AnyNon0RankedMemRef:$dst,
+    I32:$tile_row,
+    I32:$tile_col,
+    I32:$output_rows,
+    I32:$output_cols
+  );
+
+  let results = (outs);
+
+  let assemblyFormat =
+    "`(` $hmx_block `,` $in_offset `,` $dst `,` $tile_row `,` $tile_col `,` $output_rows `,` $output_cols `)` `:` type($hmx_block) `,` type($in_offset) `,` type($dst) `,` type($tile_row) `,` type($tile_col) `,` type($output_rows) `,` type($output_cols) attr-dict";
+}
+
 def HexKL_MicroHMXCopyF16ToF32SubmatrixOp
   : HexKL_Op<"micro_hmx_copy_f16_to_f32_submatrix",
       [MemoryEffects<[MemRead, MemWrite]>]> {
@@ -260,6 +360,81 @@ def HexKL_MicroHMXCopyF16ToF32SubmatrixOp
 
   let assemblyFormat =
     "`(` $hmx_block `,` $in_offset `,` $dst `,` $tile_row `,` $tile_col `,` $output_rows `,` $output_cols `)` `:` type($hmx_block) `,` type($in_offset) `,` type($dst) `,` type($tile_row) `,` type($tile_col) `,` type($output_rows) `,` type($output_cols) attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// HexKL micro HMX daemon ops (mobile/DSP dedicated-HMX-thread model)
+//
+// These pair with the runtime queue in bin/runtime/HMXMicroDaemon. A worker
+// thread submits one K-block matmul job (dispatch) and later blocks until the
+// daemon has drained its lane (wait_idle). Unlike the inline micro ops above,
+// the accumulator-touching work (acc_clear / mm / acc_read) runs on the daemon
+// thread, so these ops carry only the GLOBAL VTCM byte offsets the daemon needs
+// plus the accumulator-control flags -- the daemon already holds vtcm_base.
+//===----------------------------------------------------------------------===//
+
+def HexKL_MicroHMXDispatchOp
+  : HexKL_Op<"micro_hmx_dispatch",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+  let hasVerifier = 1;
+
+  let summary = "Submit one K-block matmul job to the HMX micro daemon";
+  let description = [{
+    Enqueues a single K=32 matmul job onto the calling worker's lane in the HMX
+    micro daemon queue. `act_offset`/`wgt_offset` are the GLOBAL VTCM byte
+    offsets of the AH-laid-out activation tile and WH-laid-out weight tile;
+    `out_offset` is the acc-read destination, consumed by the daemon only when
+    `write_out` is set. `clear_acc` starts a fresh partial sum (first K-block of
+    an output tile) and `write_out` commits it via acc_read (last K-block).
+    Non-blocking: the mm runs asynchronously on the daemon thread.
+
+    `job_kind` is "f16" or "u8i8" and selects the accumulator-mode runtime
+    functions the daemon runs for this job (mm_f16 vs mm_u8i8, and the matching
+    acc_clear / acc_read / setup_acc_read). It travels with the job rather than
+    with the queue because the compiler knows the matmul's element type for
+    certain while the wrapper creating the queue does not; the daemon programs
+    setup_acc_read lazily from it.
+  }];
+
+  let arguments = (ins
+    AnyType:$queue,
+    I32:$worker_id,
+    I32:$act_offset,
+    I32:$wgt_offset,
+    I32:$out_offset,
+    I1:$clear_acc,
+    I1:$write_out,
+    StrAttr:$job_kind
+  );
+
+  let results = (outs);
+
+  let assemblyFormat =
+    "`(` $queue `,` $worker_id `,` $act_offset `,` $wgt_offset `,` $out_offset `,` $clear_acc `,` $write_out `)` `:` type($queue) `,` type($worker_id) `,` type($act_offset) `,` type($wgt_offset) `,` type($out_offset) `,` type($clear_acc) `,` type($write_out) attr-dict";
+}
+
+def HexKL_MicroHMXWaitIdleOp
+  : HexKL_Op<"micro_hmx_wait_idle",
+      [MemoryEffects<[MemRead, MemWrite]>]> {
+
+  let summary = "Block until the HMX micro daemon has drained this worker's lane";
+  let description = [{
+    Spin-waits until the daemon has consumed every job the calling worker
+    submitted on lane `worker_id`. On return the acc_read output the daemon
+    wrote is visible to the worker, so the subsequent ah_to_rm / store reads
+    committed data. Models a read+write effect so it is neither reordered past
+    the surrounding layout ops nor eliminated as dead.
+  }];
+
+  let arguments = (ins
+    AnyType:$queue,
+    I32:$worker_id
+  );
+
+  let results = (outs);
+
+  let assemblyFormat =
+    "`(` $queue `,` $worker_id `)` `:` type($queue) `,` type($worker_id) attr-dict";
 }
 
 //===----------------------------------------------------------------------===//

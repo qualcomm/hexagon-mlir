@@ -1,3 +1,12 @@
+//===- tiled_conv2d_f16.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(preprocess-tiled-conv2d))' | FileCheck %s
 // CHECK: func.func @conv2d_tile_h8
 // CHECK: %[[C0:.+]] = arith.constant 0 : index

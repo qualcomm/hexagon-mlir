@@ -1,3 +1,12 @@
+//===- hexmemcopy_to_dma.mlir ---------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexmem-cpy-to-dma))' | FileCheck %s --check-prefixes=CHECK1
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexmem-cpy-to-dma))' | linalg-hexagon-opt -convert-to-llvm | FileCheck %s --check-prefixes=CHECK2
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(hexmem-cpy-to-dma))' | linalg-hexagon-opt -convert-to-llvm | FileCheck %s --check-prefixes=CHECK3

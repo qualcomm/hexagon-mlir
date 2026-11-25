@@ -117,9 +117,10 @@ def process_mlirbc(mlir_file):
     base_name, ext = os.path.splitext(mlir_file)
     new_mlir_file = f"{base_name}-noconst{ext}"
 
-    # Run the shell command to filter out lines starting with 'torch_tensor_'
-    command = f'egrep -v "^ *torch_tensor_" "{mlir_file}" > "{new_mlir_file}"'
-    subprocess.run(command, shell=True, check=True)
+    # Filter out lines starting with 'torch_tensor_'
+    with open(new_mlir_file, "w") as _out:
+        subprocess.run(["egrep", "-v", r"^ *torch_tensor_", mlir_file],
+                       stdout=_out, check=True)
 
     print(f"==> Constants removed in initial linalg IR, saved as: {new_mlir_file}")
 

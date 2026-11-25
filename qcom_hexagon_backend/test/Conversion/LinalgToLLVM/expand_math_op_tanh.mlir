@@ -1,6 +1,15 @@
-// RUN: linalg-hexagon-opt %s -expand-math-ops  | FileCheck %s 
+//===- expand_math_op_tanh.mlir -------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
 
-// This test expands complex operations into simple operations. 
+// RUN: linalg-hexagon-opt %s -expand-math-ops  | FileCheck %s
+
+// This test expands complex operations into simple operations.
 // It verifies if the operation is expanding into it's mathematical expression
 // consisting of simple operations
 

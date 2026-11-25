@@ -1,3 +1,12 @@
+//===- NonCroutonTensorShape1.mlir ----------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(conv-tiling\
 // RUN: {conv-tile-sizes="1:8"}))' %s | FileCheck %s --check-prefix=HEIGHT
 // RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(conv-tiling\

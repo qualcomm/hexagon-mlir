@@ -26,6 +26,15 @@ std::string getHmxMmF16FnName();
 std::string getHmxAhToRmF16FnName();
 std::string getHmxCopyF16ToF32SubmatrixFnName();
 
+// HMX quantized data-movement micro ops.
+std::string getHmxCopySubmatrixTo8bActivationFnName();
+std::string getHmxRmToWhI8FnName();
+std::string getHmxCopy32bToSubmatrixFnName();
+
+// HMX micro daemon queue API (bin/runtime/HMXMicroDaemon)
+std::string getHmxMicroDispatchFnName();
+std::string getHmxMicroWaitIdleFnName();
+
 // HexKL macro runtime entry points
 std::string getMacroInitializeFnName();
 std::string getMacroFinalizeFnName();

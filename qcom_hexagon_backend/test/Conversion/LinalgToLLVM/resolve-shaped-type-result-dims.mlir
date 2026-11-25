@@ -1,3 +1,12 @@
+//===- resolve-shaped-type-result-dims.mlir -------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -resolve-shaped-type-result-dims -split-input-file %s | FileCheck %s
 
 func.func @empty_tensor_dynamic_dim(%arg0 : index) -> (index) {

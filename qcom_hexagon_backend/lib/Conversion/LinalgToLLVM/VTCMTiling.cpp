@@ -62,7 +62,6 @@
 //    }
 //    memref.dealloc %vtcm_alloc : memref<32x64xf32, 1>
 //```
-//===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -71,6 +70,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
 
@@ -106,6 +106,19 @@ struct VTCMTilingPass : public ::impl::VTCMTilingBase<VTCMTilingPass> {
   void runOnOperation() override;
 };
 
+// Returns true if `op` is a pure elementwise generic: every iterator is
+// "parallel" (no reduction) and every indexing map is an identity
+// permutation of the iteration space (no broadcast, no transpose/gather).
+bool isPureElementwise(linalg::GenericOp op) {
+  for (auto iterType : op.getIteratorTypesArray())
+    if (iterType != utils::IteratorType::parallel)
+      return false;
+  for (AffineMap map : op.getIndexingMapsArray())
+    if (!map.isIdentity())
+      return false;
+  return true;
+}
+
 // Annotate tiled IR for later passes (e.g. double buffering)
 void annotateOp(Operation *op) {
   op->setAttr("all_parallel", mlir::UnitAttr::get(op->getContext()));
@@ -124,17 +137,53 @@ void annotateTiledLoop(linalg::GenericOp op, linalg::TiledLinalgOp tiledOp) {
     annotateOp(tiledOp.loops[0]);
 }
 
+/// Returns true if the outs operand at the given DPS init index is write-only.
+bool isOutsWriteOnly(linalg::GenericOp op, unsigned outsIdx) {
+  return op.getRegionOutputArgs()[outsIdx].use_empty();
+}
+
+/// Allocate a tensor on the specified memory space without copying.
+/// Used this for write-only outputs to avoid an unnecessary DDR read.
+Value allocOnMemorySpace(IRRewriter &rewriter, Value rankedTensor, Location loc,
+                         unsigned memorySpace) {
+  auto sourceType = ::llvm::cast<RankedTensorType>(rankedTensor.getType());
+  SmallVector<Value> dynamicSizes;
+  for (auto [dim, size] : llvm::enumerate(sourceType.getShape()))
+    if (ShapedType::isDynamic(size))
+      dynamicSizes.push_back(
+          tensor::DimOp::create(rewriter, loc, rankedTensor, dim));
+  rewriter.setInsertionPointAfterValue(rankedTensor);
+  auto allocOp = bufferization::AllocTensorOp::create(rewriter, loc, sourceType,
+                                                      dynamicSizes);
+  allocOp.setMemorySpaceAttr(
+      rewriter.getIntegerAttr(rewriter.getI64Type(), memorySpace));
+  return allocOp.getResult();
+}
+
+/// Allocate a fresh tensor on VTCM without copying content.
+inline Value allocOnVTCM(IRRewriter &rewriter, Value rankedTensor,
+                         Location loc) {
+  return allocOnMemorySpace(rewriter, rankedTensor, loc, VTCM_ADDRESS_SPACE);
+}
+
 /// Takes a 'rankedTensor' value and returns a tensor on the specified memory
-/// space.
+/// space, optionally copying data.
 Value copyToMemorySpace(IRRewriter &rewriter, Value rankedTensor, Location loc,
                         unsigned memorySpace) {
-  // As 'copy' is specified, dynamicSizes are inferred and not supplied.
   SmallVector<Value> dynamicSizes;
   auto sourceType = ::llvm::cast<RankedTensorType>(rankedTensor.getType());
 
   rewriter.setInsertionPointAfterValue(rankedTensor);
-  auto copyOp = bufferization::AllocTensorOp::create(
-      rewriter, loc, sourceType, dynamicSizes, rankedTensor);
+  // For a static-shaped tensor.empty() the contents are undef by definition,
+  // so drop the copy operand — OneShotBufferize will not emit a DDR alloc +
+  // memref.copy for the source.  Dynamic shapes are left unchanged for now:
+  // dropping the copy operand there would require forwarding dynamic sizes to
+  // alloc_tensor, which adds complexity without a known use-case.
+  bool isStaticEmpty = rankedTensor.getDefiningOp<tensor::EmptyOp>() &&
+                       sourceType.hasStaticShape();
+  Value copySource = isStaticEmpty ? Value{} : rankedTensor;
+  auto copyOp = bufferization::AllocTensorOp::create(rewriter, loc, sourceType,
+                                                     dynamicSizes, copySource);
   copyOp.setMemorySpaceAttr(
       rewriter.getIntegerAttr(rewriter.getI64Type(), memorySpace));
   return copyOp.getResult();
@@ -179,8 +228,13 @@ GenericOp replaceGenericWithPrefetchedOperands(IRRewriter &rewriter,
     Value globalTensor = op->getOperand(idx);
     Value newTensor = globalTensor;
 
-    if (prefetch[idx])
-      newTensor = copyToVTCM(rewriter, globalTensor, op.getLoc());
+    if (prefetch[idx]) {
+      bool writeOnly = op.isDpsInit(&opOperand) &&
+                       isOutsWriteOnly(op, idx - op.getNumDpsInputs());
+      // allocate space on VTCM for the prefetched. Copy only if 'read'.
+      newTensor = writeOnly ? allocOnVTCM(rewriter, globalTensor, op.getLoc())
+                            : copyToVTCM(rewriter, globalTensor, op.getLoc());
+    }
     op.isDpsInit(&opOperand) ? newOuts.push_back(newTensor)
                              : newIns.push_back(newTensor);
   }
@@ -203,7 +257,15 @@ LogicalResult replaceTiledGenericWithVTCMSlices(IRRewriter &rewriter,
     if (!prefetch[idx]) {
       if (!globalTensor.template getDefiningOp<tensor::ExtractSliceOp>())
         return failure();
-      newTensor = copyToVTCM(rewriter, globalTensor, top.getLoc());
+      bool writeOnly = top.isDpsInit(&opOperand) &&
+                       isOutsWriteOnly(top, idx - top.getNumDpsInputs());
+      if (writeOnly) {
+        // Write-only out: allocate on VTCM space; without the copy.
+        // The slice become dead and will be removed by canonicalize.
+        newTensor = allocOnVTCM(rewriter, globalTensor, top.getLoc());
+      } else {
+        newTensor = copyToVTCM(rewriter, globalTensor, top.getLoc());
+      }
     }
     top.isDpsInit(&opOperand) ? newOuts.push_back(newTensor)
                               : newIns.push_back(newTensor);
@@ -221,7 +283,7 @@ void copyResultsToDDR(IRRewriter &rewriter, GenericOp op,
     auto operandIdx = op.getNumDpsInputs() + idx;
     if (prefetch[operandIdx]) {
       Value resultTensor = op.getResult(idx);
-      auto newTensor = copyToDDR(rewriter, resultTensor, op.getLoc());
+      Value newTensor = copyToDDR(rewriter, resultTensor, op.getLoc());
       rewriter.replaceAllUsesExcept(resultTensor, newTensor,
                                     newTensor.getDefiningOp());
     }
@@ -234,6 +296,28 @@ void VTCMTilingPass::runOnOperation() {
 
   funcOp.walk([&](linalg::GenericOp op) {
     IRRewriter rewriter(op.getContext());
+
+    // Skip generics already enclosed by a tiled scf.for annotated with
+    // `tiled_generic` (e.g. produced by PromoteTiledSCFLoopToVTCMPass) so we
+    // don't re-tile something that has already been tiled upstream.
+    for (Operation *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (isa<scf::ForOp>(parent) && parent->hasAttr("tiled_generic"))
+        return WalkResult::advance();
+    }
+
+    // Pure elementwise ops never benefit from VTCM residency -- every
+    // operand element is touched exactly once regardless of tiling,
+    // so staging only adds alloc+DMA-copy+free overhead on both the
+    // way in and the way out. Leave the op untouched; it bufferizes to
+    // plain memrefs operating directly on DDR. Respect an explicit
+    // user-provided tile size (e.g. from a test or tool invocation) as an
+    // intentional override of this default.
+    if (!userProvidedTileSizes && isPureElementwise(op)) {
+      DBG("skipping VTCM staging for pure elementwise op: " << op);
+      return WalkResult::advance();
+    }
+
     SmallVector<bool> prefetch(op.getNumOperands(), false);
     FailureOr<linalg::LinalgTilingOptions> vtcmTilingOptions =
         getVTCMTilingOptions(op, userProvidedTileSizes, prefetch, vtcmBudget);

@@ -1,3 +1,12 @@
+//===- reduce_contraction_rank.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(reduce-contraction-rank))' | FileCheck %s
 
 func.func @test_batch_matmul_to_matmul(%lhs: tensor<1x4x8xf32>, %rhs: tensor<1x8x16xf32>, %init: tensor<1x4x16xf32>) -> tensor<1x4x16xf32> {

@@ -1,3 +1,12 @@
+//===- return_alloc_from_loop.mlir ----------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -linalg-to-llvm | FileCheck %s
 
 // This tests Fix for TritonAI-128.
@@ -55,8 +64,9 @@ module attributes {llvm.target_triple = "hexagon"} {
   }
 }
 // CHECK: module attributes {llvm.target_triple = "hexagon"} {
-// CHECK: llvm.func @malloc(i64) -> !llvm.ptr
 // CHECK: llvm.func @memrefCopy(i64, !llvm.ptr, !llvm.ptr)
+// Pure elementwise generic inside the loop skips VTCM staging -- no VTCM alloc helper is declared.
+// CHECK-NOT: llvm.func @hexagon_runtime_alloc_1d_dsp
 // CHECK: llvm.func @kernel(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: i64,
 // CHECK-SAME: %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: i64,
 // CHECK-SAME: %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: i64,

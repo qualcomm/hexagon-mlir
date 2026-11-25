@@ -444,6 +444,17 @@ struct OptimizeExtfTruncfOpPass
     if (!funcOp)
       return;
 
+    // Only run on FP16 models — this pass cleans up extf/truncf ops
+    // introduced by ConversionToFp16, so skip if no FP16 I/O exists.
+    auto isFp16 = [](Type type) {
+      if (auto shaped = dyn_cast<ShapedType>(type))
+        return shaped.getElementType().isF16();
+      return type.isF16();
+    };
+    if (!llvm::any_of(funcOp.getArgumentTypes(), isFp16) &&
+        !llvm::any_of(funcOp.getResultTypes(), isFp16))
+      return;
+
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 

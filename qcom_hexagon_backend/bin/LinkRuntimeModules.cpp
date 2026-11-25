@@ -22,6 +22,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <vector>
 
 #define INIT_MODULE(NAME)                                                      \
   extern const unsigned char hexagon_runtime_module_##NAME[];                  \
@@ -34,8 +35,9 @@
   }
 
 #define ADD_MODULE_CAND(NAME, CONTEXT, EXTERNAL_MODULE, MODULE_CANDIDATES)     \
-  otherModule = get_module_##NAME(CONTEXT);                                    \
+  EXTERNAL_MODULE = get_module_##NAME(CONTEXT);                                \
   addModToCandidates(EXTERNAL_MODULE, MODULE_CANDIDATES);
+
 
 void condLinkModules(
     llvm::Linker &linker, const std::set<llvm::Module *> &modulesToLink,
@@ -61,16 +63,22 @@ static std::unique_ptr<llvm::Module> get_module(llvm::LLVMContext &context,
                              llvm::toString(moduleOrErr.takeError()));
   return std::move(*moduleOrErr);
 }
+
 // Initialize all the runtime modules here.
 INIT_MODULE(IntrinsicsHVX);
+INIT_MODULE(IntrinsicsF8E4M3Fstar);
 INIT_MODULE(VTCMPool);
 INIT_MODULE(HexagonAPI);
 INIT_MODULE(HexagonBuffer);
 INIT_MODULE(HexagonBufferAlias);
 INIT_MODULE(HexagonCAPI);
-INIT_MODULE(HexKLAPI);
+INIT_MODULE(PrintRuntimeDSP);
 INIT_MODULE(RuntimeDMA);
 INIT_MODULE(UserDMA);
+#ifdef HEXAGON_MLIR_ENABLE_HEXKL_RUNTIME
+INIT_MODULE(HexKLAPI);
+INIT_MODULE(HMXMicroDaemon);
+#endif
 
 // collectFuncsInMod collects the functions in the passed module. We distinguish
 // between functions that are declarations and the ones that are definitions
@@ -121,7 +129,6 @@ void getDependentCandidates(
     const std::unordered_map<std::string, llvm::Module *> &definingMod,
     const std::unordered_map<llvm::Module *, std::set<std::string>>
         &declsInMod) {
-
   // newModulesToLink contains the newly discovered modules that need to be
   // linked in a breadth-first-search traversal (bfs). newModulesToLink is
   // different from modulesToLink since the latter contains both already
@@ -164,7 +171,6 @@ void addModToCandidates(
 void mlir::Hexagon::Translate::linkRuntimeModules(
     llvm::LLVMContext &ctx, std::unique_ptr<llvm::Module> &module,
     const std::unordered_map<std::string, std::string> &options_map) {
-
   // We need a map from the module raw pointers to the unique pointers since
   // in our algorithm for detecting dependent modules we use two different
   // maps that handle module pointers and their declarations and definitions.
@@ -177,14 +183,32 @@ void mlir::Hexagon::Translate::linkRuntimeModules(
   std::unique_ptr<llvm::Module> otherModule;
   auto it = options_map.find("device_type");
   std::string device_type = (it != options_map.end()) ? it->second : "hexagon";
+#ifndef HEXAGON_MLIR_ENABLE_HEXKL_RUNTIME
+  auto hexklIt = options_map.find("enableHexKL");
+  if ((hexklIt != options_map.end()) && (hexklIt->second == "True"))
+    llvm::report_fatal_error(
+        "enableHexKL requires a build configured with HEXKL_ROOT");
+#endif
   ADD_MODULE_CAND(IntrinsicsHVX, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(VTCMPool, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexagonAPI, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexagonBuffer, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexagonBufferAlias, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexagonCAPI, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(RuntimeDMA, ctx, otherModule, moduleCandidates);
-  ADD_MODULE_CAND(HexKLAPI, ctx, otherModule, moduleCandidates);
+  ADD_MODULE_CAND(IntrinsicsF8E4M3Fstar, ctx, otherModule, moduleCandidates);
+  if (device_type == "hexagon") {
+    ADD_MODULE_CAND(VTCMPool, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(HexagonAPI, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(HexagonBuffer, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(HexagonBufferAlias, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(HexagonCAPI, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(PrintRuntimeDSP, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(RuntimeDMA, ctx, otherModule, moduleCandidates);
+#ifdef HEXAGON_MLIR_ENABLE_HEXKL_RUNTIME
+    // HMXMicroDaemon: dedicated-HMX daemon used by the HexKL micro-op
+    // matmul path (hexKLMode="micro-daemon"). Conditionally pulled in.
+    ADD_MODULE_CAND(HexKLAPI, ctx, otherModule, moduleCandidates);
+    ADD_MODULE_CAND(HMXMicroDaemon, ctx, otherModule, moduleCandidates);
+#endif
+  } else {
+    llvm::report_fatal_error(llvm::Twine("Unsupported device_type: '") +
+                             device_type + "'.");
+  }
   ADD_MODULE_CAND(UserDMA, ctx, otherModule, moduleCandidates);
 
   llvm::Linker linker(*module);

@@ -195,7 +195,6 @@ def test_rope(num_threads, dtype):
     output = torch.empty_like(x, dtype=dtype)
 
     block_size = triton.next_power_of_2(BATCH_SIZE // num_threads)
-    true_if_single_threaded = num_threads == 1
     grid = (num_threads,)
     rope_kernel[grid](
         x,
@@ -210,10 +209,10 @@ def test_rope(num_threads, dtype):
         N_FEATURES_STRIDE=N_FEATURES_STRIDE,
         BLOCK_SIZE=block_size,
         THETA=THETA,
-        enableMultiThreading=true_if_single_threaded,
-        enableVTCMTiling=true_if_single_threaded,
-        enableConvertToHexagonmem=true_if_single_threaded,
-        enableHexagonmemCopyToDMA=true_if_single_threaded,
+        enableMultiThreading=True,
+        enableVTCMTiling=True,
+        enableConvertToHexagonmem=True,
+        enableHexagonmemCopyToDMA=True,
     )
 
     reference = rope_reference_pytorch(x, THETA)

@@ -1,3 +1,12 @@
+//===- linalg_matmul_transpose.mlir ---------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(schedule-matmul-for-hvx,linalg-generalize))' | FileCheck %s
 
 func.func @matmul_transpose_b(%arg0: tensor<1024x64xf32>, %arg1: tensor<1024x64xf32>, %arg2: tensor<1024x1024xf32>) {

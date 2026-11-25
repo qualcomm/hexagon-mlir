@@ -25,6 +25,23 @@ TRITON_ALWAYS_COMPILE=1 MLIR_ENABLE_DUMP=1 LLVM_IR_ENABLE_DUMP=1 \
 TRITON_ENABLE_LLVM_DEBUG=1 pytest -sv test/python/triton/test_vec_add.py
 ```
 
+### Substituting Custom LLVM IR
+We support a method to compile and execute custom LLVM IR kernels. This is only recommended as a tool for debugging or optimizing IRs produced by this compiler. Note that the options to dump LLVM IR and swap in a custom LLVM IR are __explicitly mutually exclusive__.
+
+```bash
+# Produce and dump the IR
+export LLVM_IR_DUMP_TO_FILE=kernel.ll
+pytest -sv test/python/triton/test_vec_add.py
+
+# Disable IR dumping
+unset LLVM_IR_DUMP_TO_FILE
+
+# Edit and execute the edited IR
+export LLVM_IR_SUB_FROM_FILE=kernel.ll
+# ... Manually edit custom.ll ...
+pytest -sv test/python/triton/test_vec_add.py
+```
+
 ### Assembly and Object Code Dump 
 We provide ways to dump the final assembly code along with the object binary code:
 

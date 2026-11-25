@@ -1,3 +1,12 @@
+//===- reduce.mlir --------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(linalg-generalize,extend-pack-frontier{parallels-only=false}))' | FileCheck %s --check-prefixes=CHECK
 //===------------------------------------------------------------------===//
 // Reduce -> Pack -> MMT4D (packed) -> Unpack -> Reduce
@@ -27,15 +36,15 @@ module {
       outs(%C_pack_dst : tensor<2x2x4x4xi32>) -> tensor<2x2x4x4xi32>
 
     // Unpack C back to 8x8
-    %C_dst = tensor.empty() : tensor<8x8xi32>
+    %C_dst = tensor.empty() : tensor<8x7xi32>
     %C = linalg.unpack %C_packed
       inner_dims_pos = [0, 1] inner_tiles = [4, 4] into %C_dst
-      : tensor<2x2x4x4xi32> -> tensor<8x8xi32>
+      : tensor<2x2x4x4xi32> -> tensor<8x7xi32>
 
     // Post: another reduce (same kind)
     %r_dst = tensor.empty() : tensor<8xi32>
     %R = linalg.reduce { arith.maxsi }
-           ins(%C : tensor<8x8xi32>) outs(%r_dst : tensor<8xi32>) dimensions = [1]
+           ins(%C : tensor<8x7xi32>) outs(%r_dst : tensor<8xi32>) dimensions = [1]
     return %R : tensor<8xi32>
   }
 }

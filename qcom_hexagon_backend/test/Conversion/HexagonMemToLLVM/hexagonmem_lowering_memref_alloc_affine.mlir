@@ -1,3 +1,12 @@
+//===- hexagonmem_lowering_memref_alloc_affine.mlir -----------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -hexagonmem-to-llvm | FileCheck %s
 
 // CHECK-LABEL:         llvm.func @hexagon_runtime_alloc_1d_dsp(i32, i64, i1) -> !llvm.ptr

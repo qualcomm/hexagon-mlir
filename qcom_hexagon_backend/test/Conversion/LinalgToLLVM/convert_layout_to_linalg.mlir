@@ -1,3 +1,12 @@
+//===- convert_layout_to_linalg.mlir --------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s | FileCheck %s
 
 // CHECK: #[[$MAP_0:.+]] = affine_map<(d0, d1) -> (d0 floordiv 4, d1 floordiv 4, d0 mod 4, d1 mod 4)>

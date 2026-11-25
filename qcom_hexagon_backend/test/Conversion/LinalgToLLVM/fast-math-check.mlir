@@ -1,3 +1,12 @@
+//===- fast-math-check.mlir -----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -linalg-to-llvm | FileCheck %s
 
 module {
@@ -15,4 +24,4 @@ func.func @kernel(%x: memref<1024xf16>, %y: memref<f16>) {
    return
  }
 }
-// CHECK: llvm.intr.vector.reduce.fmaximum(%{{.*}})  {fastmathFlags = #llvm.fastmath<fast>} : (vector<64xf16>) -> f16
+// CHECK: llvm.intr.vector.reduce.fmaximum(%{{.*}}) {fastmathFlags = #llvm.fastmath<nnan, reassoc>} : (vector<64xf16>) -> f16

@@ -1,3 +1,9 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+
 cmake_minimum_required(VERSION 3.18)
 project(hexagon_runtime_test)
 
@@ -32,7 +38,7 @@ set(SHARED_SOURCES ${HEXAGON_RUNTIME_TEST_SRCS_WITH_PREFIX})
 
 add_library(hexagon_runtime_test SHARED ${SHARED_SOURCES})
 
-set(PREBUILT_LIB_DIR "${HEXAGON_TOOLCHAIN}/Tools/lib")
+set(PREBUILT_LIB_DIR "${HEXAGON_TOOLS}/lib")
 set(USE_HEXAGON_GTEST "${HEXAGON_SDK_ROOT}/utils/googletest/gtest")
 include(${HEXAGON_SDK_ROOT}/build/cmake/hexagon_fun.cmake)
 include(FetchContent)
@@ -53,8 +59,10 @@ set(DEVICE_PATH "/vendor/bin/${BENCHMARK}")
 set(Q6_VERSION "$ENV{HEXAGON_ARCH_VERSION}")
 set(DSP_STACK_SIZE "262144")
 
-# v79+ devices require toolv88; older devices use toolv87.
-if(Q6_VERSION GREATER_EQUAL 79)
+# SDK 6.6.0.0 uses toolv19 directory names for v81 assets.
+if(Q6_VERSION GREATER_EQUAL 81)
+  set(HEXAGON_TOOL_VERSION "v19")
+elseif(Q6_VERSION GREATER_EQUAL 79)
   set(HEXAGON_TOOL_VERSION "v88")
 else()
   set(HEXAGON_TOOL_VERSION "v87")

@@ -25,7 +25,13 @@ NUM_ROWS = 27
 ATOL = 1e-5
 
 
-@pytest.mark.parametrize("num_cols", [8192])
+@pytest.mark.parametrize(
+    "num_cols",
+    [
+        8192,
+        256,
+    ],
+)
 @pytest.mark.parametrize("num_threads", [1, 4])
 @pytest.mark.parametrize(
     "dtype", [torch.float32]
@@ -89,7 +95,6 @@ def test_layer_norm(num_cols, num_threads, dtype):
     rstds = torch.empty(NUM_ROWS, dtype=dtype)
 
     block_size = triton.next_power_of_2(num_cols)
-    is_single_threaded = num_threads == 1
     grid = (num_threads,)
     layer_norm_fwd_kernel[grid](
         x,
@@ -102,10 +107,11 @@ def test_layer_norm(num_cols, num_threads, dtype):
         NUM_ROWS=NUM_ROWS,
         NUM_COLS=num_cols,
         BLOCK_SIZE=block_size,
-        enableMultiThreading=is_single_threaded,
-        enableVTCMTiling=is_single_threaded,
-        enableConvertToHexagonmem=is_single_threaded,
-        enableHexagonmemCopyToDMA=is_single_threaded,
+        enableMultiThreading=True,
+        enableVTCMTiling=True,
+        enableConvertToHexagonmem=True,
+        enableHexagonmemCopyToDMA=True,
+        enableSetAliasScopes=True,
     )
 
     reference = torch.nn.functional.layer_norm(

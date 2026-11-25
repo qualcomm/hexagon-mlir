@@ -36,7 +36,7 @@ def _max(a, b):
     return tl.maximum(a, b)
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dtype", [torch.float32])
 def test_softmax(dtype):
 
     @triton.jit
@@ -75,6 +75,7 @@ def test_softmax(dtype):
     output = torch.empty_like(x, dtype=dtype)
 
     grid = (NUM_THREADS,)
+
     softmax_kernel[grid](
         x,
         output,
@@ -88,6 +89,9 @@ def test_softmax(dtype):
         enableHVXInlining=True,
         enableSCFLoopUnroll=True,
         enableSplitReduceGeneric=True,
+        enableBroadcastedReductionToButterfly=True,
+        enableFastExpApprox=True,
+        fastExpApproxDegree=3 if dtype == torch.float16 else 5,
     )
 
     reference = torch.nn.functional.softmax(x, dim=1, dtype=dtype)

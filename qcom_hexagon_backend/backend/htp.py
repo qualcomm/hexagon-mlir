@@ -7,11 +7,30 @@
 #
 # ===------------------------------------------------------------------------===
 
-import triton
 from triton.backends.compiler import GPUTarget
+
+import triton
 
 PLAINTEXT_ARTIFACTS = {"ttir", "ttsharedir", "llir"}
 BINARY_ARTIFACTS = {"o", "so"}
+
+
+def _build_htp_attrs(kernel, signature):
+    """Build tt.divisibility attrs for HTP AOT compilation.
+
+    If specialize_ptr_alignment is True, all pointer args get tt.divisibility=128
+    (assumed 128-byte aligned). Integer args present in constants get divisibility
+    derived from their value.
+    """
+    attrs = {}
+    for arg_name, type_str in signature.items():
+        if arg_name not in kernel.arg_names:
+            continue
+        idx = kernel.arg_names.index(arg_name)
+        path = (idx,)
+        if isinstance(type_str, str) and type_str.startswith("*"):
+            attrs[path] = [["tt.divisibility", 128]]
+    return attrs
 
 
 # For .so generation for hexagon-nn-v3 custom ops, must set optional argument file_ext="so"
@@ -23,18 +42,31 @@ def triton_htp_compile(
     if extra_options is None:
         extra_options = {}
 
-    src = triton.compiler.ASTSource(
-        fn=kernel, signature=signature, constexprs=constants
-    )
     options = {
         "htp_kernel_gen": True,
         "target_artifact": file_ext,
         "enableConvertToHexagonmem": False,
         "enableVTCMTiling": False,
+        "enableSplitReduceGeneric": True,
+        "enableHVXInlining": True,
+        "enableSCFLoopUnroll": False,
+        "enableUnrollAndJam": True,
+        "specializeKernelToArgAlignment": True,
+        "enableFastExpApprox": True,
+        "enableBroadcastedReductionToButterfly": True,
+        "enableSetAliasScopes": True,
     }
 
     # Allow callers to override or extend Triton compile options
     options.update(extra_options)
+
+    specialize = options.get("specializeKernelToArgAlignment", False)
+    attrs = {}
+    if specialize:
+        attrs = _build_htp_attrs(kernel, signature)
+    src = triton.compiler.ASTSource(
+        fn=kernel, signature=signature, constexprs=constants, attrs=attrs
+    )
 
     compiled_kernel_artifacts = triton.compile(
         src=src,

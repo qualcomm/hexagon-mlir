@@ -25,6 +25,7 @@
 
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Iterators.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
@@ -49,6 +50,57 @@ using namespace hexagon;
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h.inc"
 
 namespace {
+
+// After constant-folding and fusion, a scalar (0-D) linalg.generic may be left
+// with no DPS operands, no results, and empty iterator_types. Its body contains
+// only side-effecting ops (e.g. memref.store) with values captured implicitly
+// from the enclosing block. No standard lowering pass handles this form, so we
+// inline the body directly and erase the op here, right after fusion produces
+// it.
+struct InlineZeroDimGenericPattern
+    : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op.getIteratorTypesArray().empty())
+      return failure();
+    if (op.getNumDpsInputs() != 0 || op.getNumDpsInits() != 0)
+      return failure();
+    if (op.getNumResults() != 0)
+      return failure();
+    // implicitly ensures body has just one op (yield).
+    if (!isa<linalg::YieldOp>(op.getRegion().front().getTerminator()))
+      return failure();
+
+    LLVM_DEBUG({
+      DBGS() << "InlineZeroDimGenericPattern: inlining degenerate 0-D "
+                "linalg.generic at ";
+      op.getLoc().print(llvm::dbgs());
+      llvm::dbgs() << "\n";
+      DBGS() << "  body ops to inline: "
+             << std::distance(op.getRegion().front().begin(),
+                              op.getRegion().front().end()) -
+                    1
+             << "\n";
+      DBGS() << "  op: ";
+      op->print(llvm::dbgs(), mlir::OpPrintingFlags().useLocalScope());
+      llvm::dbgs() << "\n";
+    });
+
+    rewriter.setInsertionPoint(op);
+
+    IRMapping mapper;
+    for (Operation &bodyOp : op.getRegion().front().without_terminator()) {
+      rewriter.clone(bodyOp, mapper);
+    }
+
+    rewriter.eraseOp(op);
+
+    DBG("InlineZeroDimGenericPattern: successfully inlined and erased op");
+    return success();
+  }
+};
 
 static constexpr unsigned MaxMultiUseFusionIterations = 3;
 
@@ -265,6 +317,15 @@ void HexagonFusionPass::runOnOperation() {
   if (failed(applyPatternsGreedily(funcOp, std::move(fusionPatterns),
                                    rewriteConfig))) {
     funcOp->emitError("failed to apply fusion patterns");
+    return signalPassFailure();
+  }
+
+  // Clean up any 0-D linalg.generic ops with no operands/results that were
+  // produced by constant-folding fills into the consumer during fusion above.
+  RewritePatternSet cleanupPatterns(context);
+  cleanupPatterns.add<InlineZeroDimGenericPattern>(context);
+  if (failed(applyPatternsGreedily(funcOp, std::move(cleanupPatterns)))) {
+    funcOp->emitError("failed to inline zero-dim linalg.generic ops");
     return signalPassFailure();
   }
 

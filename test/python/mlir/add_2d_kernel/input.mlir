@@ -1,3 +1,12 @@
+//===- input.mlir ---------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 func.func @add_2d_mlir(%arg0: memref<*xf32> {tt.divisibility = 16 : i32}, %arg1: memref<*xf32> {tt.divisibility = 16 : i32}, %arg2: memref<*xf32> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) {
   %c0 = arith.constant 0 : index
   %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%c0], sizes: [63, 16384], strides: [16384, 1] : memref<*xf32> to memref<63x16384xf32, strided<[16384, 1], offset: ?>>

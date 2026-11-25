@@ -1,3 +1,12 @@
+//===- hoist_scalar_ops.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -split-input-file -pass-pipeline='builtin.module(func.func(hoist-scalar-ops-in-linalg-generic))' | FileCheck %s
 
 // Test 1: Basic scalar hoisting - rsqrt should be hoisted
@@ -189,4 +198,99 @@ func.func @hoist_integer_ops(%scalar: tensor<i32>, %vector: tensor<128xi32>, %ou
   } -> tensor<128xi32>
 
   return %result : tensor<128xi32>
+}
+
+// -----
+
+// Test 8: Regression - hoist scalar extraction that uses rank-0 indexing ([]).
+// CHECK-LABEL: func.func @hoist_scalar_extract_zero_rank
+func.func @hoist_scalar_extract_zero_rank(%scalar: tensor<f32>,
+                                          %vector: tensor<16xf32>,
+                                          %output: tensor<16xf32>)
+    -> tensor<16xf32> {
+
+  // CHECK: %[[VAL:.*]] = tensor.extract %[[SCALAR:.*]][] : tensor<f32>
+  // CHECK: %[[RSQRT:.*]] = math.rsqrt %[[VAL]] : f32
+  // CHECK: %[[RES:.*]] = tensor.from_elements %[[RSQRT]] : tensor<f32>
+  // CHECK: linalg.generic
+  // CHECK-SAME: ins(%[[SCALAR]], %[[VECTOR:.*]], %[[RES]] : tensor<f32>, tensor<16xf32>, tensor<f32>)
+  // CHECK: ^bb0(%[[SCALAR_ARG:[^,]+]]: f32, %[[VEC_VAL:[^,]+]]: f32, %[[RSQRT_AS_BLOCK_ARG:[^,]+]]: f32, %[[OUT_VAL:[^,]+]]: f32):
+  // CHECK-NEXT: %[[MUL:.+]] = arith.mulf %[[VEC_VAL]], %[[RSQRT_AS_BLOCK_ARG]] : f32
+  // CHECK-NEXT: linalg.yield %[[MUL]] : f32
+
+  %result = linalg.generic {
+    indexing_maps = [affine_map<(d0) -> ()>,
+                     affine_map<(d0) -> (d0)>,
+                     affine_map<(d0) -> (d0)>],
+    iterator_types = ["parallel"]
+  } ins(%scalar, %vector : tensor<f32>, tensor<16xf32>)
+    outs(%output : tensor<16xf32>) {
+  ^bb0(%s: f32, %v: f32, %out: f32):
+    %rsqrt = math.rsqrt %s : f32
+    %mul = arith.mulf %v, %rsqrt : f32
+    linalg.yield %mul : f32
+  } -> tensor<16xf32>
+
+  return %result : tensor<16xf32>
+}
+
+// -----
+
+// Test 9: func.func argument as hoistable operand, argNumber maps to a rank-1
+// generic input - hoisting must still proceed.
+// CHECK-LABEL: func.func @hoist_func_scalar_arg_misaligned
+func.func @hoist_func_scalar_arg_misaligned(%farg: f32,
+                                            %vector: tensor<128xf32>,
+                                            %scalar: tensor<f32>,
+                                            %output: tensor<128xf32>) -> tensor<128xf32> {
+  // CHECK: %[[RSQRT:.*]] = math.rsqrt %[[FARG:.*]] : f32
+  // CHECK: tensor.from_elements %[[RSQRT]] : tensor<f32>
+  // CHECK: linalg.generic
+  // CHECK-SAME: ins(%{{.*}}, %{{.*}}, %{{.*}} : tensor<128xf32>, tensor<f32>, tensor<f32>)
+
+  %result = linalg.generic {
+    indexing_maps = [affine_map<(d0) -> (d0)>,
+                     affine_map<(d0) -> ()>,
+                     affine_map<(d0) -> (d0)>],
+    iterator_types = ["parallel"]
+  } ins(%vector, %scalar : tensor<128xf32>, tensor<f32>)
+    outs(%output : tensor<128xf32>) {
+  ^bb0(%v: f32, %s: f32, %out: f32):
+    %rsqrt = math.rsqrt %farg : f32
+    %mul = arith.mulf %v, %rsqrt : f32
+    linalg.yield %mul : f32
+  } -> tensor<128xf32>
+
+  return %result : tensor<128xf32>
+}
+
+// -----
+
+// Test 10: func.func argument as hoistable operand, argNumber maps to a rank-0
+// generic input - the func arg must be used directly, not via tensor.extract.
+// CHECK-LABEL: func.func @hoist_func_scalar_arg_aligned
+func.func @hoist_func_scalar_arg_aligned(%farg: f32,
+                                         %scalar: tensor<f32>,
+                                         %vector: tensor<128xf32>,
+                                         %output: tensor<128xf32>) -> tensor<128xf32> {
+  // CHECK-NOT: tensor.extract
+  // CHECK: %[[RSQRT:.*]] = math.rsqrt %[[FARG:[^ ]+]] : f32
+  // CHECK: tensor.from_elements %[[RSQRT]] : tensor<f32>
+  // CHECK: linalg.generic
+  // CHECK-SAME: ins(%{{.*}}, %{{.*}}, %{{.*}} : tensor<f32>, tensor<128xf32>, tensor<f32>)
+
+  %result = linalg.generic {
+    indexing_maps = [affine_map<(d0) -> ()>,
+                     affine_map<(d0) -> (d0)>,
+                     affine_map<(d0) -> (d0)>],
+    iterator_types = ["parallel"]
+  } ins(%scalar, %vector : tensor<f32>, tensor<128xf32>)
+    outs(%output : tensor<128xf32>) {
+  ^bb0(%s: f32, %v: f32, %out: f32):
+    %rsqrt = math.rsqrt %farg : f32
+    %mul = arith.mulf %v, %rsqrt : f32
+    linalg.yield %mul : f32
+  } -> tensor<128xf32>
+
+  return %result : tensor<128xf32>
 }

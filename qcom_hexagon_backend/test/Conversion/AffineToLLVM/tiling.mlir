@@ -1,3 +1,12 @@
+//===- tiling.mlir --------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -affine-tiling="cache-size=12" | FileCheck %s
 
 func.func @test_tile_size(%A: memref<768x768xf32>, %B: memref<768x768xf32>, %C: memref<768x768xf32>, %D: memref<768x768xf32>) {

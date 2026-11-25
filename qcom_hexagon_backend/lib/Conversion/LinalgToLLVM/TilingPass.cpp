@@ -117,136 +117,189 @@ static LogicalResult tileLinalgOp(linalg::LinalgOp op,
   }
 
   linalg::LinalgOp tilingTarget = op;
-  linalg::LinalgTilingOptions tileOption;
-  SmallVector<int64_t, 10> tileSizes(numLoops, 1);
-  bool needsInterchange = false;
-  std::vector<unsigned> interchangeVector(numLoops, 0);
   IRRewriter rewriter(op.getContext());
   rewriter.setInsertionPoint(tilingTarget);
 
   auto dataTileSize = computeDataTileSize(op);
-  if (!dataTileSize.has_value())
+  if (!dataTileSize.has_value()) {
+    DBG("-> tiling aborted. Could not compute dataTileSize");
     return failure();
-
-  tileSizes[numLoops - 1] = dataTileSize.value();
+  }
 
   auto ranges = op.getStaticLoopRanges();
   auto innerLoopRange = ranges[numLoops - 1];
 
-  if (!ShapedType::isDynamic(innerLoopRange)) {
-    if (innerLoopRange < dataTileSize) {
-      needsInterchange = true;
-      // Note that default is false as currently not sure
-      // if trade-offs with transpose is right.
-      if (!useInterchangeVector) {
-        // Instead of considering this as a failure,  we might want
-        // to flatten the tensor to make it tileable if possible
-        DBG(" -> inner loop not tilable. Needs interchange");
-        return failure();
-      }
-      if (!computeInterchangeVector(op, dataTileSize.value(),
-                                    interchangeVector)) {
-        return failure();
-      }
-      DBG(" -> inner loop dimension not compatible for vectorization");
-      return failure();
-    } else if (innerLoopRange == dataTileSize && op.getNumLoops() == 1) {
-      DBG(" -> inner dim is already of data tile size, hence tiling for "
-          "vectorization is not required");
-      return failure();
-    }
+  // Currently tiling dynamic loops with default tiling, to follow
+  // what we were doing. Uncomment this early bailing-out if we want
+  // to change it and to never tile dynamic loops:
+  // // Bail-out if the innermost loop has a dynamic range
+  // if (ShapedType::isDynamic(innerLoopRange)) {
+  //   DBG(" -> Tiling pass can't deal with dynamic loop range");
+  //   return failure();
+  // }
 
-    if (needsInterchange) {
-      tileOption.setInterchange(interchangeVector);
-      SmallVector<int64_t, 10> newTileSizes(numLoops);
-      for (int i = 0; i < numLoops; ++i)
-        newTileSizes[i] = tileSizes[interchangeVector[i]];
-      tileSizes = newTileSizes;
-    }
-
-    // If the innermost loop's range is not a multiple of tile size, we either
-    // do padding or split the op into two parts - tileable part and remainder.
-    if (!isPerfectlyTileable(innerLoopRange, dataTileSize.value())) {
-      DBG("Innermost loop range (" << innerLoopRange << ") is not a multiple "
-                                   << "of the tile-size ("
-                                   << dataTileSize.value() << ")");
-      // do padding
-      if (!splitTilingRange) {
-        DBG("Padding the inner-most loop");
-        linalg::LinalgOp paddedOp;
-        linalg::LinalgPaddingOptions paddingOption;
-        SmallVector<Value> replacements;
-        SmallVector<int64_t, 10> padDims;
-        SmallVector<int64_t, 10> padToMultipleOf;
-        SmallVector<tensor::PadOp> newPadOps;
-
-        // Pad the dimension corresponding to the most inner loop
-        // making it's range a multiple of tile size.
-        padDims.push_back(numLoops - 1);
-        padToMultipleOf.push_back(dataTileSize.value());
-
-        llvm::ArrayRef<int64_t> padDimsRef(padDims.data(), padDims.size());
-        paddingOption.setPaddingDimensions(padDimsRef);
-
-        // The alternative option is to use 'materialize in destination'.
-        // However, that can lead to RAW conflict error during bufferization
-        // if two linalg ops (DPS) inits are same value (tensors) and both
-        // lead to 'materialize in destination' directive after padding.
-        paddingOption.copyBackOp =
-            mlir::linalg::LinalgPaddingOptions::CopyBackOp::LinalgCopy;
-
-        llvm::ArrayRef<int64_t> padToMultipleOfRef(padToMultipleOf.data(),
-                                                   padToMultipleOf.size());
-        paddingOption.setPadToMultipleOf(padToMultipleOfRef);
-
-        DBG("Padding dimension  " << padDims[0] << " to become a multiple of "
-                                  << padToMultipleOf[0]);
-        // Tranform the op to a padded op. The transformation might fail if
-        // the size and value of padding cannot be infered correctly from the
-        // paddingOption, and also if the shape requested to be pad is not
-        // static. Note: The latter should not be the reason for failure in our
-        // code, as we have already ruled out that case before reaching to this
-        // point.
-        if (failed(linalg::rewriteAsPaddedOp(rewriter, op, paddingOption,
-                                             paddedOp, replacements,
-                                             newPadOps))) {
-          return failure();
-        }
-        DBG("-->padded  Op :" << paddedOp);
-        rewriter.replaceOp(tilingTarget, replacements);
-        tilingTarget = paddedOp;
-
-      } else {
-        // Split the op into two parts,
-        // accross the dimension corresponding to the most inner loop.
-        // The firstPart contains the part that is mutiple of tilesize and the
-        // secondPart is the remainder.
-        assert(innerLoopRange > dataTileSize.value() &&
-               "Splitting a range smaller than the tile size is requested");
-        DBG("Splitting the innermost loop to seperate the tileable part from "
-            "the remainder part");
-
-        SmallVector<Operation *> firstPart, secondPart;
-        unsigned splitDim = numLoops - 1;
-        OpFoldResult splitpoint = rewriter.getIndexAttr(
-            innerLoopRange - innerLoopRange % dataTileSize.value());
-        DBG("Splitting at dimension  "
-            << splitDim << " after point "
-            << innerLoopRange % dataTileSize.value());
-
-        std::tie(firstPart.emplace_back(), secondPart.emplace_back()) =
-            linalg::splitOp(rewriter, cast<TilingInterface>(op.getOperation()),
-                            splitDim, splitpoint);
-
-        // At this point the original op has already been replaced by the
-        // splitted parts. We just need to tile the first part.
-        tilingTarget = cast<linalg::LinalgOp>(firstPart[0]);
-      }
-    }
+  // Bail-out if there's only 1 loop and the inner loop range fits
+  // in a single HVX vector, since that requires no tiling, and we
+  // want this to reach the vectorization pass as is, which will
+  // vectorize at its natural width, to rely on the LLVM backend
+  if (op.getNumLoops() == 1 && innerLoopRange <= dataTileSize.value()) {
+    DBG(" -> Only 1 loop that fits in an HVX vector, tiling not required");
+    return failure();
   }
 
-  tileOption.setTileSizes(tileSizes);
-  return applyTiling(rewriter, tilingTarget, tileOption);
+  // Bail-out if there's only 1 loop, if it's a reduction, and if it fits in
+  // a pair of HVX vectors, since the LLVM backend can handle it
+  // Question: should we remove the "is a reduction" condition and also apply it
+  // to elementwise op?
+  if (op.getNumLoops() == 1 && innerLoopRange <= 2 * dataTileSize.value() &&
+      op.getIteratorTypesArray()[0] == utils::IteratorType::reduction) {
+    // Avoid tiling vector->scalar reductions when the inner loop dim is
+    // at most 2x HVX vector length. Tiling would produce multiple
+    // vector->scalar reductions, but the LLVM Hexagon backend can
+    // lower this more efficiently as a valign to combine two vectors
+    // followed by a single vector->scalar reduction (valign + vadd/vmax).
+    DBG(" -> reduction to scalar fits in HVX reduction tree, skip tiling");
+    return failure();
+  }
+
+  // Default tile sizes are [1, 1, ..., dataTileSize]
+  linalg::LinalgTilingOptions tileOption;
+  SmallVector<int64_t, 10> tileSizes(numLoops, 1);
+  tileSizes[numLoops - 1] = dataTileSize.value();
+
+  // --- Perfect tiling scenario, that uses the default tile sizes ---
+  // which also applies to dynamic loops to match the old behavor
+  // (TODO: check that we really want to tile dynamic loops)
+  if (isPerfectlyTileable(innerLoopRange, dataTileSize.value()) ||
+      ShapedType::isDynamic(innerLoopRange)) {
+    tileOption.setTileSizes(tileSizes);
+    return applyTiling(rewriter, tilingTarget, tileOption);
+  }
+
+  // At this point, we know it's not a perfect tiling scenario (loop's range
+  // is not a multiple of tile size), so we'll attempt various tiling strategies
+  DBG("Imperfect tiling: Innermost loop range ("
+      << innerLoopRange << ") is not a multiple "
+      << "of the tile-size (" << dataTileSize.value() << ")");
+
+  // --- Strategy 1) Interchange ---
+  // At this point, if (innerLoopRange < dataTileSize) holds, it means we have
+  // more than one loop (otherwise we would have aborted earlier). So it makes
+  // sense to try the interchange strategy
+  if (innerLoopRange < dataTileSize.value()) {
+    std::vector<unsigned> interchangeVector(numLoops, 0);
+    // Note that default is false as currently not sure
+    // if trade-offs with transpose is right.
+    if (!useInterchangeVector) {
+      // Instead of considering this as a failure,  we might want
+      // to flatten the tensor to make it tileable if possible
+      DBG(" -> inner loop would need interchange for being tilable");
+      return failure();
+    }
+    // Attempt the interchange strategy
+    bool interchangeResult =
+        computeInterchangeVector(op, dataTileSize.value(), interchangeVector);
+    if (!interchangeResult) {
+      DBG(" -> Computing the interchange vector failed.");
+      return failure();
+    }
+
+    // Apply the interchangeVector obtained
+    tileOption.setInterchange(interchangeVector);
+    SmallVector<int64_t, 10> newTileSizes(numLoops);
+    for (int i = 0; i < numLoops; ++i)
+      newTileSizes[i] = tileSizes[interchangeVector[i]];
+    tileSizes = newTileSizes;
+
+    tileOption.setTileSizes(tileSizes);
+    return applyTiling(rewriter, tilingTarget, tileOption);
+  } // End of Interchange strategy
+
+  // --- Strategy 2: Padding ---
+  // If splitTilingRange is not set, we will try a naive padding that pads with
+  // the value 0, as long as it's not a reduction op (otherwise this naive
+  // padding could change the semantics of the op)
+  if (!splitTilingRange && op.getIteratorTypesArray()[numLoops - 1] !=
+                               utils::IteratorType::reduction) {
+    DBG("Padding the inner-most loop");
+    linalg::LinalgOp paddedOp;
+    linalg::LinalgPaddingOptions paddingOption;
+    SmallVector<Value> replacements;
+    SmallVector<int64_t, 10> padDims;
+    SmallVector<int64_t, 10> padToMultipleOf;
+    SmallVector<tensor::PadOp> newPadOps;
+
+    // Pad the dimension corresponding to the most inner loop
+    // making its range a multiple of tile size.
+    padDims.push_back(numLoops - 1);
+    padToMultipleOf.push_back(dataTileSize.value());
+
+    llvm::ArrayRef<int64_t> padDimsRef(padDims.data(), padDims.size());
+    paddingOption.setPaddingDimensions(padDimsRef);
+
+    // The alternative option is to use 'materialize in destination'.
+    // However, that can lead to RAW conflict error during bufferization
+    // if two linalg ops (DPS) inits are same value (tensors) and both
+    // lead to 'materialize in destination' directive after padding.
+    paddingOption.copyBackOp =
+        mlir::linalg::LinalgPaddingOptions::CopyBackOp::LinalgCopy;
+
+    llvm::ArrayRef<int64_t> padToMultipleOfRef(padToMultipleOf.data(),
+                                               padToMultipleOf.size());
+    paddingOption.setPadToMultipleOf(padToMultipleOfRef);
+
+    DBG("Padding dimension  " << padDims[0] << " to become a multiple of "
+                              << padToMultipleOf[0]);
+    // Tranform the op to a padded op. The transformation might fail if
+    // the size and value of padding cannot be infered correctly from the
+    // paddingOption
+    if (failed(linalg::rewriteAsPaddedOp(rewriter, op, paddingOption, paddedOp,
+                                         replacements, newPadOps))) {
+      DBG("Padding failed");
+      return failure();
+    }
+    DBG("-->padded  Op :" << paddedOp);
+    rewriter.replaceOp(tilingTarget, replacements);
+    tilingTarget = paddedOp;
+
+    tileOption.setTileSizes(tileSizes);
+    return applyTiling(rewriter, tilingTarget, tileOption);
+  }
+
+  // --- Strategy 3: Splitting ---
+  // Split across the dimension corresponding to the most inner loop.
+  // The firstPart contains the part that is multiple of tilesize and the
+  // secondPart is the remainder.
+  if (splitTilingRange) {
+    // assert should hold because < dataTileSize was routed to
+    // interchange and == to perfect tiling, so only > non-multiples reach here.
+    assert(innerLoopRange > dataTileSize.value() &&
+           "Splitting a range smaller than the tile size is requested");
+    DBG("Splitting the innermost loop to separate the tileable part from "
+        "the remainder part");
+
+    SmallVector<Operation *> firstPart, secondPart;
+    unsigned splitDim = numLoops - 1;
+    OpFoldResult splitpoint = rewriter.getIndexAttr(
+        innerLoopRange - innerLoopRange % dataTileSize.value());
+    DBG("Splitting at dimension  " << splitDim << " after point "
+                                   << innerLoopRange % dataTileSize.value());
+
+    std::tie(firstPart.emplace_back(), secondPart.emplace_back()) =
+        linalg::splitOp(rewriter, cast<TilingInterface>(op.getOperation()),
+                        splitDim, splitpoint);
+
+    // At this point the original op has already been replaced by the
+    // splitted parts. We just need to tile the first part.
+    tilingTarget = cast<linalg::LinalgOp>(firstPart[0]);
+
+    tileOption.setTileSizes(tileSizes);
+    return applyTiling(rewriter, tilingTarget, tileOption);
+  }
+
+  // If we reach this point, we have exhausted the tiling strategies to try
+  DBG("Could not find any tiling strategy to apply");
+  return failure();
 }
 
 struct HexagonTilingPass : public ::impl::HexagonTilingBase<HexagonTilingPass> {

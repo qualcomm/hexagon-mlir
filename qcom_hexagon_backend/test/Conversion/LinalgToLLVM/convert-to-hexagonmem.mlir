@@ -1,3 +1,12 @@
+//===- convert-to-hexagonmem.mlir -----------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -split-input-file %s -pass-pipeline='builtin.module(func.func(convert-to-hexagonmem \
 // RUN: ))' | FileCheck %s -check-prefixes=CHECK,ON
 //

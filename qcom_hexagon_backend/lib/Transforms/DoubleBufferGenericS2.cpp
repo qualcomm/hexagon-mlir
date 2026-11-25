@@ -16,6 +16,7 @@
 
 #include "hexagon/Common/Common.h"
 #include "hexagon/Common/DMATransferUtil.h"
+#include "hexagon/Common/Utils.h"
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
@@ -23,6 +24,7 @@
 #include "hexagon/Transforms/Transforms.h"
 
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -67,6 +69,7 @@ struct KernelSchedule {
 };
 struct DBSchedule {
   scf::IfOp prologue;
+  scf::IfOp pongPrologue; // optional deep prologue for pong buffers
   scf::ForOp kernel;
   scf::IfOp pingKernel, pongKernel;
   KernelSchedule pingSchedule, pongSchedule;
@@ -104,20 +107,17 @@ void replacePrefetchWithDMA(Location loc, IRRewriter &rewriter,
   }
 }
 
-// Replace Stores with DMA Waits.
+// Replace Stores with dma_start only.  The matching dma_wait is inserted at
+// the start of the *opposite* kernel so the store DMA overlaps with the next
+// tile's compute (see rewriteAsDMATransfers for placement details).
 void replaceStoreshWithDMA(Location loc, IRRewriter &rewriter,
-                           KernelSchedule &schedule, ArrayRef<Value> tags,
-                           ArrayRef<Value> tagIndex,
-                           ArrayRef<Value> numElements) {
-  auto tagType = rewriter.getI32Type();
-  auto waitMemrefType = MemRefType::get({1}, tagType);
-
-  for (int i = 0; i < schedule.stores.size(); ++i) {
+                           KernelSchedule &schedule, ArrayRef<Value> tags) {
+  for (int i = 0; i < (int)schedule.stores.size(); ++i) {
     auto copy = schedule.stores[i];
     rewriter.setInsertionPoint(copy);
     bool created = createDMAStartOp(loc, rewriter, copy.getSource(),
                                     copy.getTarget(), tags[i]);
-    memref::DmaWaitOp::create(rewriter, loc, tags[i], tagIndex, numElements[i]);
+    assert(created && "unable to create dma_start for store back");
     rewriter.eraseOp(schedule.stores[i]);
   }
 }
@@ -128,14 +128,27 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
   RewriterBase::InsertionGuard guard(rewriter);
   Location loc = schedule.kernel.getLoc();
 
-  // Tabulate preloads.
+  // Tabulate preloads. A memref::StoreOp marks the boundary after which copies
+  // belong to the inlined pong prologue (canonicalizer folded its scf.if).
   SmallVector<memref::CopyOp, 3> preloads;
+  SmallVector<memref::CopyOp, 3> inlinedPongPrologueCopies;
   Region &thenRegion = schedule.prologue.getThenRegion();
   assert(!thenRegion.empty() && thenRegion.getBlocks().size() == 1);
   Block &block = thenRegion.front();
-  for (Operation &op : block) {
-    if (auto copyOp = dyn_cast<memref::CopyOp>(&op))
-      preloads.push_back(copyOp);
+  {
+    bool pastStore = false;
+    for (Operation &op : block) {
+      if (isa<memref::StoreOp>(op)) {
+        pastStore = true;
+        continue;
+      }
+      if (auto copyOp = dyn_cast<memref::CopyOp>(&op)) {
+        if (!pastStore)
+          preloads.push_back(copyOp);
+        else if (!schedule.pongPrologue)
+          inlinedPongPrologueCopies.push_back(copyOp);
+      }
+    }
   }
 
   // Create tag-index
@@ -161,7 +174,8 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
     numElementsStores.push_back(numEl);
   }
 
-  // Allocate tags.
+  // Allocate tags on the stack — they are tiny (4 bytes each) and short-lived;
+  // alloca avoids heap malloc/free overhead on every kernel invocation.
   SmallVector<Value> pingWaits;
   SmallVector<Value> pongWaits;
   SmallVector<Value> pingStoreWaits;
@@ -169,30 +183,115 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
   auto tagType = rewriter.getI32Type();
   auto waitMemrefType = MemRefType::get({1}, tagType);
   for (auto i = 0; i < preloads.size(); i++) {
-    Value pingWait = memref::AllocOp::create(rewriter, loc, waitMemrefType);
-    Value pongWait = memref::AllocOp::create(rewriter, loc, waitMemrefType);
+    Value pingWait = memref::AllocaOp::create(rewriter, loc, waitMemrefType);
+    Value pongWait = memref::AllocaOp::create(rewriter, loc, waitMemrefType);
     pingWaits.push_back(pingWait);
     pongWaits.push_back(pongWait);
   }
   for (auto i = 0; i < numStores; ++i) {
-    Value ping = memref::AllocOp::create(rewriter, loc, waitMemrefType);
-    Value pong = memref::AllocOp::create(rewriter, loc, waitMemrefType);
+    Value ping = memref::AllocaOp::create(rewriter, loc, waitMemrefType);
+    Value pong = memref::AllocaOp::create(rewriter, loc, waitMemrefType);
     pingStoreWaits.push_back(ping);
     pongStoreWaits.push_back(pong);
   }
 
-  // Deallocte tags.
-  rewriter.setInsertionPointAfter(schedule.kernel);
-  for (auto i = 0; i < preloads.size(); i++) {
-    memref::DeallocOp::create(rewriter, loc, pingWaits[i]);
-    memref::DeallocOp::create(rewriter, loc, pongWaits[i]);
-  }
-  for (auto i = 0; i < numStores; ++i) {
-    memref::DeallocOp::create(rewriter, loc, pingStoreWaits[i]);
-    memref::DeallocOp::create(rewriter, loc, pongStoreWaits[i]);
+  // (No deallocs needed — all tags are stack-allocated via alloca.)
+
+  // hasRun flags guard each kernel's deferred store-wait, which is placed
+  // just before the same kernel reuses its store tag on the next iteration.
+  auto i1Type = rewriter.getI1Type();
+  auto boolMemrefType = MemRefType::get({}, i1Type);
+  Value pongHasRun = memref::AllocaOp::create(rewriter, loc, boolMemrefType);
+  Value pingHasRun = memref::AllocaOp::create(rewriter, loc, boolMemrefType);
+  Value falseConst =
+      arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(false));
+  memref::StoreOp::create(rewriter, loc, falseConst, pongHasRun, ValueRange{});
+  memref::StoreOp::create(rewriter, loc, falseConst, pingHasRun, ValueRange{});
+
+  if (numStores > 0) {
+    Value trueConst =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(true));
+
+    // Ping deferred store-wait.
+    rewriter.setInsertionPoint(schedule.pingSchedule.stores.front());
+    {
+      Value flag =
+          memref::LoadOp::create(rewriter, loc, pingHasRun, ValueRange{});
+      auto guardIf = scf::IfOp::create(rewriter, loc, flag, /*hasElse=*/false);
+      RewriterBase::InsertionGuard ig(rewriter);
+      rewriter.setInsertionPointToStart(guardIf.thenBlock());
+      insertDMAWaits(loc, rewriter, pingStoreWaits, tagIndex,
+                     numElementsStores);
+    }
+
+    // Pong deferred store-wait.
+    rewriter.setInsertionPoint(schedule.pongSchedule.stores.front());
+    {
+      Value flag =
+          memref::LoadOp::create(rewriter, loc, pongHasRun, ValueRange{});
+      auto guardIf = scf::IfOp::create(rewriter, loc, flag, /*hasElse=*/false);
+      RewriterBase::InsertionGuard ig(rewriter);
+      rewriter.setInsertionPointToStart(guardIf.thenBlock());
+      insertDMAWaits(loc, rewriter, pongStoreWaits, tagIndex,
+                     numElementsStores);
+    }
+
+    // Set hasRun after each kernel's body for next iter's deferred wait.
+    Block &pingBody = schedule.pingKernel.getThenRegion().front();
+    rewriter.setInsertionPoint(pingBody.getTerminator());
+    memref::StoreOp::create(rewriter, loc, trueConst, pingHasRun, ValueRange{});
+
+    Block &pongBody = schedule.pongKernel.getThenRegion().front();
+    rewriter.setInsertionPoint(pongBody.getTerminator());
+    memref::StoreOp::create(rewriter, loc, trueConst, pongHasRun, ValueRange{});
   }
 
-  // Rewrite preloads to dma-starts
+  // Epilogue: after the loop finishes, wait for the last outstanding store DMA.
+  // The ping/pong flag reflects which kernel ran last:
+  //   flag == false  =>  last was ping  =>  wait pingStoreWaits
+  //   flag == true && pong_has_run  =>  last was pong  =>  wait pongStoreWaits
+  //   flag == true && !pong_has_run =>  nothing ran   =>  no wait needed
+  rewriter.setInsertionPointAfter(schedule.kernel);
+  if (numStores > 0) {
+    Value pingCond = schedule.pingKernel.getCondition();
+    if (auto flagLoad = pingCond.getDefiningOp<memref::LoadOp>()) {
+      Value flagAlloc = flagLoad.getMemRef();
+      Value lastFlag =
+          memref::LoadOp::create(rewriter, loc, flagAlloc, ValueRange{});
+      Value phrFinal =
+          memref::LoadOp::create(rewriter, loc, pongHasRun, ValueRange{});
+      Value trueEpi =
+          arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(true));
+      // flag == false => XOR true => true  (last kernel was ping)
+      Value lastWasPing =
+          arith::XOrIOp::create(rewriter, loc, lastFlag, trueEpi);
+      // flag == true AND pong_has_run  (last kernel was pong)
+      Value lastWasPong =
+          arith::AndIOp::create(rewriter, loc, lastFlag, phrFinal);
+
+      auto epiPingIf =
+          scf::IfOp::create(rewriter, loc, lastWasPing, /*hasElse=*/false);
+      {
+        RewriterBase::InsertionGuard ig(rewriter);
+        rewriter.setInsertionPointToStart(epiPingIf.thenBlock());
+        insertDMAWaits(loc, rewriter, pingStoreWaits, tagIndex,
+                       numElementsStores);
+      }
+      rewriter.setInsertionPointAfter(epiPingIf);
+
+      auto epiPongIf =
+          scf::IfOp::create(rewriter, loc, lastWasPong, /*hasElse=*/false);
+      {
+        RewriterBase::InsertionGuard ig(rewriter);
+        rewriter.setInsertionPointToStart(epiPongIf.thenBlock());
+        insertDMAWaits(loc, rewriter, pongStoreWaits, tagIndex,
+                       numElementsStores);
+      }
+      rewriter.setInsertionPointAfter(epiPongIf);
+    }
+  }
+
+  // Rewrite preloads to dma-starts.
   for (auto i = 0; i < preloads.size(); i++) {
     memref::CopyOp op = preloads[i];
     rewriter.setInsertionPoint(op);
@@ -202,22 +301,49 @@ void rewriteAsDMATransfers(IRRewriter &rewriter, DBSchedule schedule) {
     rewriter.eraseOp(op);
   }
 
+  // Pong prologue copies → dma_start with pongWaits (drained by pong's first
+  // dma_wait).
+  if (schedule.pongPrologue) {
+    SmallVector<memref::CopyOp, 3> pongPreloads;
+    for (Operation &op : schedule.pongPrologue.getThenRegion().front())
+      if (auto c = dyn_cast<memref::CopyOp>(op))
+        pongPreloads.push_back(c);
+    for (int i = 0; i < (int)pongPreloads.size(); ++i) {
+      auto copy = pongPreloads[i];
+      rewriter.setInsertionPoint(copy);
+      bool ok = createDMAStartOp(loc, rewriter, copy.getSource(),
+                                 copy.getTarget(), pongWaits[i]);
+      assert(ok && "unable to create dma_start for pong prologue");
+      rewriter.eraseOp(copy);
+    }
+  }
+
+  // Same, for pong prologue copies that the canonicalizer inlined.
+  for (int i = 0; i < (int)inlinedPongPrologueCopies.size(); ++i) {
+    auto copy = inlinedPongPrologueCopies[i];
+    rewriter.setInsertionPoint(copy);
+    bool ok = createDMAStartOp(loc, rewriter, copy.getSource(),
+                               copy.getTarget(), pongWaits[i]);
+    assert(ok && "unable to create dma_start for inlined pong prologue");
+    rewriter.eraseOp(copy);
+  }
+
   // Insert ping and pong waits.
   rewriter.setInsertionPointAfter(schedule.pingSchedule.prefetch);
   insertDMAWaits(loc, rewriter, pingWaits, tagIndex, numElements);
   rewriter.setInsertionPointAfter(schedule.pongSchedule.prefetch);
   insertDMAWaits(loc, rewriter, pongWaits, tagIndex, numElements);
 
-  // Replace memref.copy with dma-start (and dma-wait for stores).
+  // Replace prefetch copies with dma-starts.
   replacePrefetchWithDMA(loc, rewriter, schedule.pingSchedule.prefetch,
                          pongWaits);
   replacePrefetchWithDMA(loc, rewriter, schedule.pongSchedule.prefetch,
                          pingWaits);
 
-  replaceStoreshWithDMA(loc, rewriter, schedule.pingSchedule, pingStoreWaits,
-                        tagIndex, numElementsStores);
-  replaceStoreshWithDMA(loc, rewriter, schedule.pongSchedule, pongStoreWaits,
-                        tagIndex, numElementsStores);
+  // Replace store copies with dma-starts; the matching dma-waits are
+  // already placed at the start of the opposite kernel above.
+  replaceStoreshWithDMA(loc, rewriter, schedule.pingSchedule, pingStoreWaits);
+  replaceStoreshWithDMA(loc, rewriter, schedule.pongSchedule, pongStoreWaits);
 }
 
 /// Extract the prefetch section of ping-pong sub-kernels.
@@ -228,13 +354,15 @@ bool extractPreFetch(scf::IfOp kernel, KernelSchedule &schedule) {
   Block &block = thenRegion.front();
   if (block.empty())
     return false;
-  // We could relax this to be not the first op
-  Operation &firstOp = block.front();
-  auto ifOp = dyn_cast<scf::IfOp>(firstOp);
-  if (!ifOp || !ifOp->hasAttr("db_prefetch"))
-    return false;
-  schedule.prefetch = ifOp;
-  return true;
+  // Scan (not first-op): deep prologue may prepend scalar book-keeping.
+  for (Operation &op : block) {
+    auto ifOp = dyn_cast<scf::IfOp>(op);
+    if (ifOp && ifOp->hasAttr("db_prefetch")) {
+      schedule.prefetch = ifOp;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Extract the store-back after kernel (ping or pong) compute.
@@ -247,15 +375,24 @@ bool extractStoreBack(scf::IfOp kernel, KernelSchedule &schedule) {
   if (!compute)
     return false;
 
+  // Skip the suppression-flag clearing store between prefetch and compute.
+  while (compute && isa<memref::StoreOp>(compute))
+    compute = compute->getNextNode();
+  if (!compute)
+    return false;
+
   if (!isa<scf::ForOp>(compute) && !isa<scf::ForallOp>(compute))
     return false;
   schedule.compute = compute;
 
-  // After compute, collect memref::CopyOp till the yield
+  // After compute, collect VTCM→DDR memref::CopyOp till the yield.
+  // Skip VTCM→VTCM copies (e.g. intermediate scratch-to-temp copies);
+  // those are not valid DMA paths and must remain as synchronous copies.
   Operation *currentOp = compute->getNextNode();
   while (currentOp) {
     if (auto copyOp = dyn_cast<memref::CopyOp>(currentOp))
-      schedule.stores.push_back(copyOp);
+      if (isVTCMtoDDR(copyOp))
+        schedule.stores.push_back(copyOp);
     currentOp = currentOp->getNextNode();
   }
   if (schedule.stores.size() == 0)
@@ -278,8 +415,8 @@ bool extractSchedule(scf::ForOp forOp, DBSchedule &schedule) {
     auto ifOp = dyn_cast<scf::IfOp>(prev);
     if (!ifOp)
       continue;
-    auto attr = forOp->getAttrOfType<mlir::IntegerAttr>("db_generic");
-    if (attr && id == attr.getInt()) {
+    auto attr = ifOp->getAttrOfType<mlir::IntegerAttr>("db_generic");
+    if (attr && id == attr.getInt() && ifOp->hasAttr("db_prologue")) {
       foundPrologue = true;
       schedule.prologue = ifOp;
       break;
@@ -288,6 +425,16 @@ bool extractSchedule(scf::ForOp forOp, DBSchedule &schedule) {
   if (!foundPrologue)
     return false;
   DBG("Prologue = " << schedule.prologue);
+
+  // Look for the optional deep pong prologue nested inside the prologue block.
+  for (Operation &op : schedule.prologue.getThenRegion().front()) {
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      if (ifOp->hasAttr("db_prologue_pong")) {
+        schedule.pongPrologue = ifOp;
+        break;
+      }
+    }
+  }
 
   // Extract ping-pong kernels.
   bool pingKernelFound = false, pongKernelFound = false;
@@ -330,8 +477,8 @@ struct HexagonDoubleBufferGenericS2Pass
     : public ::impl::HexagonDoubleBufferGenericS2Base<
           HexagonDoubleBufferGenericS2Pass> {
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<scf::SCFDialect>();
-    registry.insert<mlir::hexagonmem::HexagonMemDialect>();
+    registry.insert<arith::ArithDialect, scf::SCFDialect,
+                    mlir::hexagonmem::HexagonMemDialect>();
   }
 
   void runOnOperation() override {

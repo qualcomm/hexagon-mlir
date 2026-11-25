@@ -217,28 +217,34 @@ LowerDMAStart::matchAndRewrite(memref::DmaStartOp op, OpAdaptor adaptor,
     Value height =
         (LLVM::SDivOp::create(rewriter, loc, transferSize, widthInBytes))
             ->getResult(0);
-    // Stride arg is optional, and if present, it is only slow address space.
-    // source stride iff stride is present, and dest is faster.
-    // If no stride, use stride = width
-    auto srcStride =
-        (isVTCM(dstMemref) && (!(isVTCM(srcMemref))))
-            ? convertToI32Type(loc,
-                               (*(adaptor.getOperands().begin() + srcRank +
-                                  dstRank + tagRank + 4)),
-                               rewriter, context)
-            : width;
-    auto srcStrideInBytes =
-        LLVM::MulOp::create(rewriter, loc, srcStride, typeSizeInBytes);
-    // dest stride iff stride is present, and src is faster.
-    auto dstStride =
-        (isVTCM(srcMemref) && (!(isVTCM(dstMemref))))
-            ? convertToI32Type(loc,
-                               (*(adaptor.getOperands().begin() + srcRank +
-                                  dstRank + tagRank + 4)),
-                               rewriter, context)
-            : width;
-    auto dstStrideInBytes =
-        LLVM::MulOp::create(rewriter, loc, dstStride, typeSizeInBytes);
+
+    // Same as DMAToQShimPass.cpp
+    // For 2D DMA, src and dst may have different row spacing in memory.
+    // For example, a DDR memref that is a slice of a larger buffer has
+    // gaps between rows (the stride between rows equals the full buffer
+    // width, not the slice width). A VTCM memref, on the other hand,
+    // typically stores rows back-to-back with no gaps.
+    //
+    // We compute the row stride for each side independently, rather than
+    // using a single shared stride for both (which corrupts the transfer
+    // when src and dst have different layouts).
+    //
+    // isStridedMultiDimMemrefType checks if a memref's inter-row stride
+    // is larger than its row width (i.e., rows are not contiguous).
+    // If so, we use that actual stride; otherwise we fall back to width,
+    // meaning rows are tightly packed.
+    auto rowStride = [&](Value memref) -> Value {
+      auto memrefType = cast<MemRefType>(memref.getType());
+      int64_t typeStride, typeWidth;
+      if (isStridedMultiDimMemrefType(memrefType, typeStride, typeWidth))
+        return getI32Constant(rewriter, loc, typeStride);
+      return width;
+    };
+
+    Value srcStrideInBytes = LLVM::MulOp::create(
+        rewriter, loc, rowStride(srcMemref), typeSizeInBytes);
+    Value dstStrideInBytes = LLVM::MulOp::create(
+        rewriter, loc, rowStride(dstMemref), typeSizeInBytes);
 
     // Create a vector of operands for the DMA copy operation
     operands = {llvmSrcPtr,

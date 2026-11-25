@@ -1,3 +1,12 @@
+//===- padding_fix1.mlir --------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s \
 // RUN:   -pass-pipeline='builtin.module(linalg-generalize-named-ops,hexagon-tiling{split-tiling-range=true},eliminate-empty-tensors,canonicalize,cse,one-shot-bufferize)' \
 // RUN:  | FileCheck %s -check-prefixes=CHECK,SPLIT

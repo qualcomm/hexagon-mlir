@@ -1,3 +1,12 @@
+//===- input.mlir ---------------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 module {
   llvm.func @fdiv_sqrt_pattern_scalar_f16(%arg0: f16) -> f16 {
     %sqrt_f16 = llvm.intr.sqrt(%arg0) {fastmathFlags = #llvm.fastmath<fast>} : (f16) -> f16

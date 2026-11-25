@@ -1,3 +1,12 @@
+//===- hexagon-lwp-instrument-pass.mlir -----------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -linalg-to-llvm="enable-lwp=true" | FileCheck %s
 // -check-prefixes=CHECK
 

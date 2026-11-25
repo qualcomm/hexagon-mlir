@@ -1,3 +1,12 @@
+//===- trig_hexagon_routine.mlir ------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(llvm-intr-to-hexagon-routines)' -split-input-file | FileCheck %s
 
 // CHECK-LABEL: llvm.func @_hexagon_runtime_tan__vf(vector<32xi32>)
@@ -11,37 +20,37 @@ llvm.func @trig_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
 
   
-  // CHECK: %[[LowSin:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowSin:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowSinBC:.*]] = llvm.bitcast %[[LowSin]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowSinCall:.*]] = llvm.call @_hexagon_runtime_sin__vf(%[[LowSinBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowSinRes:.*]] = llvm.bitcast %[[LowSinCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowSin:.*]] = llvm.intr.vector.insert %[[LowSinRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
 
-  // CHECK: %[[HighSin:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighSin:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighSinBC:.*]] = llvm.bitcast %[[HighSin]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighSinCall:.*]] = llvm.call @_hexagon_runtime_sin__vf(%[[HighSinBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighSinRes:.*]] = llvm.bitcast %[[HighSinCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertHighSin:.*]] = llvm.intr.vector.insert %[[HighSinRes]], %[[InsertLowSin]][32] : vector<32xf32> into vector<64xf32>
   
-  // CHECK: %[[LowCos:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowCos:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowCosBC:.*]] = llvm.bitcast %[[LowCos]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowCosCall:.*]] = llvm.call @_hexagon_runtime_cos__vf(%[[LowCosBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowCosRes:.*]] = llvm.bitcast %[[LowCosCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowCos:.*]] = llvm.intr.vector.insert %[[LowCosRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
 
-  // CHECK: %[[HighCos:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighCos:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighCosBC:.*]] = llvm.bitcast %[[HighCos]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighCosCall:.*]] = llvm.call @_hexagon_runtime_cos__vf(%[[HighCosBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighCosRes:.*]] = llvm.bitcast %[[HighCosCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertHighCos:.*]] = llvm.intr.vector.insert %[[HighCosRes]], %[[InsertLowCos]][32] : vector<32xf32> into vector<64xf32>
 
-  // CHECK: %[[LowTan:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowTan:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowTanBC:.*]] = llvm.bitcast %[[LowTan]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowTanCall:.*]] = llvm.call @_hexagon_runtime_tan__vf(%[[LowTanBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowTanRes:.*]] = llvm.bitcast %[[LowTanCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowTan:.*]] = llvm.intr.vector.insert %[[LowTanRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
 
-  // CHECK: %[[HighTan:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighTan:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighTanBC:.*]] = llvm.bitcast %[[HighTan]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighTanCall:.*]] = llvm.call @_hexagon_runtime_tan__vf(%[[HighTanBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighTanRes:.*]] = llvm.bitcast %[[HighTanCall]] : vector<32xi32> to vector<32xf32>
@@ -80,12 +89,12 @@ llvm.func @tanh_hexagon_routine(%arg0:vector<64xf16>) -> vector<64xf16> {
 llvm.func @asin_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[ARG0:.*]]: vector<64xf32>
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
-  // CHECK: %[[LowASin:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowASin:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowASinBC:.*]] = llvm.bitcast %[[LowASin]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowASinCall:.*]] = llvm.call @_hexagon_runtime_asin__vf(%[[LowASinBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowASinRes:.*]] = llvm.bitcast %[[LowASinCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowASin:.*]] = llvm.intr.vector.insert %[[LowASinRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
-  // CHECK: %[[HighASin:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighASin:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighASinBC:.*]] = llvm.bitcast %[[HighASin]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighASinCall:.*]] = llvm.call @_hexagon_runtime_asin__vf(%[[HighASinBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighASinRes:.*]] = llvm.bitcast %[[HighASinCall]] : vector<32xi32> to vector<32xf32>
@@ -102,12 +111,12 @@ llvm.func @asin_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
 llvm.func @acos_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[ARG0:.*]]: vector<64xf32>
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
-  // CHECK: %[[LowACos:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowACos:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowACosBC:.*]] = llvm.bitcast %[[LowACos]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowACosCall:.*]] = llvm.call @_hexagon_runtime_acos__vf(%[[LowACosBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowACosRes:.*]] = llvm.bitcast %[[LowACosCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowACos:.*]] = llvm.intr.vector.insert %[[LowACosRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
-  // CHECK: %[[HighACos:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighACos:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighACosBC:.*]] = llvm.bitcast %[[HighACos]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighACosCall:.*]] = llvm.call @_hexagon_runtime_acos__vf(%[[HighACosBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighACosRes:.*]] = llvm.bitcast %[[HighACosCall]] : vector<32xi32> to vector<32xf32>
@@ -124,12 +133,12 @@ llvm.func @acos_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
 llvm.func @atan_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[ARG0:.*]]: vector<64xf32>
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
-  // CHECK: %[[LowATan:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowATan:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowATanBC:.*]] = llvm.bitcast %[[LowATan]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowATanCall:.*]] = llvm.call @_hexagon_runtime_atan__vf(%[[LowATanBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowATanRes:.*]] = llvm.bitcast %[[LowATanCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowATan:.*]] = llvm.intr.vector.insert %[[LowATanRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
-  // CHECK: %[[HighATan:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighATan:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighATanBC:.*]] = llvm.bitcast %[[HighATan]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighATanCall:.*]] = llvm.call @_hexagon_runtime_atan__vf(%[[HighATanBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighATanRes:.*]] = llvm.bitcast %[[HighATanCall]] : vector<32xi32> to vector<32xf32>
@@ -146,12 +155,12 @@ llvm.func @atan_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
 llvm.func @floor_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[ARG0:.*]]: vector<64xf32>
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
-  // CHECK: %[[LowFloor:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowFloor:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowFloorBC:.*]] = llvm.bitcast %[[LowFloor]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowFloorCall:.*]] = llvm.call @_hexagon_runtime_floor__vf(%[[LowFloorBC]]) : (vector<32xi32>) -> vector<32xi32
   // CHECK: %[[LowFloorRes:.*]] = llvm.bitcast %[[LowFloorCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowFloor:.*]] = llvm.intr.vector.insert %[[LowFloorRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
-  // CHECK: %[[HighFloor:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32> 
+  // CHECK: %[[HighFloor:.*]] = llvm.shufflevector %[[ARG0]] 
   // CHECK: %[[HighFloorBC:.*]] = llvm.bitcast %[[HighFloor]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighFloorCall:.*]] = llvm.call @_hexagon_runtime_floor__vf(%[[HighFloorBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighFloorRes:.*]] = llvm.bitcast %[[HighFloorCall]] : vector<32xi32> to vector<32xf32>
@@ -180,12 +189,12 @@ llvm.func @floor_f16_hexagon_routine(%arg0: vector<64xf16>) -> vector<64xf16> {
 llvm.func @ceil_hexagon_routine(%arg0: vector<64xf32>) -> vector<64xf32> {
   // CHECK: %[[ARG0:.*]]: vector<64xf32>
   // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : vector<64xf32>
-  // CHECK: %[[LowCeil:.*]] = llvm.intr.vector.extract %[[ARG0]][0] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[LowCeil:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[LowCeilBC:.*]] = llvm.bitcast %[[LowCeil]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[LowCeilCall:.*]] = llvm.call @_hexagon_runtime_ceil__vf(%[[LowCeilBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[LowCeilRes:.*]] = llvm.bitcast %[[LowCeilCall]] : vector<32xi32> to vector<32xf32>
   // CHECK: %[[InsertLowCeil:.*]] = llvm.intr.vector.insert %[[LowCeilRes]], %[[UNDEF]][0] : vector<32xf32> into vector<64xf32>
-  // CHECK: %[[HighCeil:.*]] = llvm.intr.vector.extract %[[ARG0]][32] : vector<32xf32> from vector<64xf32>
+  // CHECK: %[[HighCeil:.*]] = llvm.shufflevector %[[ARG0]]
   // CHECK: %[[HighCeilBC:.*]] = llvm.bitcast %[[HighCeil]] : vector<32xf32> to vector<32xi32>
   // CHECK: %[[HighCeilCall:.*]] = llvm.call @_hexagon_runtime_ceil__vf(%[[HighCeilBC]]) : (vector<32xi32>) -> vector<32xi32>
   // CHECK: %[[HighCeilRes:.*]] = llvm.bitcast %[[HighCeilCall]] : vector<32xi32> to vector<32xf32>

@@ -1,3 +1,12 @@
+//===- pack_add_i8.mlir ---------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(lower-pack))' | FileCheck %s
 // CHECK: func.func @main(%[[ARG0:.+]]: memref<1x20x16x14xi8>, %[[ARG1:.+]]: memref<1x20x16x14xi8>, %[[ARG2:.+]]: memref<1x20x16x14xi8>) {
 // CHECK: %[[T0:.+]] = bufferization.to_tensor %[[ARG0]] restrict : memref<1x20x16x14xi8> to tensor<1x20x16x14xi8>

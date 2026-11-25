@@ -18,9 +18,6 @@ from .. import parameterize_func_name
 triton.runtime.driver.set_active(HexagonDriver())
 
 EPSILON = 1e-5
-NUM_ROWS = 127
-NUM_COLS = 513
-BLOCK_SIZE = triton.next_power_of_2(NUM_COLS)
 
 # For torch.allclose() check, default absolute tolerance fails (1e-8)
 # 1e-2 is the minimum power of 10 where the check passes.
@@ -31,7 +28,18 @@ ATOL = 1e-2
 @pytest.mark.parametrize(
     "dtype", [torch.float16, torch.float32]
 )  # torch.float16 sum reductions don't compile at the moment
-def test_rms_norm(num_threads, dtype):
+@pytest.mark.parametrize(
+    "num_rows, num_cols",
+    [
+        (127, 513),
+        (32, 256),
+    ],
+)
+def test_rms_norm(num_rows, num_cols, num_threads, dtype):
+    NUM_ROWS = num_rows
+    NUM_COLS = num_cols
+    BLOCK_SIZE = triton.next_power_of_2(NUM_COLS)
+
     @triton.jit
     @parameterize_func_name(dtype)
     def rms_norm_fwd_kernel(
@@ -80,6 +88,7 @@ def test_rms_norm(num_threads, dtype):
         enableVTCMTiling=true_if_single_threaded,
         enableConvertToHexagonmem=true_if_single_threaded,
         enableHexagonmemCopyToDMA=True,
+        enableSetAliasScopes=True,
     )
 
     reference = torch.nn.functional.rms_norm(

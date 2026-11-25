@@ -48,6 +48,10 @@ bool isPerfectlyTileable(unsigned LoopRange, unsigned dataTileSize);
 /// and currently it decides it with equality.
 bool perfectlyVectorizable(unsigned dataTileSize, unsigned innerLoopRange);
 
+/// Returns true if the inner loop dimension is suitable for HVX
+/// vectorization.
+bool isVectorizableLoopDim(unsigned innerLoopDim, unsigned dataTileSize);
+
 /// Hexagon target triple and datalayout
 void setTargetTriple(ModuleOp);
 void setDataLayout(ModuleOp);

@@ -116,3 +116,36 @@ TEST(UDMATest2D, FourTensorTileCopy) {
   EXPECT_EQ(std::memcmp(refTile2, tile2, TILE_SIZE), 0);
   EXPECT_EQ(std::memcmp(refTile3, tile3, TILE_SIZE), 0);
 }
+
+// Fields > 0xFFFF must not be truncated by the 16-bit 2D descriptor.
+static void check2DLargeField(uint32_t width, uint32_t height,
+                              uint32_t srcStride, uint32_t dstStride) {
+  char *src = (char *)malloc((size_t)srcStride * height);
+  char *dst = (char *)malloc((size_t)dstStride * height);
+  randSet2D<char>(src, srcStride * height);
+  randSet2D<char>(dst, dstStride * height);
+
+  hexagon::userdma::DMAStatus status = hexagon::userdma::DMAFailure;
+  hexagon::userdma::UserDMA hexDMA(2);
+  uint32_t token = hexDMA.copy2D(
+      src, hexagon::userdma::DDR, dst, hexagon::userdma::DDR, width, height,
+      srcStride, dstStride, false, false, false, 0, &status);
+  ASSERT_EQ(status, hexagon::userdma::DMASuccess);
+  hexDMA.wait(token);
+
+  for (uint32_t row = 0; row < height; ++row)
+    EXPECT_EQ(std::memcmp(src + (size_t)row * srcStride,
+                          dst + (size_t)row * dstStride, width),
+              0)
+        << "row " << row;
+  free(src);
+  free(dst);
+}
+
+TEST(UDMATest2D, SrcStrideOver16Bit) { check2DLargeField(64, 8, 70000, 64); }
+
+TEST(UDMATest2D, DstStrideOver16Bit) { check2DLargeField(64, 8, 64, 70000); }
+
+TEST(UDMATest2D, WidthOver16Bit) { check2DLargeField(70000, 4, 70000, 70000); }
+
+TEST(UDMATest2D, HeightOver16Bit) { check2DLargeField(4, 70000, 4, 4); }

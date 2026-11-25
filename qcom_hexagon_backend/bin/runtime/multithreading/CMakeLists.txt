@@ -1,3 +1,9 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+
 project(MLIRAsyncRuntime)
 if (NOT DEFINED ENV{HEXAGON_SDK_ROOT})
     message(FATAL_ERROR "HEXAGON_SDK_ROOT not set.  Make sure that the Hexagon SDK has been set up.")
@@ -5,23 +11,26 @@ endif()
 
 set(HEXAGON_MLIR_ROOT_LOCAL $ENV{HEXAGON_MLIR_ROOT})
 
-# Triton driver expects HEXAGON_TOOLS instead of HEXAGON_TOOLS_ROOT
 if (DEFINED ENV{HEXAGON_TOOLS})
-    set(HEXAGON_TOOLS_ROOT $ENV{HEXAGON_TOOLS}/..)
-elseif (DEFINED ENV{HEXAGON_TOOLS_ROOT})
-    set(HEXAGON_TOOLS_ROOT $ENV{HEXAGON_TOOLS_ROOT})
+    set(HEXAGON_TOOLS $ENV{HEXAGON_TOOLS})
 else()
     message(FATAL_ERROR "HEXAGON_TOOLS not set.")
 endif()
 
-message ("Using Hexagon_Tools: ${HEXAGON_TOOLS_ROOT}")
+# Accept either a toolchain root containing bin/ and target/, or an archive
+# directory containing Tools/. Normalize to the directory that directly
+# contains bin/, target/, and lib/.
+if (NOT EXISTS "${HEXAGON_TOOLS}/bin/hexagon-clang++" AND
+    EXISTS "${HEXAGON_TOOLS}/Tools/bin/hexagon-clang++")
+    set(HEXAGON_TOOLS "${HEXAGON_TOOLS}/Tools")
+endif()
 
-set(HEXAGON_TOOLCHAIN ${HEXAGON_TOOLS_ROOT})
+message ("Using Hexagon_Tools: ${HEXAGON_TOOLS}")
 set(Q6_VERSION $ENV{HEXAGON_ARCH_VERSION})
 
 # Set the compilers to hexagon-clang and hexagon-clang++
-set(CMAKE_C_COMPILER ${HEXAGON_TOOLCHAIN}/Tools/bin/hexagon-clang${HEXAGON_TOOLCHAIN_SUFFIX})
-set(CMAKE_CXX_COMPILER ${HEXAGON_TOOLCHAIN}/Tools/bin/hexagon-clang++${HEXAGON_TOOLCHAIN_SUFFIX})
+set(CMAKE_C_COMPILER ${HEXAGON_TOOLS}/bin/hexagon-clang${HEXAGON_TOOLCHAIN_SUFFIX})
+set(CMAKE_CXX_COMPILER ${HEXAGON_TOOLS}/bin/hexagon-clang++${HEXAGON_TOOLCHAIN_SUFFIX})
 
 message ("MULTITHREADING: cmake cxx compiler : ${CMAKE_CXX_COMPILER}")
 
@@ -47,7 +56,7 @@ include_directories(
     ${HEXAGON_SDK_ROOT}/incs/stddef
     ${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/posix
     ${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/qurt
-    ${HEXAGON_TOOLCHAIN}/Tools/target/hexagon/include/c++/v1/__bit
+    ${HEXAGON_TOOLS}/target/hexagon/include/c++/v1/__bit
 )
 
 # Make a directory for fake includes to avoid issues with missing system headers

@@ -1,4 +1,13 @@
-// RUN: linalg-hexagon-opt %s -linalg-to-llvm="enable-multi-threading=true"  | \
+//===- 2d_elemwise.mlir ---------------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
+// RUN: linalg-hexagon-opt %s -linalg-to-llvm="enable-multi-threading=true num-threads=8"  | \
 // RUN: linalg-hexagon-translate -emit=llvmir  | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
@@ -25,7 +34,7 @@ func.func @kernel(%x: memref<1024x256xf32>, %y: memref<1024x256xf32>, %z: memref
  }
 }
 
-// CHECK:   %{{.*}} = tail call ptr @mlirAsyncRuntimeCreateGroup
+// CHECK:   %{{.*}} = tail call ptr @mlirAsyncRuntimeCreateGroup(i64 8)
 // CHECK:   %{{.*}} = tail call ptr @mlirAsyncRuntimeCreateToken
 // CHECK:   store ptr @async_execute_fn.resume, ptr %{{.*}}
 // CHECK:   store ptr @async_execute_fn.destroy, ptr %{{.*}}

@@ -17,6 +17,7 @@
 #include "hexagon/Conversion/LinalgToLLVM/Common.h"
 #include "hexagon/Conversion/LinalgToLLVM/LinalgToLLVM.h"
 #include "hexagon/Conversion/LinalgToLLVM/Passes.h"
+#include "hexagon/Dialect/Composite/IR/CompositeDialect.h"
 #include "hexagon/Dialect/Crouton/IR/CroutonDialect.h"
 #include "hexagon/Dialect/HexKL/IR/HexKLDialect.h"
 #include "hexagon/Dialect/HexagonMem/IR/HexagonMemDialect.h"
@@ -26,6 +27,7 @@
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/Passes.h"
+#include "mlir/Conversion/PtrToLLVM/PtrToLLVM.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
@@ -43,11 +45,15 @@
 #include "mlir/Dialect/Quant/IR/Quant.h"
 #include "mlir/Dialect/Quant/Transforms/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Shard/IR/ShardDialect.h"
+#include "mlir/Dialect/Shard/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/TargetParser/Triple.h"
+
+#include "hexagon/Conversion/ShardToLLVM/Passes.h"
 
 #define DEBUG_TYPE "linalg-to-llvm"
 
@@ -75,7 +81,9 @@ public:
                     vector::VectorDialect, memref::MemRefDialect,
                     LLVM::LLVMDialect, crouton::CroutonDialect, ttx::TTXDialect,
                     tptr::HexagonTPtrDialect, hexagonmem::HexagonMemDialect,
-                    hexkl::HexKLDialect, quant::QuantDialect>();
+                    hexkl::HexKLDialect,
+                    quant::QuantDialect, shard::ShardDialect, ptr::PtrDialect,
+                    composite::CompositeDialect>();
   }
 
   void runOnOperation() override {
@@ -100,12 +108,21 @@ public:
       passOption.upperFrontier = extendPackUpperFrontier;
       passOption.lowerFrontier = extendPackLowerFrontier;
       passOption.parallelsOnly = extendPackParallelsOnly;
+      passOption.enablePaddedPackPropagation =
+          extendPackEnablePaddedPackPropagation;
       return passOption;
     };
 
     auto setVTCMTiling = [&](auto passOption) {
       passOption.tileSizes = tileSizes;
-      passOption.vtcmBudget = scratch > 0 ? scratch : 0;
+      // When double buffering is enabled, the buffer count doubles (ping+pong
+      // for each input/output), so halve the VTCM budget so tiles still fit.
+      int64_t budget = scratch > 0 ? scratch : 0;
+      if (enableDoubleBuffering) {
+        int64_t fullBudget = budget > 0 ? budget : (int64_t)vtcmSizeInBytes;
+        budget = fullBudget / 2;
+      }
+      passOption.vtcmBudget = budget;
       return passOption;
     };
 
@@ -150,6 +167,11 @@ public:
       return passOption;
     };
 
+    auto setLLVMAlign = [&](auto passOption) {
+      passOption.setMemrefAllocAlignment = setMemrefAllocAlignment;
+      return passOption;
+    };
+
     // Set ConvTiling flags
     auto setConvTiling = [&](auto passOption) {
       passOption.convTileSizes = convTileSizes;
@@ -157,7 +179,16 @@ public:
     };
 
     auto setHexKLMode = [&](auto passOption) {
-      passOption.mode = hexKLMode;
+      // MatmulToHexKL only accepts "micro"/"macro"; the micro-daemon path
+      // reuses the "micro" conversion (same hexkl.matmul op) and differs only
+      // in the later decompose step.
+      passOption.mode =
+          (hexKLMode == "micro-daemon") ? std::string("micro") : hexKLMode;
+      return passOption;
+    };
+
+    auto setEnableCollapseAddressSpace = [&](auto passOption) {
+      passOption.enableCollapseAddressSpace = enableCollapseAddressSpace;
       return passOption;
     };
 
@@ -200,26 +231,28 @@ public:
 
     pm.addNestedPass<func::FuncOp>(createLowerTTXPass());
     pm.addPass(createLowerLibdevicePass());
+    pm.addPass(createLowerTritonPrintPass(
+        setDeviceType(hexagon::LowerTritonPrintOptions{})));
     pm.addNestedPass<func::FuncOp>(createLowerTPtrPass());
     pm.addNestedPass<func::FuncOp>(createHexagonLowerTmTensorPass());
     pm.addNestedPass<func::FuncOp>(createReduceContractionRankPass());
     pm.addPass(createLinalgFoldUnitExtentDimsPass());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-
     if (puntBuffer)
       pm.addNestedPass<func::FuncOp>(createHexagonPuntBufferPass());
-    pm.addPass(createCanonicalizerPass()); // erase unstrung allocs
-
     if (enableConversionToFp16)
       pm.addNestedPass<func::FuncOp>(createConversionToFp16Pass());
-    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCanonicalizerPass()); // erase unstrung allocs etc.
     pm.addPass(createCSEPass());
 
-    pm.addNestedPass<func::FuncOp>(createOptimizeExtfTruncfOpPass());
+    if (enableConversionToFp16)
+      pm.addNestedPass<func::FuncOp>(createOptimizeExtfTruncfOpPass());
 
     // Optimize division to multiplication in linalg.generic
     pm.addNestedPass<func::FuncOp>(createDivToMulOptimizationPass());
+
+    // Identify and replace transcendental functions with their math form
+    // so that later pass can easily replace with custom library impl.
+    pm.addNestedPass<func::FuncOp>(createSpecializeTranscendentalsPass());
 
     // Quantization related passes in this block
     // Lower quant.qcast and quant.dcast ops to arith dialect
@@ -231,6 +264,11 @@ public:
     if (enableHexKL) {
       pm.addNestedPass<func::FuncOp>(
           mlir::hexagon::createFoldResourceTransposePass());
+      pm.addPass(createSpecializeLinalgMatmulPass());
+      if (relaxFP32MatmulToFP16) {
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hexagon::createRelaxFP32MatmulToFP16Pass());
+      }
       pm.addNestedPass<func::FuncOp>(
           mlir::hexagon::createFoldCastsIntoMatmulPass());
       pm.addNestedPass<func::FuncOp>(
@@ -277,10 +315,26 @@ public:
       pm.addNestedPass<func::FuncOp>(createFormSCFThreadsPass());
     }
 
-    if (fusion)
+    bool shouldRunFusion = fusion;
+
+    // Recognize composite patterns (e.g. softmax) before fusion as the
+    // individual linalg.generic ops are more easily matchable.
+    if (enableCompositeOps)
+      pm.addNestedPass<func::FuncOp>(createLinalgToCompositePass());
+
+    if (shouldRunFusion) {
       pm.addNestedPass<func::FuncOp>(
           createHexagonFusionPass(setFusion(HexagonFusionOptions{})));
+    }
+
+    // Outline every linalg.generic into its own noinline func.func
+    if (outlineLinalgGeneric)
+      pm.addPass(createOutlineLinalgGenericPass());
+
     pm.addPass(createEraseUnusedLinalgOperands());
+
+    if (enablePromoteTiledSCFLoopToVTCM)
+      pm.addNestedPass<func::FuncOp>(createPromoteTiledSCFLoopToVTCMPass());
 
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
@@ -297,7 +351,6 @@ public:
               .upperFrontier = false,
           })));
     }
-
     pm.addNestedPass<func::FuncOp>(createLowerPackPass());
     pm.addPass(createCSEPass());
 
@@ -306,6 +359,8 @@ public:
     // When scratch > 0, pass it as vtcmBudget so tile sizes respect the
     // per-instance budget rather than the hardcoded 2 MB default.
     if (enableVTCMTiling || scratch > 0) {
+      pm.addNestedPass<func::FuncOp>(
+          createVTCMMaskWideningPass(setVTCMTiling(VTCMMaskWideningOptions{})));
       pm.addNestedPass<func::FuncOp>(
           createVTCMTilingPass(setVTCMTiling(VTCMTilingOptions{})));
       pm.addPass(createCanonicalizerPass());
@@ -316,13 +371,53 @@ public:
       pm.addNestedPass<func::FuncOp>(createSplitReduceGenericPass());
     }
 
+    // Outer-loop unroll-and-jam, at linalg level, before vectorization. Jamming
+    // the row loop here duplicates the high-level reduction so that the
+    // downstream tiling/vectorization/butterfly passes each process the doubled
+    // body uniformly, producing independent reduction chains in the final IR.
+    if (enableUnrollAndJam) {
+      HexagonUnrollAndJamOptions ujOpts;
+      ujOpts.unrollJamFactor = unrollAndJamFactor;
+      pm.addNestedPass<func::FuncOp>(createHexagonUnrollAndJamPass(ujOpts));
+    }
+
     if (enableMultiThreading) {
+      FormVirtualThreadsOptions threadOptions;
+      threadOptions.preferredNumThreads = numThreads;
       pm.addNestedPass<func::FuncOp>(
-          createFormVirtualThreadsPass(FormVirtualThreadsOptions{}));
+          createFormVirtualThreadsPass(threadOptions));
+
+      if (enableCompositeOps) {
+        FormCompositeVirtualThreadsOptions compositeThreadOptions;
+        compositeThreadOptions.preferredNumThreads = numThreads;
+        pm.addNestedPass<func::FuncOp>(
+            createFormCompositeVirtualThreadsPass(compositeThreadOptions));
+      }
+    }
+
+    // After enableMultiThreading since the cost model of
+    // #ops in linalg.generic x tensor sizes is missleading
+    // for approximation. In approximation we will replace one
+    // op such as math.exp with multiple cheaper ops which will
+    // be considered heavier by the cost model
+    if (enableFastExpApprox) {
+      FastExpApproxOptions expOpts;
+      expOpts.degree = fastExpApproxDegree;
+      pm.addNestedPass<func::FuncOp>(createFastExpApproxPass(expOpts));
     }
 
     pm.addPass(removeMLProgramPass());
     pm.addPass(createLinalgFoldUnitExtentDimsPass());
+    if (enablePackedGenericVectorization) {
+      // General packed-layout vectorization for linalg.generic ops.
+      HexagonVectorizePackedGenericOptions opts;
+      opts.enablePackedGenericLoopSplitting = enablePackedGenericLoopSplitting;
+      opts.enablePackedGenericEagerVectorization =
+          enablePackedGenericEagerVectorization;
+      pm.addNestedPass<func::FuncOp>(
+          createHexagonVectorizePackedGenericPass(opts));
+    }
+
     if (enableVectorization) {
       pm.addPass(
           createHexagonTilingPass(setsplitTilingRange(setuseInterchangeVector(
@@ -350,11 +445,20 @@ public:
     // opportunities
     pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
 
+    // Replace per-tile scalar accumulator with a vector accumulator so that
+    // horizontal reductions (one per tile) become cheap elementwise ops with
+    // a single final reduction after the inner loop.
+    if (enableVectorAccumulatorForReduction)
+      pm.addNestedPass<func::FuncOp>(createVectorAccumulatorForReductionPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+
     // ===== STEP 2: VECTORIZATION =====
     // Vectorizer now sees cleaner IR with hoisted scalars
     if (enableVectorization) {
       pm.addPass(createHexagonVectorizationPass());
     }
+
     pm.addPass(createRewriteUBPoisonToZeroPass());
     pm.addPass(createHexagonVectorLoweringPass());
     pm.addPass(createCanonicalizerPass());
@@ -376,29 +480,63 @@ public:
       mlir::bufferization::OneShotBufferizePassOptions passOpts;
       passOpts.bufferizeFunctionBoundaries = true;
       passOpts.allowReturnAllocsFromLoops = true;
+      passOpts.bufferAlignment = nativeVectorWidthInBytes;
+      // Give every ranked tensor at a func.func boundary a static identity
+      // layout instead of the default fully dynamic strided layout, so callers
+      // and callees agree on dense row-major, zero-offset buffers.
+      passOpts.functionBoundaryTypeConversion =
+          mlir::bufferization::LayoutMapOption::IdentityLayoutMap;
       pm.addPass(bufferization::createOneShotBufferizePass(passOpts));
       pm.addPass(createCSEPass());
       pm.addPass(createCanonicalizerPass());
 
       if (enableDoubleBuffering) {
+        // Run CopyCanonicalization before DB-S1 so the spurious TCM→TCM dups
+        // and DDR-routed coercions OneShotBufferize introduces are gone.
+        pm.addNestedPass<func::FuncOp>(createCopyCanonicalizationPass());
+        pm.addPass(createCanonicalizerPass());
         pm.addNestedPass<func::FuncOp>(
             createHexagonDoubleBufferGenericS1Pass());
       }
 
       pm.addNestedPass<func::FuncOp>(
+          createHexagonMaterializeStridedLoadsPass());
+
+      pm.addNestedPass<func::FuncOp>(
           bufferization::createBufferLoopHoistingPass());
+
+      pm.addNestedPass<func::FuncOp>(
+          createHexagonHoistLoopInvariantAllocPass());
 
       pm.addNestedPass<func::FuncOp>(createCopyCanonicalizationPass());
       pm.addPass(createCanonicalizerPass());
 
-      bufferization::buildBufferDeallocationPipeline(
-          pm, bufferization::BufferDeallocationPipelineOptions{});
+      // The standard buffer deallocation pipeline must still run here when
+      // the standalone last-use strategy is disabled. The standalone strategy
+      // runs later, after VTCM allocations and DMA copies have been converted
+      // to their final dialects.
+      if (!deallocAfterLastUse)
+        bufferization::buildBufferDeallocationPipeline(
+            pm, bufferization::BufferDeallocationPipelineOptions{});
+
+      // GuardedOptimizeAllocationLiveness tightens the deallocation placement
+      // produced by buildBufferDeallocationPipeline. It is meaningless (and can
+      // move our deallocs) when HexagonDeallocAfterLastUse owns placement, so
+      // skip it on that path.
+      if (!deallocAfterLastUse)
+        pm.addNestedPass<func::FuncOp>(
+            createGuardedOptimizeAllocationLivenessPass());
 
       pm.addPass(createCSEPass());
       if (enableDoubleBuffering) {
         pm.addNestedPass<func::FuncOp>(
             createHexagonDoubleBufferGenericS2Pass());
       }
+
+      // Run butterfly before loop unroll so each scalar still has a single
+      // broadcast user; after unroll the fan-out breaks the single-use chain.
+      if (enableBroadcastedReductionToButterfly)
+        pm.addPass(createBroadcastedReductionToButterflyPass());
 
       // SCF Loop Unrolling of innermost loop after vectorization.
       if (enableSCFLoopUnroll) {
@@ -409,41 +547,73 @@ public:
       pm.addPass(createConvertBufferizationToMemRefPass());
     }
 
+    // Lower composite ops (now in memref form) to vectorized loops.
+    if (enableCompositeOps)
+      pm.addNestedPass<func::FuncOp>(createLowerCompositePass());
+
     if (enableConvertToHexagonmem)
       pm.addNestedPass<func::FuncOp>(createConvertToHexagonmemPass());
 
-    // External VTCM scratch mode: inject scratch arg and replace VTCM allocs
-    // with views into the per-instance scratch buffer (hexagon.scratch).
+    // External VTCM scratch mode: inject the `{hexagon.scratch}` arg and
+    // replace VTCM allocs with views into the per-instance scratch buffer.
     if (scratch > 0) {
       InsertScratchArgOptions scratchOpts;
       scratchOpts.scratch = scratch;
       pm.addNestedPass<func::FuncOp>(createInsertScratchArgPass(scratchOpts));
-      pm.addNestedPass<func::FuncOp>(createMemoryOffsetsPass());
     }
 
     if (enableHexKL) {
       if (hexKLMode == "macro") {
         // Lower to HexKL macro API
         pm.addNestedPass<func::FuncOp>(createLowerHexKLMatmulToMacroPass());
+      } else if (hexKLMode == "micro-daemon") {
+        // Dedicated-HMX-thread (daemon) model.  Inject the thread-id, VTCM-base
+        // and queue args (tail order: thread_id, vtcm_base, queue), then
+        // decompose hexkl.matmul into worker layout ops + micro-daemon
+        // dispatch/wait instead of the inline accumulator loop.
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hexagon::createInjectHMXThreadIdArgPass());
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hexagon::createInjectHMXVtcmBaseArgPass());
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hexagon::createInjectHMXQueueArgPass());
+        pm.addNestedPass<func::FuncOp>(
+            mlir::hexagon::createDecomposeHexKLMatmulToDaemonPass());
       } else {
-        // Decompose hexkl.matmul to micro ops
+        // Decompose hexkl.matmul to micro ops (inline accumulator path)
         pm.addNestedPass<func::FuncOp>(createDecomposeHexKLMatmulPass());
       }
+    }
+
+    if (scratch > 0) {
+      pm.addNestedPass<func::FuncOp>(createMemoryOffsetsPass());
     }
 
     // Lower linalg ops with library_call attribute set to custom fns.
     pm.addPass(createHexagonReplaceWithLibraryCallsPass());
     if (enableHexagonmemCopyToDMA)
       pm.addNestedPass<func::FuncOp>(createHexmemCpyToDMAPass());
+
+    // Run last-use placement after ConvertToHexagonmem and DMA insertion so
+    // the pass sees hexagonmem.alloc/dealloc and memref.dma_start/wait
+    // directly. It then handles VTCM buffers below the DDR threshold, moves
+    // existing dialect deallocs, and keeps DMA operands live through wait.
+    if (deallocAfterLastUse)
+      pm.addPass(createHexagonDeallocAfterLastUsePass(deallocChunkBytes));
+
+    pm.addNestedPass<func::FuncOp>(createStaticAllocToAllocaPass());
     pm.addPass(createCSEPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createConvertLinalgToLoopsPass());
+    pm.addNestedPass<func::FuncOp>(createFlattenZeroLoopLinalgPass());
 
     pm.addNestedPass<func::FuncOp>(createFormAsyncThreadsPass());
     pm.addPass(createAsyncFuncToAsyncRuntimePass());
     pm.addPass(createAsyncToAsyncRuntimePass());
 
     pm.addNestedPass<func::FuncOp>(createConvertVectorToSCFPass());
+    // Hoist stack allocations introduced by ConvertVectorToSCF only.
+    pm.addNestedPass<func::FuncOp>(createHexagonHoistLoopInvariantAllocaPass());
 
     if (enableLWP)
       pm.addNestedPass<func::FuncOp>(
@@ -459,8 +629,18 @@ public:
     if (expandBoolVec)
       pm.addNestedPass<func::FuncOp>(createExpandBoolVecPass());
 
-    pm.addPass(createFastInversePass());
+    if (enableFastInverse)
+      pm.addPass(createFastInversePass());
     pm.addPass(createConvertVectorToLLVMPass());
+    pm.addPass(createLegalizeFP8CastsToLLVMCallPass());
+
+    if (specializeKernelToArgAlignment)
+      pm.addPass(createLLVMAlignmentPropagationPass(
+          setLLVMAlign(mlir::hexagon::LLVMAlignmentPropagationOptions{})));
+
+    if (enableSetAliasScopes)
+      pm.addNestedPass<func::FuncOp>(createSetAliasScopesPass());
+
     pm.addPass(createConvertIndexToLLVMPass(
         setIndexBitwidth(ConvertIndexToLLVMPassOptions{})));
 
@@ -472,15 +652,19 @@ public:
         setDeviceType(hexagonmem::HexagonMemToLLVMOptions{})));
     pm.addPass(hexkl::createHexKLToLLVMPass());
 
-    if (enableCollapseAddressSpace) {
-      pm.addPass(createCollapseAddressSpacePass());
-      pm.addPass(createReconcileUnrealizedCastsPass());
-    }
+    pm.addPass(hexagon::createFinalizeMemRefAndCorePtrToLLVMConversionPass(
+        setEnableCollapseAddressSpace(
+            hexagon::FinalizeMemRefAndCorePtrToLLVMConversionOptions{})));
 
-    pm.addPass(createFinalizeMemRefToLLVMConversionPass());
+    if (enableCollapseAddressSpace)
+      pm.addPass(createReconcileUnrealizedCastsPass());
+
     pm.addPass(createArithToLLVMConversionPass());
+    pm.addPass(createLegalizeLateFP8CastsToLLVMCallPass());
+
     pm.addPass(createConvertControlFlowToLLVMPass());
 
+    pm.addPass(createUBToLLVMConversionPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
     pm.addPass(createReconcileUnrealizedCastsPass());

@@ -54,18 +54,20 @@ def test_silu(num_elements, num_threads, dtype, enable_mt, enablelwp):
     x = torch.rand(num_elements, dtype=dtype)
     output = torch.empty_like(x, dtype=dtype)
 
-    true_if_single_threaded = num_threads == 1
     block_size = triton.next_power_of_2(num_elements // num_threads)
     grid = (num_threads,)
+
     silu_kernel[grid](
         x,
         output,
         BLOCK_SIZE=block_size,
         enableMultiThreading=enable_mt,
-        enableVTCMTiling=true_if_single_threaded,
-        enableConvertToHexagonmem=true_if_single_threaded,
-        enableHexagonmemCopyToDMA=true_if_single_threaded,
+        enableVTCMTiling=True,
+        enableConvertToHexagonmem=True,
+        enableHexagonmemCopyToDMA=True,
         enableLWP=enablelwp,
+        enableFastExpApprox=True,
+        fastExpApproxDegree=3 if dtype == torch.float16 else 5,
     )
 
     reference = torch.nn.functional.silu(x)

@@ -93,6 +93,12 @@ template <typename T, int N> class Tensor {
     switch (memType) {
     case MemType::HEAP:
       buf = (T *)memalign(alignment, size * sizeof(T));
+      if (!buf) {
+        FARF(ALWAYS,
+             "[alloc-check] FATAL: memalign(%zu, %llu bytes) returned NULL",
+             alignment, (unsigned long long)(size * sizeof(T)));
+        throw std::runtime_error("Failed to allocate memory.");
+      }
       alignedBuf = buf;
       break;
     case MemType::VTCM:
@@ -223,11 +229,43 @@ public:
     if (elems_read != elems) {
       // error handling
       if (feof(fp))
-        FARF(ALWAYS, "Error reading file %s: unexpected end of file\n",
+        FARF(ALWAYS,
+             "[tensor.h] Error reading file %s: unexpected end of file\n",
              path.c_str());
       else if (ferror(fp))
         FARF(ALWAYS, "[tensor.h] Could not read %d elems from file %s", elems,
              path.c_str());
+    }
+    fclose(fp);
+  }
+
+  // Read in bounded chunks to avoid oversized FastRPC transfers.
+  void load_from_file_chunked(std::string path) {
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp) {
+      FARF(ALWAYS, "[tensor.h] fopen(%s) failed", path.c_str());
+      throw std::runtime_error("Failed to open file.");
+    }
+    int64_t elems = getElementsCount();
+    // Keep each read below the RPC timeout and registration limits.
+    static const int64_t CHUNK_ELEMS =
+        (16LL * 1024 * 1024) / static_cast<int64_t>(sizeof(T));
+    T *ptr = memRefDesc.aligned;
+    int64_t remaining = elems;
+    while (remaining > 0) {
+      int64_t chunk = (remaining < CHUNK_ELEMS) ? remaining : CHUNK_ELEMS;
+      size_t n = fread(ptr, sizeof(T), static_cast<size_t>(chunk), fp);
+      if (static_cast<int64_t>(n) != chunk) {
+        if (feof(fp))
+          FARF(ALWAYS, "[tensor.h] fread %s: unexpected EOF after %lld elems",
+               path.c_str(), (long long)(elems - remaining + n));
+        else
+          FARF(ALWAYS, "[tensor.h] fread %s: error after %lld elems",
+               path.c_str(), (long long)(elems - remaining + n));
+        throw std::runtime_error("Error in reading file.");
+      }
+      ptr += chunk;
+      remaining -= chunk;
     }
     fclose(fp);
   }

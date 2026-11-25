@@ -7,12 +7,12 @@
 #
 # ===------------------------------------------------------------------------===
 
-import os
 import shutil
-from pathlib import Path
-from typing import Optional
 import time
+from pathlib import Path
+
 from torch import Tensor  # For type annotations
+from triton._C.libtriton import ir, qcom_hexagon_backend  # type: ignore
 from triton.backends.qcom_hexagon_backend.compiler import (
     HexagonOptions,
 )
@@ -20,109 +20,20 @@ from triton.backends.qcom_hexagon_backend.hexagon_executor import HexagonExecuto
 from triton.backends.qcom_hexagon_backend.hexagon_launcher_base import (
     HexagonLauncherBase,
     HexagonWrapperGenerator,
-    WrapperGeneratorStrings,
+    MLIRHexagonWrapperGenerator as TorchMlirHexagonWrapperGenerator,
+    MLIRWrapperGeneratorStrings as TorchMLIRWrapperGeneratorStrings,
     create_timestamped_folder,
 )
 from triton.backends.qcom_hexagon_backend.utils import (
     parse_return_types,
     profile_torch_mlir_inputs,
 )
-from triton._C.libtriton import qcom_hexagon_backend, ir  # type: ignore
 
 # This file is part of a small subset of python files that uses some type-annotations
 # and it passes type-verification with mypy (a type checker).
 # To typecheck this set of files, do:
 #   mypy compiler.py hexagon_executor.py hexagon_launcher_base.py torch_mlir_hexagon_launcher.py \
 #   triton_hexagon_launcher.py --follow-untyped-imports --check-untyped-defs
-
-
-class TorchMLIRWrapperGeneratorStrings(WrapperGeneratorStrings):
-    def __init__(self):
-        super().__init__()
-
-        self.torch_mlir_code_body = """
-int main() {{
-{tensor_definition_str}
-{result_struct_init}
-{read_from_file_calls}
-{benchmarking_and_reporting}
-{update_tensor}
-{write_to_file_calls}
-{lwp}
-return 0;
-}}
-"""
-
-
-class TorchMlirHexagonWrapperGenerator(HexagonWrapperGenerator):
-    def __init__(self, input_profs, iterations, func_name, output_profs, options: dict):
-        super().__init__(
-            input_profs,
-            iterations,
-            func_name,
-            output_profs,
-            TorchMLIRWrapperGeneratorStrings(),
-            options,
-        )
-
-    def generate_llvm_function_signature(self):
-        """Generate lowered LLVM function definition to be called from CPP launcher"""
-        # The first argument in the function signature is pointer to the return value struct
-        function_arg_string = "void *,"
-        function_arg_string += self.generate_llvm_function_signature_arg_string()
-        return self.common_strings.extern_llvm_func_defn.format(
-            kernel_name=self.func_name, function_arg_string=function_arg_string
-        )
-
-    def generate_llvm_function_call(self):
-        """Generates actual function call to lowered LLVM function call"""
-        # The function call contains the pointer to the Result as the first parameter
-        function_call_descriptor_string = "r,"
-        function_call_descriptor_string += self.generate_llvm_function_call_arg_string()
-        return self.common_strings.extern_llvm_func_call.format(
-            func_name=self.func_name, descriptor_string=function_call_descriptor_string
-        )
-
-    def generate_input_wrapper_struct_def(self):
-        """Generates template for input wrapper structs"""
-        return ""
-
-    def generate_input_wrapper_structs_init(self):
-        """Generates initializations for input wrapper structs"""
-        return ""
-
-    def generate_cpp_wrapper(self, file_name, exec_dir):
-        """
-        Generates skeleton cpp file which launches the kernel.
-        """
-        code_headers = self.common_strings.code_headers
-
-        code_define = self.common_strings.code_define.format(
-            llvm_func_sign=self.generate_llvm_function_signature(),
-            input_wrapper_struct_def="",
-            result_struct_def=self.generate_result_struct(),
-        )
-
-        code_body = self.common_strings.torch_mlir_code_body.format(
-            tensor_definition_str=self.generate_input_declarations(),
-            input_wrapper_structs_init="",
-            result_struct_init=self.generate_result_struct_init(),
-            read_from_file_calls=self.generate_tensor_read_from_file_calls(
-                file_name, exec_dir
-            ),
-            benchmarking_and_reporting=self.generate_benchmarking_and_reporting(
-                self.generate_llvm_function_call(), exec_dir
-            ),
-            write_to_file_calls=self.generate_tensor_write_to_file_calls(
-                file_name, exec_dir
-            ),
-            update_tensor=self.generate_update_tensor_calls(),
-            lwp=self.generate_lwp_call(),
-        )
-
-        return self.common_strings.code_string.format(
-            code_headers=code_headers, code_define=code_define, code_body=code_body
-        )
 
 
 class TorchMLIRHexagonLauncher(HexagonLauncherBase):
@@ -145,13 +56,13 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
     def compile_torch_mlir(
         self,
         hexec: HexagonExecutor,
-        local_dir: str,
+        local_dir: Path,
         mlir_bytecode_path: str,
         inputs: list[Tensor],
         func_name: str,
         options: dict,
         iterations: int = 1,
-    ) -> tuple[TorchMlirHexagonWrapperGenerator, list[str]]:
+    ) -> tuple[TorchMlirHexagonWrapperGenerator, list[Path]]:
         # Context is being initialized through triton source code - python/src/ir.cc
         # This creates a dependency on triton code and
         # will cause issue when we separate torch-mlir workflow from triton.
@@ -174,7 +85,7 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
         # We will populate this collection with the path of the generated shared libraries
         # (there will be only 1 .so if options["lowerConstantsInSeparateSharedObjects"] is False,
         # and multiple ones otherwise)
-        paths_to_shared_libs_generated: list[str] = []
+        paths_to_shared_libs_generated: list[Path] = []
         # Every shared object we will build has no dependencies (hence the default to []) except for the principal module
         lib_dependencies_paths = []
 
@@ -204,11 +115,16 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
                 if (i == 0)
                 else func_name_with_ciface + "-consts-" + str(i)
             )
-            obj_src_path = os.path.join(local_dir, filename_obj + ".o")
-            Path(obj_src_path).write_bytes(kernel_obj_as_bytes)
+            obj_src_path = local_dir / f"{filename_obj}.o"
+            obj_src_path.write_bytes(kernel_obj_as_bytes)
             print(f"==> kernel obj saved in: {obj_src_path}")
 
             cpp_wrapper_path = None
+            # MLIR entry function @main exports a DSP symbol named `main`, which
+            # collides with the C++ wrapper's `int main()` during the .so link.
+            if i == 0 and func_name == "main":
+                self.rename_kernel_main_symbol(obj_src_path, hexec)
+
             # 2 - If it's the principal module only, deal with the wrapper code that we need to generate and dump
             if i == 0:
                 # Creating the wrapper generator for the principal module
@@ -261,7 +177,7 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
         mlir_bytecode_path: str,
         inputs: list[Tensor],
         func_name: str,
-        base_dir_for_artifacts: Optional[str] = None,
+        base_dir_for_artifacts: str | None = None,
         iterations: int = 1,
         options: dict = None,
         enable_etm=False,
@@ -270,9 +186,8 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
         if options is None:
             options = HexagonOptions().__dict__
 
-        local_dir_path, kernel_run_id = create_timestamped_folder(
-            func_name, base_dir_for_artifacts
-        )
+        local_dir_path = create_timestamped_folder(func_name, base_dir_for_artifacts)
+        kernel_run_id = local_dir_path.name
 
         # Pass lwp related info to HexagonExecutor() for creating shared obj and pulling lwp.json file if enabled.
         hexec = HexagonExecutor(
@@ -283,8 +198,8 @@ class TorchMLIRHexagonLauncher(HexagonLauncherBase):
             cleanup_device_post_exec=cleanup_device_post_exec,
         )
 
-        filename = os.path.basename(mlir_bytecode_path)
-        destination_path = os.path.join(local_dir_path, filename)
+        filename = Path(mlir_bytecode_path).name
+        destination_path = local_dir_path / filename
         # Copy the initial MLIR code to the timestamped folder
         shutil.copy(mlir_bytecode_path, destination_path)
 

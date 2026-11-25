@@ -1,3 +1,9 @@
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause.
+# For more license information:
+#   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+#
+
 if (NOT DEFINED ENV{HEXAGON_SDK_ROOT})
     message(FATAL_ERROR "HEXAGON_SDK_ROOT not set.  Make sure that the Hexagon SDK has been set up.")
 endif()
@@ -18,32 +24,36 @@ message(STATUS "LLVM BIN DIR is ${LLVM_BIN_DIR}")
 # For now pick up relevant variables from the HexagonSDK
 ###############################################################################
 
+
 set(HEXAGON_SDK_ROOT $ENV{HEXAGON_SDK_ROOT})
 set(HEXKL_ROOT $ENV{HEXKL_ROOT})
 set(Q6_VERSION $ENV{HEXAGON_ARCH_VERSION})
-
 
 # Get the Binary extension of the Hexagon Toolchain
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL Windows)
     set(HEXAGON_TOOLCHAIN_SUFFIX .exe)
 endif()
 
-# Triton driver expects HEXAGON_TOOLS instead of HEXAGON_TOOLS_ROOT
 if (DEFINED ENV{HEXAGON_TOOLS})
-    set(HEXAGON_TOOLS_ROOT $ENV{HEXAGON_TOOLS}/..)
-elseif (DEFINED ENV{HEXAGON_TOOLS_ROOT})
-    set(HEXAGON_TOOLS_ROOT $ENV{HEXAGON_TOOLS_ROOT})
+    set(HEXAGON_TOOLS $ENV{HEXAGON_TOOLS})
 else()
     message(FATAL_ERROR "HEXAGON_TOOLS not set.")
 endif()
 
-message ("Using Hexagon_Tools: ${HEXAGON_TOOLS_ROOT}")
+# Accept either a toolchain root containing bin/ and target/, or an archive
+# directory containing Tools/. Normalize to the directory that directly
+# contains bin/, target/, and lib/.
+if (NOT EXISTS "${HEXAGON_TOOLS}/bin/hexagon-clang++" AND
+    EXISTS "${HEXAGON_TOOLS}/Tools/bin/hexagon-clang++")
+    set(HEXAGON_TOOLS "${HEXAGON_TOOLS}/Tools")
+endif()
 
-set(HEXAGON_TOOLCHAIN ${HEXAGON_TOOLS_ROOT})
+message ("Using Hexagon_Tools: ${HEXAGON_TOOLS}")
 
-set(HEXAGON_C_COMPILER ${HEXAGON_TOOLCHAIN}/Tools/bin/hexagon-clang${HEXAGON_TOOLCHAIN_SUFFIX})
-set(HEXAGON_CXX_COMPILER ${HEXAGON_TOOLCHAIN}/Tools/bin/hexagon-clang++${HEXAGON_TOOLCHAIN_SUFFIX})
-set(HEXAGON_AR ${HEXAGON_TOOLCHAIN}/Tools/bin/hexagon-ar${HEXAGON_TOOLCHAIN_SUFFIX})
+set(HEXAGON_C_COMPILER ${HEXAGON_TOOLS}/bin/hexagon-clang${HEXAGON_TOOLCHAIN_SUFFIX})
+set(HEXAGON_CXX_COMPILER ${HEXAGON_TOOLS}/bin/hexagon-clang++${HEXAGON_TOOLCHAIN_SUFFIX})
+set(HEXAGON_AR ${HEXAGON_TOOLS}/bin/hexagon-ar${HEXAGON_TOOLCHAIN_SUFFIX})
+
 
 set(HEXAGON_INCLUDES
     -I${HEXAGON_SDK_ROOT}/incs
@@ -51,11 +61,12 @@ set(HEXAGON_INCLUDES
     -I${HEXAGON_SDK_ROOT}/libs/qhl_hvx/inc
     -I${HEXAGON_SDK_ROOT}/libs/qhl_hvx/inc/internal
     -I${HEXKL_ROOT}/include
-    -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/posix
-    -I${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/qurt
+    -isystem ${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/posix
+    -isystem ${HEXAGON_SDK_ROOT}/rtos/qurt/computev${Q6_VERSION}/include/qurt
     -I${CMAKE_CURRENT_SOURCE_DIR}/include
-    # -I${HEXAGON_TOOLCHAIN}/Tools/target/hexagon/include/c++/v1
+    # -I${HEXAGON_TOOLS}/target/hexagon/include/c++/v1
 )
+
 
 # Cap bitcode arch at v75: at -mv79, the QHL header (qhmath_hvx_vector.h) includes
 # xqf/ which uses IEEE FP intrinsics (vmpy.sf.sf.128B) that hit an upstream LLVM
@@ -65,13 +76,14 @@ if(Q6_VERSION GREATER 75)
 else()
   set(BITCODE_ARCH ${Q6_VERSION})
 endif()
-set(HEXAGON_FLAGS -O2 -Wall -mv${BITCODE_ARCH} -mhvx -mhvx-qfloat)
+set(HEXAGON_FLAGS -O2 -Wall -mv${BITCODE_ARCH} -mhvx -mhvx-qfloat -mhvx-ieee-fp)
 
 ###############################################################################
 # Build a library of runtime linked modules
 ###############################################################################
 set(HEXAGON_RUNTIME_SRC
     IntrinsicsHVX.c
+    IntrinsicsF8E4M3Fstar.c
     UserDMA/UserDMA.cc
     UserDMA/RuntimeDMA.cc
     src/VTCMPool.cpp
@@ -79,10 +91,24 @@ set(HEXAGON_RUNTIME_SRC
     src/HexagonBufferAlias.cpp
     src/HexagonAPI.cpp
     src/HexagonCAPI.cpp
-    src/HexKLAPI.cpp
+    src/PrintRuntimeDSP.cc
 )
 
 add_library(hexagon_runtime STATIC)
+
+if(HEXKL_ROOT)
+    message(STATUS "HEXKL_ROOT set; enabling HexKL runtime sources")
+    list(APPEND HEXAGON_INCLUDES -I${HEXKL_ROOT}/include)
+    list(APPEND HEXAGON_RUNTIME_SRC
+        HMXMicroDaemon/HMXMicroDaemon.cc
+        src/HexKLAPI.cpp
+    )
+    target_compile_definitions(hexagon_runtime INTERFACE
+        HEXAGON_MLIR_ENABLE_HEXKL_RUNTIME=1
+    )
+else()
+    message(STATUS "HEXKL_ROOT not set; excluding HexKL runtime sources")
+endif()
 
 foreach (i IN LISTS HEXAGON_RUNTIME_SRC)
     get_filename_component(src_name ${i} NAME_WE)
@@ -142,7 +168,7 @@ list(APPEND CMAKE_ARGS_LIST
   "-DHEXAGON_RUNTIME_SRC_STR=${HEXAGON_RUNTIME_SRC_STR}"
   "-DBASE_BINARY_DIR=${CMAKE_BINARY_DIR}"
   "-DHEXAGON_SDK_ROOT=${HEXAGON_SDK_ROOT}"
-  "-DHEXAGON_TOOLCHAIN=${HEXAGON_TOOLCHAIN}"
+  "-DHEXAGON_TOOLS=${HEXAGON_TOOLS}"
   "-DHEXAGON_C_COMPILER=${HEXAGON_C_COMPILER}"
   "-DHEXAGON_CXX_COMPILER=${HEXAGON_CXX_COMPILER}"
   "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"

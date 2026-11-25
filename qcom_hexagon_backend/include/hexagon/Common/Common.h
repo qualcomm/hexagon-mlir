@@ -21,6 +21,9 @@ namespace hexagon {
 inline constexpr unsigned DEFAULT_DDR_ADDRESS_SPACE = 0;
 inline constexpr unsigned VTCM_ADDRESS_SPACE = 1;
 
+/// VTCM / HMX crouton alignment boundary in bytes.
+inline constexpr uint64_t kLargeAlignment = 2048;
+
 inline const SmallVector<unsigned> INT8_CROUTON_SHAPE = {8, 8, 32};
 inline const SmallVector<unsigned> F16_CROUTON_SHAPE = {8, 2, 32, 2};
 

@@ -12,16 +12,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CollapseAddressSpace :
-    Pass<"collapse-address-space"> {
-  let summary = "Reduce all address spaces to DDR";
-  let description = [{
-    This is needed for those address spaces (namely TCM)
-    that did not get converted to hexagonmem allocs.
-  }];
-
-  let constructor = "hexagon::createCollapseAddressSpacePass()";
-}
 
 def CopyCanonicalization :
     Pass<"copy-canonicalization", "func::FuncOp"> {
@@ -32,6 +22,36 @@ def CopyCanonicalization :
   }];
   let constructor =
        "hexagon::createCopyCanonicalizationPass()";
+}
+
+def HexagonHoistLoopInvariantAlloc :
+    Pass<"hexagon-hoist-loop-invariant-alloc", "func::FuncOp"> {
+  let summary = "Hoist loop-invariant memref.alloc/alloca out of scf.for loops";
+  let description = [{
+    Hoists static-shape memref.alloc and memref.alloca ops out of an enclosing
+    scf.for when the allocation does not escape its parent block. The
+    allocation may sit directly in the for-body or inside an scf.if nested in
+    the for. Complements upstream bufferization::BufferLoopHoisting by handling
+    the if-nested case and stack allocations.
+  }];
+  let constructor = "hexagon::createHexagonHoistLoopInvariantAllocPass()";
+}
+
+def HexagonMaterializeStridedLoads :
+    Pass<"hexagon-materialize-strided-loads", "func::FuncOp"> {
+  let summary = "Materialize strided memref.reinterpret_cast feeding "
+                "vector.transfer_read/transfer_write into a contiguous buffer";
+  let description = [{
+    For a 1-D static memref.reinterpret_cast with stride > 1 that feeds a
+    vector.transfer_read and/or vector.transfer_write via a memref.subview,
+    allocates a contiguous HVX-aligned buffer and rewires the subviews against
+    it so the vector ops use unit-stride loads/stores instead of scalar
+    gathers/scatters. A read use gets a one-shot copy-in (gather) from the
+    strided source; a write use gets a one-shot drain copy-back (scatter) after
+    the writers; a read-modify-write use gets both. A pure-write use skips the
+    copy-in.
+  }];
+  let constructor = "hexagon::createHexagonMaterializeStridedLoadsPass()";
 }
 
 def ConvertLayout : Pass<"convert-layout", "func::FuncOp"> {
@@ -75,12 +95,51 @@ def ExpandBoolVec :
 def ExpandMathOps : Pass<"expand-math-ops", "func::FuncOp"> {
   let summary = "Expand complex math ops to simple math ops";
   let constructor = "hexagon::createExpandMathOpsPass()";
+  let options = [
+    Option<"expandUneOnVectors", "expand-une-on-vectors", "bool", "true",
+           "Expand arith.cmpf une on vectors to integer bit ops; "
+           "HVX vectors only support ordered float compares">,
+  ];
+}
+
+def FastExpApprox : Pass<"fast-exp-approx", "func::FuncOp"> {
+  let summary = "Replace math.exp / math.exp2 with vectorizable polynomial approximation";
+  let description = [{
+    Rewrites math.exp/math.exp2 on f32 to exp(x) = 2^k * 2^f via a minimax
+    Horner polynomial for 2^f and an IEEE-754 bit-trick for 2^k. No clamps are
+    inserted; callers must ensure inputs are in roughly [-87, 88].
+
+    The degree option selects the polynomial used for 2^f on [-1, 0].
+    Higher degrees reduce approximation error at the cost of more arith ops:
+      degree 1: max_err ~3e-2   degree 4: max_err ~2e-6
+      degree 2: max_err ~2e-3   degree 5: max_err ~1e-7
+      degree 3: max_err ~6e-5   degree 6+: below f32 precision (~1e-7)
+    Default is 3, matching the existing Qualcomm HVX softmax reference.
+  }];
+  let constructor = "hexagon::createFastExpApproxPass()";
+  let options = [
+    Option<"degree", "degree", "unsigned", "3",
+           "Degree of the 2^f minimax polynomial (1..10)">,
+  ];
 }
 
 def FastInverse :
     Pass<"fast-inverse", "mlir::ModuleOp"> {
   let summary = "Pass to convert element-wise division to multiplication by reciprocal.";
   let constructor = "hexagon::createFastInversePass()";
+}
+
+def BroadcastedReductionToButterfly :
+    Pass<"broadcasted-reduction-to-butterfly", "mlir::ModuleOp"> {
+  let summary = "Replace vector.reduction + (scalar arith chain) + vector.broadcast with a butterfly reduction.";
+  let description = [{
+    Rewrites `vector.reduction` → (optional single-use scalar arith/math chain)
+    → `vector.broadcast` into an in-place butterfly: log2(N) shuffle+combine
+    steps leave every lane holding the reduced value, and the scalar chain is
+    vectorized lane-wise at native HVX width.
+  }];
+  let constructor = "hexagon::createBroadcastedReductionToButterflyPass()";
+  let dependentDialects = ["arith::ArithDialect", "vector::VectorDialect"];
 }
 
 def HexagonAddFastMath :
@@ -165,6 +224,14 @@ def HexagonLowerTmTensor :
   let constructor = "hexagon::createHexagonLowerTmTensorPass()";
 }
 
+def GuardedOptimizeAllocationLiveness :
+    Pass<"guarded-optimize-allocation-liveness", "func::FuncOp"> {
+  let summary = "OptimizeAllocationLivenessPass, skipped on functions "
+                "tagged hexagon.uses_libdevice";
+  let constructor =
+      "hexagon::createGuardedOptimizeAllocationLivenessPass()";
+}
+
 def HexagonReplaceWithLibraryCalls :
     Pass<"hexagon-replace-with-library-calls", "mlir::ModuleOp"> {
   let summary = "Replaces linalg ops with library_call attr set with "
@@ -206,10 +273,147 @@ def LowerLibdevice :
 	let constructor = "hexagon::createLowerLibdevicePass()";
 }
 
+def LowerTritonPrint :
+    Pass<"lower-triton-print", "mlir::ModuleOp"> {
+    let summary = "Lower tt.print (tl.device_print) to runtime print calls";
+    let description = [{
+      Lowers `triton::PrintOp` to calls into the hexagon runtime print shims
+      (`hexagon_print_scalar_*` / `hexagon_print_tensor_*`). Tensor operands are
+      bufferized and passed as a raw data pointer plus element count; the shim
+      handles element iteration and formatting. The emitted symbol carries a
+      `_dsp` suffix. The `hex` and `isSigned` print attributes are forwarded to
+      the shim.
+    }];
+	let constructor = "hexagon::createLowerTritonPrintPass()";
+    let options = [
+      Option<"device_type", "device-type", "std::string",
+             /*default=*/"\"hexagon\"",
+             "Target device type for symbol selection (unused, reserved)">
+    ];
+}
+
+def LegalizeFP8CastsToLLVMCall :
+  Pass<"legalize-fp8-casts-to-llvm-call", "mlir::ModuleOp"> {
+  let summary = "Lower fp8<->f16 cast fragments to explicit LLVM runtime calls";
+  let description = [{
+    Rewrites fp8<->f16 unrealized-cast lowering fragments into explicit
+    LLVM runtime calls so the IR remains legal during LLVM lowering.
+
+    This pass matches the pre-arith-to-llvm vector patterns on 128 lanes.
+    For example, before:
+    ```mlir
+    %fp8 = builtin.unrealized_conversion_cast %in
+      : vector<128xi8> to vector<128xf8E4M3FNUZ>
+    %f16 = arith.extf %fp8 : vector<128xf8E4M3FNUZ> to vector<128xf16>
+    ```
+    after:
+    ```mlir
+    %f16 = llvm.call @convert_fp8_fp16_fn(%in)
+      : (vector<128xi8>) -> vector<128xf16>
+    ```
+
+    And before:
+    ```mlir
+    %fp8 = arith.truncf %in : vector<128xf16> to vector<128xf8E4M3FNUZ>
+    %i8 = builtin.unrealized_conversion_cast %fp8
+      : vector<128xf8E4M3FNUZ> to vector<128xi8>
+    ```
+    after:
+    ```mlir
+    %i8 = llvm.call @convert_fp16_fp8_fn(%in)
+      : (vector<128xf16>) -> vector<128xi8>
+    ```
+
+    The pass inserts the needed LLVM function declarations
+    (`convert_fp8_fp16_fn{,uz}` and `convert_fp16_fp8_fn{,uz}`) in-module.
+  }];
+  let constructor = "hexagon::createLegalizeFP8CastsToLLVMCallPass()";
+}
+
+def LegalizeLateFP8CastsToLLVMCall :
+  Pass<"legalize-late-fp8-casts-to-llvm-call", "mlir::ModuleOp"> {
+  let summary = "Lower late fp8 cast fragments after arith-to-llvm";
+  let description = [{
+    Rewrites fp8 cast fragments that survive until after arith-to-llvm into
+    explicit LLVM runtime calls.
+
+    This pass handles both vector<128x...> and scalar forms.
+    For example, before (vector path):
+    ```mlir
+    %fp8 = builtin.unrealized_conversion_cast %in
+      : vector<128xi8> to vector<128xf8E4M3FNUZ>
+    %f16 = arith.extf %fp8 : vector<128xf8E4M3FNUZ> to vector<128xf16>
+    ```
+    after:
+    ```mlir
+    %in_i32 = llvm.bitcast %in : vector<128xi8> to vector<32xi32>
+    %out_i32 = llvm.call @convert_fp8_fp16_fnuz(%in_i32)
+      : (vector<32xi32>) -> vector<64xi32>
+    %f16 = llvm.bitcast %out_i32 : vector<64xi32> to vector<128xf16>
+    ```
+
+    And before (vector path):
+    ```mlir
+    %fp8 = arith.truncf %in : vector<128xf16> to vector<128xf8E4M3FNUZ>
+    %i8 = builtin.unrealized_conversion_cast %fp8
+      : vector<128xf8E4M3FNUZ> to vector<128xi8>
+    ```
+    after:
+    ```mlir
+    %in_i32 = llvm.bitcast %in : vector<128xf16> to vector<64xi32>
+    %out_i32 = llvm.call @convert_fp16_fp8_fnuz(%in_i32)
+      : (vector<64xi32>) -> vector<32xi32>
+    %i8 = llvm.bitcast %out_i32 : vector<32xi32> to vector<128xi8>
+    ```
+
+    For f32 inputs it first normalizes to f16, and for scalar conversions it
+    uses splat/extract lowering around the same vector runtime ABI.
+    Supported fp8 element types are `f8E4M3FN` and `f8E4M3FNUZ`.
+  }];
+  let constructor = "hexagon::createLegalizeLateFP8CastsToLLVMCallPass()";
+}
+
 def LowerTPtr :
     InterfacePass<"lower-tptr", "mlir::FunctionOpInterface"> {
   let summary = "Lower tptr ops to mlir dialect ops";
   let constructor = "hexagon::createLowerTPtrPass()";
+}
+
+def FinalizeMemRefAndCorePtrToLLVMConversion :
+    Pass<"finalize-memref-and-core-ptr-to-llvm-conversion",
+         "mlir::ModuleOp"> {
+  let summary = "Convert ptr and memref dialect ops to LLVM using a custom "
+                "LLVMTypeConverter";
+    let description = [{
+      This pass is the final lowering step for pointer and memory operations. It
+      converts all remaining `ptr` dialect ops (ptr.to_ptr, ptr.from_ptr,
+      ptr.ptr_add, ptr.type_offset) and `memref` dialect ops (alloc, dealloc,
+      load, store, global, etc.) into their LLVM dialect equivalents. It also
+      handles memrefs whose element type is a ptr (e.g. memref<4x!ptr.ptr<...>>),
+      which require both dialects to be lowered in the same conversion.
+
+      When `enable-collapse-address-space` is true (the default), the pass
+      additionally rewrites all non-zero LLVM address spaces (e.g. !llvm.ptr<1>
+      for VTCM) down to address space 0, since the Hexagon LLVM backend does not
+      distinguish address spaces. This must happen in the same pass because
+      memref-to-LLVM conversion can emit ops like `llvm.call @free` whose operand
+      carries the source memref's address space, which would be illegal against
+      the space-0 declaration of @free if not immediately collapsed.
+
+      Replaces the previously separate LowerCorePtr, FinalizeMemRefToLLVM, and
+      CollapseAddressSpace passes that had fragile ordering dependencies.
+    }];
+  let constructor =
+      "mlir::hexagon::createFinalizeMemRefAndCorePtrToLLVMConversionPass()";
+
+  let dependentDialects = ["mlir::LLVM::LLVMDialect",
+                           "mlir::ptr::PtrDialect"];
+
+  let options = [
+    Option<"enableCollapseAddressSpace", "enable-collapse-address-space",
+           "bool", /*default=*/"true",
+           "replace llvm.ptr<1> with llvm.ptr after ptr/memref-to-llvm conversion">,
+  ];
 }
 
 def LowerTTX :
@@ -222,6 +426,17 @@ def MatmulToConv : Pass<"matmul-to-conv", "func::FuncOp"> {
   let summary = "Convert linalg.matmul to linalg.conv2d ops";
 
   let constructor = "hexagon::createMatmulToConvPass()";
+}
+
+def RelaxFP32MatmulToFP16 : Pass<"relax-fp32-matmul-to-fp16", "func::FuncOp"> {
+  let summary = "Relax fp32 matmul inputs to fp16 for HexKL lowering";
+  let description = [{
+    Rewrites fp32 linalg.matmul ops to use fp16 input tensors while preserving
+    fp32 accumulation and output. The pass also inserts fp32-to-fp16 casts on
+    the inputs before the matmul.
+  }];
+
+  let constructor = "hexagon::createRelaxFP32MatmulToFP16Pass()";
 }
 
 def MatmulToHexKL : InterfacePass<"matmul-to-hexkl", "mlir::FunctionOpInterface"> {
@@ -269,6 +484,33 @@ def DecomposeHexKLMatmul :
   let constructor = "hexagon::createDecomposeHexKLMatmulPass()";
 }
 
+def DecomposeHexKLMatmulToDaemon :
+    InterfacePass<"decompose-hexkl-matmul-to-daemon", "mlir::FunctionOpInterface"> {
+  let summary = "Decompose hexkl.matmul into worker layout ops + HMX micro-daemon "
+                "dispatch/wait for the dedicated-HMX-thread model";
+  let description = [{
+    Like DecomposeHexKLMatmul, but targets the mobile/DSP dedicated-HMX-thread
+    (daemon) model.  Instead of emitting the inline accumulator loop
+    (setup_acc_read / acc_clear / mm / acc_read) that every worker runs itself,
+    this pass keeps only the worker-side layout ops (copy_submatrix, rm_to_ah,
+    rm_to_wh, ah_to_rm, copy_f16_to_f32) and replaces the accumulator work with
+    hexkl.micro_hmx_dispatch (one K-block matmul job) plus a per-output-tile
+    hexkl.micro_hmx_wait_idle.  The accumulator-touching ops run on the daemon
+    thread that owns HMX.
+
+    Requires the enclosing func.func to carry hmx.thread_id_arg,
+    hexkl_hmx.vtcm_base_arg and hmx.queue_arg (run InjectHMXThreadIdArgPass,
+    InjectHMXVtcmBaseArgPass and InjectHMXQueueArgPass first).  The VTCM base is
+    the un-sliced global base; this pass derives each worker's slice as
+    `threadId * vtcmPerInstanceBytes` and globalizes every tile offset.
+
+    Weight tiles use per-K-tile buffers so back-to-back dispatches in a single
+    output tile's K-loop do not race on a shared weight buffer while the daemon
+    is still reading an earlier job.
+  }];
+  let constructor = "hexagon::createDecomposeHexKLMatmulToDaemonPass()";
+}
+
 def ConvTiling : Pass<"conv-tiling", "func::FuncOp"> {
   let summary = "Tile linalg.conv2d ops";
   let description = [{
@@ -305,8 +547,10 @@ def InsertScratchArg : Pass<"insert-scratch-arg", "func::FuncOp"> {
     The static size enables MemoryOffsetsPass to validate at compile time that
     all VTCM allocs fit within the per-instance budget.
 
-    The wrapper allocates scratch * prod(grid) bytes total and passes each
-    instance a non-overlapping slice of size `scratch` bytes.
+    The wrapper allocates scratch * actual_threads bytes total and passes each
+    active thread a non-overlapping slice of size `scratch` bytes. With grid
+    oversubscription, a thread reuses its slice for multiple program IDs
+    sequentially.
 
     Idempotent: if a hexagon.scratch arg already exists, no arg is inserted.
     Skips functions that do not have the trailing 6 i32 program-info ABI pack.
@@ -322,30 +566,16 @@ def InsertScratchArg : Pass<"insert-scratch-arg", "func::FuncOp"> {
 def MemoryOffsets : Pass<"memory-offsets", "func::FuncOp"> {
   let summary = "Assigns offsets to VTCM buffers.";
   let description = [{
-    Replaces memref.alloc/hexagonmem.alloc operations in VTCM address space
-    (space 1) with memref.view ops into a single VTCM buffer, enabling memory
-    reuse through static offset assignment. Dealloc ops are removed only for
-    allocations that this pass replaces.
+    Replaces VTCM memref.alloc/hexagonmem.alloc ops with memref.view ops
+    into a single VTCM buffer. Allocs with non-overlapping lifetimes share
+    an offset.
 
-    Two modes of operation:
-    1. External VTCM mode: if a function argument is marked with the
-       "hexagon.scratch" attribute, that argument is used as the VTCM
-       buffer. The argument must be static-sized (memref<Nxi8, 1>); the
-       pass validates at compile time that all kernel allocations fit
-       within N bytes and fails if they do not.
-    2. Fallback mode: if no such argument is present, a single hexagonmem.alloc
-       sized to the exact required bytes is created at function entry, subject
-       to the configured bufferSize budget cap (default 1 MB).
+    If a function argument is tagged "hexagon.scratch" (must be statically
+    sized memref<Nxi8, 1>), that argument is the buffer and the pass errors
+    if allocs don't fit. Otherwise a hexagonmem.alloc sized to the packed
+    total is created at entry, capped by bufferSize.
 
-    In both modes, all eligible memref.alloc/hexagonmem.alloc ops in address
-    space 1 are replaced with memref.view ops at statically computed aligned
-    offsets.
-
-    Restrictions (see MemoryOffsetsPass.cpp for details):
-    - Only static, unconditional allocations are handled. Dynamic-sized allocs
-      and allocs inside loops are left untouched.
-    - All allocs are laid out simultaneously (no liveness analysis); allocs
-      with non-overlapping lifetimes do not share memory.
+    Run optimize-allocation-liveness before this pass.
   }];
   let options = [
     Option<"bufferSize", "buffer-size", "int64_t",
@@ -353,7 +583,7 @@ def MemoryOffsets : Pass<"memory-offsets", "func::FuncOp"> {
            "Fallback-mode VTCM budget cap in bytes">,
     Option<"alignment", "alignment", "int64_t",
            /*default=*/"2048",
-           "Byte alignment for buffer offsets in VTCM">,
+           "Byte alignment for the base VTCM buffer">,
   ];
   let constructor = "hexagon::createMemoryOffsetsPass()";
 }
@@ -390,6 +620,23 @@ def FoldCastsIntoMatmul : Pass<"fold-casts-into-matmul", "func::FuncOp"> {
                            "tensor::TensorDialect"];
 }
 
+def VectorAccumulatorForReduction
+    : Pass<"hexagon-vector-accumulator-reduction", "func::FuncOp"> {
+  let summary = "Replace per-tile scalar accumulator in tiled reductions with "
+                "a vector accumulator and a single final horizontal reduction";
+  let description = [{
+    After HexagonTilingPass, reduction linalg.generics are tiled into nested
+    scf.for loops where the inner body performs a horizontal reduction at each
+    tile step (e.g. 16 reductions for a 512-wide reduction with tile size 32).
+    This pass replaces the per-tile horizontal reduction with an elementwise
+    accumulation into a vector register, followed by a single horizontal
+    reduction after the inner loop, eliminating ~15x the serialising reductions.
+  }];
+  let constructor = "mlir::hexagon::createVectorAccumulatorForReductionPass()";
+  let dependentDialects = ["linalg::LinalgDialect", "scf::SCFDialect",
+                           "tensor::TensorDialect", "arith::ArithDialect"];
+}
+
 def HoistScalarOps : Pass<"hoist-scalar-ops-in-linalg-generic", "func::FuncOp"> {
   let summary = "Hoist scalar arith/math ops out of linalg.generic regions";
   let description = [{
@@ -400,6 +647,58 @@ def HoistScalarOps : Pass<"hoist-scalar-ops-in-linalg-generic", "func::FuncOp"> 
   }];
   let constructor = "mlir::hexagon::createHoistScalarOpsPass()";
 }
+
+def OutlineLinalgGeneric : Pass<"outline-linalg-generic", "mlir::ModuleOp"> {
+  let summary = "Outline every linalg.generic into its own noinline func.func";
+  let description = [{
+    Outlines every `linalg.generic` op into its own private `func.func` and
+    replaces the original op with a `func.call`. This helps reduce llvm obj
+    and so sizes.
+  }];
+  let constructor = "hexagon::createOutlineLinalgGenericPass()";
+  let dependentDialects = ["func::FuncDialect", "linalg::LinalgDialect",
+                           "LLVM::LLVMDialect"];
+}
+
+def HexagonDeallocAfterLastUse :
+  Pass<"hexagon-dealloc-after-last-use", "mlir::ModuleOp"> {
+  let summary = "Place memref and hexagonmem deallocs after the last use";
+  let description = [{
+    Standalone deallocation placer for buffers whose lifetime crosses outlined
+    function calls or uses VTCM/DMA-specific operations.
+
+    Static memref.alloc buffers at or above chunkBytes, VTCM memref.alloc
+    buffers, and static hexagonmem.alloc buffers are tracked. The pass
+    forward-traces every alias through view ops (memref.subview,
+    expand_shape, collapse_shape, cast, and reinterpret_cast) and
+    interprocedurally through calls that pass an argument straight to a return.
+    The last program point that touches any alias is located and the matching
+    memref.dealloc or hexagonmem.dealloc is inserted or moved immediately
+    after it.
+
+    A memref.dma_start source or destination remains live through the first
+    matching memref.dma_wait on the same tag. If no completion can be proven,
+    the pass leaves the existing lifetime unchanged.
+
+    Aggressive: when the buffer's fate past a call cannot be proven a
+    pass-through, it is assumed dead after that call. The only hard exclusion
+    is a buffer that escapes via the entry function's own return, which is
+    never deallocated.
+
+    Intended to run after ConvertToHexagonmem and DMA insertion when the
+    standard buffer-deallocation pipeline is disabled.
+  }];
+  let constructor = "hexagon::createHexagonDeallocAfterLastUsePass()";
+  let dependentDialects = ["func::FuncDialect", "memref::MemRefDialect",
+                            "hexagonmem::HexagonMemDialect"];
+  let options = [
+    Option<"chunkBytes", "chunk-bytes", "int64_t",
+           /*default=*/"0",
+           "Byte threshold at or above which non-VTCM memref.alloc roots are "
+           "tracked (0 = disabled); VTCM roots are always tracked.">
+  ];
+}
+
 
 def FoldMulFByZeroPass : Pass<"fold-mulf-by-zero"> {
   let summary = "Add pass to fold x * 0 => 0 when fast math is enabled.";
@@ -537,6 +836,40 @@ def SmallExponentToMultiply :
     ];
 }
 
+def StaticAllocToAlloca :
+    Pass<"static-alloc-to-alloca", "func::FuncOp"> {
+  let summary = "Replace small static memref.alloc ops with memref.alloca";
+  let description = [{
+    Converts static-shaped memref.alloc operations in address space 0 to
+    memref.alloca, erasing the corresponding memref.dealloc ops. Eliminates
+    heap allocation for small temporaries such as scalar reduction accumulators
+    and DMA wait handles.
+
+    Allocs are accepted greedily in ascending effective-size order (where
+    effective size accounts for alignment padding). The acceptance gate is a
+    liveness-aware peak check: after tentatively adding each candidate, the
+    peak simultaneous live bytes across all accepted allocs is computed using
+    MLIR liveness analysis. If the peak would exceed maxTotalAllocaSizeBytes
+    the candidate is rejected. All generated allocas are hoisted to the
+    function entry block regardless of where the original alloc appeared.
+
+    Using peak live bytes rather than a running sum means that non-overlapping
+    allocs (e.g. sequential DMA wait handles in a loop) do not consume budget
+    from each other, while simultaneously-live allocs (e.g. multiple index
+    compute buffers) are correctly counted together. This prevents stack
+    overflow on targets with a limited stack without requiring a separate
+    per-alloc size cap.
+  }];
+  let options = [
+    Option<"maxTotalAllocaSizeBytes", "max-total-alloca-size-bytes", "int64_t",
+           /*default=*/"2048",
+           "Peak simultaneous live alloca bytes allowed per function. Computed "
+           "via liveness analysis so non-overlapping allocs share budget. "
+           "Conservative fraction of the stack limit for different NSP.">
+  ];
+  let constructor = "hexagon::createStaticAllocToAllocaPass()";
+}
+
 def FoldPackUnpackConstants :
     Pass<"fold-pack-unpack-constants"> {
   let summary = "Fold pack/unpack/transpose/reshape/pad operations on constant tensors";
@@ -628,6 +961,147 @@ def SCFLoopUnroll : Pass<"scf-loop-unroll", "func::FuncOp"> {
            "Factor by which to unroll loops">
   ];
   let constructor = "hexagon::createSCFLoopUnrollPass()";
+}
+
+def HexagonUnrollAndJam : Pass<"hexagon-unroll-and-jam", "func::FuncOp"> {
+  let summary = "Unroll-and-jam outer reduction loops to expose ILP";
+  let description = [{
+    This pass unroll-and-jams the outermost qualifying scf.for loop in each
+    loop nest. Unlike scf-loop-unroll (which targets innermost loops and simply
+    clones the body), unroll-and-jam scales the outer loop step by the factor
+    and *interleaves* the factor copies of the body. When the body contains a
+    reduction, each unrolled iteration becomes an independent reduction chain,
+    so the in-order VLIW scheduler can overlap their latencies for more ILP.
+
+    The mechanical jam is delegated to upstream `mlir::loopUnrollJamByFactor`.
+    Because that utility synthesizes its scaled step and shifted induction
+    variable as `index`-typed constants, this pass first normalizes an
+    integer-typed loop induction variable to `index` (re-casting to the
+    original type inside the body), so triton-shared's i32 row loops can be
+    jammed without hitting a type mismatch.
+
+    Loops are selected by a single, self-contained heuristic
+    (`chooseUnrollJamFactor`): the loop must have no results/iter_args, a
+    constant trip count divisible by the factor and at least `min-trip-count`,
+    inner-loop bounds invariant in the outer loop, a body containing a
+    reduction, a body small enough that the jammed copies stay within
+    `max-body-ops`, and a reduction row length within `max-reduction-row-length`
+    (the win from jamming fades as the per-row elementwise stream grows).
+  }];
+  let options = [
+    Option<"unrollJamFactor", "unroll-jam-factor", "int64_t",
+           /*default=*/"2",
+           "Factor by which to unroll-and-jam qualifying loops">,
+    Option<"minTripCount", "min-trip-count", "int64_t",
+           /*default=*/"4",
+           "Minimum constant trip count for a loop to be jammed">,
+    Option<"maxBodyOps", "max-body-ops", "int64_t",
+           /*default=*/"512",
+           "Skip loops whose body op count times the factor exceeds this "
+           "(register-pressure guard)">,
+    Option<"maxReductionRowLength", "max-reduction-row-length", "int64_t",
+           /*default=*/"1024",
+           "Skip loops whose reduction row length exceeds this (past this the "
+           "elementwise stream dominates and jamming stops paying off)">
+  ];
+  let constructor = "hexagon::createHexagonUnrollAndJamPass()";
+}
+
+def LLVMAlignmentPropagation :
+    Pass<"llvm-alignment-propagation", "mlir::ModuleOp"> {
+  let summary = "Propagate alignment from memref operations through LLVM conversion chain";
+  let description = [{
+    Propagates alignment information from memref.reinterpret_cast operations
+    through the LLVM conversion chain to llvm.load and llvm.store operations.
+  }];
+  let options = [
+    Option<"setMemrefAllocAlignment", "set-memref-alloc-alignment", "bool",
+           /*default=*/"false",
+           "Set alignment to 128 for all memref.alloc operations">,
+  ];
+  let constructor = "hexagon::createLLVMAlignmentPropagationPass()";
+}
+
+def SetAliasScopes : Pass<"set-alias-scopes", "func::FuncOp"> {
+  let summary = "Emit alias-scope metadata on LLVM-dialect memory ops";
+  let description = [{
+    For each llvm.load/llvm.store, traces the pointer operand backward through
+    the LLVM conversion chain to find the root buffer (a function argument or
+    alloca). Creates one alias scope per distinct root and stamps alias_scopes /
+    noalias_scopes on every memory op, enabling LLVM's alias analysis to prove
+    non-aliasing between different buffers.
+  }];
+  let constructor = "hexagon::createSetAliasScopesPass()";
+}
+
+def SpecializeTranscendentals : Pass<"specialize-transcendentals", "func::FuncOp"> {
+  let summary = "Identify transcendentals e.g. tanh within expanded IR";
+  let description = [{
+    This pass identifies transcendental math functions in their expanded
+    form in the IR, and replaces them with the math form so that later
+    passes can replace them easily with custom library implementation.
+
+    For instance, tanh(x) = (e^x - e^-x)/(e^x + e^-x), or more often
+                            (1 - exp(-2*x)) / (1 + exp(-2*x)).
+  }];
+  let constructor = "hexagon::createSpecializeTranscendentalsPass()";
+}
+
+def InjectHMXThreadIdArg : Pass<"inject-hmx-thread-id-arg", "func::FuncOp"> {
+  let summary = "Inject a trailing i32 thread-ID argument into every func.func";
+  let description = [{
+    Adds a trailing i32 thread-ID function argument (annotated with the
+    hmx.thread_id_arg function attribute) to every func.func.  This argument
+    is subsequently read by DecomposeHexKLMatmulToDaemonPass to route per-thread
+    HMX operations.
+
+    The pass is idempotent: re-running on an already-annotated function is a
+    no-op.
+
+    Must run before DecomposeHexKLMatmulToDaemonPass.
+  }];
+  let constructor = "mlir::hexagon::createInjectHMXThreadIdArgPass()";
+}
+
+def InjectHMXQueueArg : Pass<"inject-hmx-queue-arg", "func::FuncOp"> {
+  let summary = "Inject a trailing !llvm.ptr HMX-queue argument into every func.func";
+  let description = [{
+    Adds a trailing !llvm.ptr argument (annotated with the hmx.queue_arg
+    function attribute) to every func.func.  In the HMX-daemon model the
+    wrapper allocates one HMXQueue per kernel invocation and forwards the
+    pointer through this argument; DecomposeHexKLMatmulToDaemonPass uses it to
+    emit HMX dispatch / wait_idle calls.
+
+    The pass is idempotent: re-running on an already-annotated function is a
+    no-op.
+
+    Pass-order convention: runs AFTER InjectHMXThreadIdArg, so the resulting
+    layout is `(..., %tid: i32, %queue: !llvm.ptr)`.
+  }];
+  let constructor = "mlir::hexagon::createInjectHMXQueueArgPass()";
+}
+
+def InjectHMXVtcmBaseArg : Pass<"inject-hmx-vtcm-base-arg", "func::FuncOp"> {
+  let summary = "Inject a trailing memref<?xi8, 1> VTCM-base argument into "
+                "every func.func";
+  let description = [{
+    Adds a trailing memref<?xi8, 1> argument (annotated with the
+    hexkl_hmx.vtcm_base_arg function attribute) to every func.func.  In the HMX
+    micro-daemon model the wrapper acquires one shared VTCM region and forwards
+    its un-sliced base through this argument; DecomposeHexKLMatmulToDaemonPass
+    derives each worker's slice from it as `threadId * vtcmPerInstanceBytes`.
+
+    The element type and address space (i8, space 1) mirror the alloc type used
+    by DecomposeHexKLMatmulPass so both paths agree on the VTCM memref type.
+
+    The pass is idempotent: re-running on an already-annotated function is a
+    no-op.
+
+    Pass-order convention: runs AFTER InjectHMXThreadIdArg and BEFORE
+    InjectHMXQueueArg, so the resulting layout is
+    `(..., %tid: i32, %vtcm_base: memref<?xi8, 1>, %queue: !llvm.ptr)`.
+  }];
+  let constructor = "mlir::hexagon::createInjectHMXVtcmBaseArgPass()";
 }
 
 #endif

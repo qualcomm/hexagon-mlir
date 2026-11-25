@@ -21,7 +21,7 @@ index bc163b10f1..3d05d2bffb 100644
  
  def TritonLoopUnroll : Pass</*cli-arg*/"triton-loop-unroll", /*Op*/"mlir::ModuleOp"> {
 diff --git a/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp b/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
-index 30e6dac6f8..bee19f0b4a 100644
+index 30e6dac6f8..08a0072820 100644
 --- a/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
 +++ b/lib/Dialect/Triton/Transforms/RewriteTensorDescriptorToPointer.cpp
 @@ -218,6 +218,39 @@ Value generateMask(OpBuilder &builder, const Location &loc,
@@ -211,7 +211,7 @@ index 30e6dac6f8..bee19f0b4a 100644
    void runOnOperation() override {
      auto op = getOperation();
  
-@@ -605,10 +720,16 @@ class TritonRewriteTensorDescriptorToPointerPass
+@@ -605,10 +720,13 @@ class TritonRewriteTensorDescriptorToPointerPass
      mlir::scf::populateSCFStructuralTypeConversions(converter, patterns);
      triton::populateArithTypeConversions(converter, patterns);
  
@@ -224,11 +224,8 @@ index 30e6dac6f8..bee19f0b4a 100644
 +                                                              &getContext());
 +    patterns.add<RewriteLoadPattern>(converter, &getContext(),
 +                                     inboundsFastPath);
-+    // Store fast path disabled: an unmasked fast-path store can bufferize in
-+    // place into the escaping destination and corrupt the heap on boundary
-+    // tiles. TODO(ticket): re-enable with a conditional-safe store lowering.
 +    patterns.add<RewriteStorePattern>(converter, &getContext(),
-+                                      /*inboundsFastPath=*/false);
++                                      inboundsFastPath);
  
      ConversionConfig config;
      config.buildMaterializations = false;
@@ -248,7 +245,7 @@ index 9f10eebaa9..db8e1905ed 100644
    ADD_PASS_WRAPPER_0("add_triton_licm", createTritonLoopInvariantCodeMotion);
    ADD_PASS_WRAPPER_0("add_loop_aware_cse", createTritonLoopAwareCSE);
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
-index 0971a265db..e5d243cfe6 100644
+index 0971a265db..605b16d9fa 100644
 --- a/python/triton/language/semantic.py
 +++ b/python/triton/language/semantic.py
 @@ -1,5 +1,6 @@
@@ -475,10 +472,10 @@ index 0971a265db..e5d243cfe6 100644
                                                              padding)
 diff --git a/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir b/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir
 new file mode 100644
-index 0000000000..39c42e2fad
+index 0000000000..ae739db058
 --- /dev/null
 +++ b/test/Triton/rewrite-tensor-descriptor-to-pointer-boundary-check.mlir
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,197 @@
 +// RUN: triton-opt %s --triton-rewrite-tensor-descriptor-to-pointer=inbounds-fast-path=true --canonicalize --cse --split-input-file | FileCheck %s
 +
 +// =============================================================================
@@ -569,8 +566,8 @@ index 0000000000..39c42e2fad
 +// -----
 +
 +// =============================================================================
-+// Test: Store with provably in-bounds offsets. Stores never take the fast
-+// path, so this lowers to a single store with no scf.if.
++// Test: Store with provably in-bounds offsets. The in-bounds check folds to
++// true, so the fast path is selected statically: an unmasked store, no scf.if.
 +// =============================================================================
 +module {
 +  tt.func public @store_provably_inbounds(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: tensor<128x128xf32>) {
@@ -585,17 +582,19 @@ index 0000000000..39c42e2fad
 +}
 +
 +// CHECK-LABEL: @store_provably_inbounds
-+// Stores never take the fast path: no scf.if, a single store remains.
++// CHECK-SAME: %[[ARG0:[^:]*]]: !tt.ptr<f32>
++// CHECK-SAME: %[[ARG1:[^:]*]]: tensor<128x128xf32>
++// In-bounds check folds to true: fast path selected, unmasked store, no scf.if.
 +// CHECK-NOT: scf.if
-+// CHECK: tt.store
++// CHECK: tt.store {{.*}}, %[[ARG1]] : tensor<128x128x!tt.ptr<f32>>
 +// CHECK-NOT: scf.if
 +// CHECK: tt.return
 +
 +// -----
 +
 +// =============================================================================
-+// Test: Store with runtime offsets. Stores never take the fast path, so this
-+// lowers to a single masked store with no scf.if.
++// Test: Store with runtime offsets. The in-bounds check is dynamic, so an
++// scf.if selects an unmasked store (fast) or a masked store (slow).
 +// =============================================================================
 +module {
 +  tt.func public @store_runtime_offsets(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32, %arg3: tensor<128x128xf32>) {
@@ -609,10 +608,16 @@ index 0000000000..39c42e2fad
 +}
 +
 +// CHECK-LABEL: @store_runtime_offsets
-+// Stores never take the fast path: a single masked store, no scf.if.
-+// CHECK-NOT: scf.if
-+// CHECK: tt.store {{.*}}, %{{.*}}, {{.*}} : tensor<128x128x!tt.ptr<f32>>
-+// CHECK-NOT: scf.if
++// CHECK-SAME: %[[ARG0:[^:]*]]: !tt.ptr<f32>
++// CHECK-SAME: %[[ARG1:[^:]*]]: i32
++// CHECK-SAME: %[[ARG2:[^:]*]]: i32
++// CHECK-SAME: %[[ARG3:[^:]*]]: tensor<128x128xf32>
++// Runtime offsets: dynamic in-bounds check -> scf.if picks fast/slow store.
++// CHECK: scf.if %{{.*}} {
++// CHECK:   tt.store {{.*}}, %[[ARG3]] : tensor<128x128x!tt.ptr<f32>>
++// CHECK: } else {
++// CHECK:   tt.store {{.*}}, %[[ARG3]], {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK: }
 +// CHECK: tt.return
 +
 +// -----
@@ -669,7 +674,7 @@ index 0000000000..39c42e2fad
 +// CHECK-NOT: scf.if
 +// CHECK: tt.return
 diff --git a/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir b/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
-index 2580eaaeef..0fa0b3ec59 100644
+index 2580eaaeef..61e284aae6 100644
 --- a/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
 +++ b/test/Triton/rewrite-tensor-descriptor-to-pointer.mlir
 @@ -1,5 +1,8 @@
@@ -682,7 +687,7 @@ index 2580eaaeef..0fa0b3ec59 100644
  module {
    tt.func public @load(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32) -> (tensor<128x128xf32>) {
      %c1_i64 = arith.constant 1 : i64
-@@ -14,47 +17,42 @@ module {
+@@ -14,47 +17,43 @@ module {
  }
  
  // CHECK-LABEL: @load
@@ -758,12 +763,13 @@ index 2580eaaeef..0fa0b3ec59 100644
  
  // -----
  
-+// Test: descriptor_store never takes the in-bounds fast path (loads-only) —
-+// it always lowers to a single masked store, no scf.if.
++// Test: descriptor_store takes the same in-bounds fast path as loads — an
++// scf.if issues an unmasked store when the whole block is in bounds, and a
++// per-element masked store on the slow path.
  module {
    tt.func public @store(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32, %arg3: tensor<128x128xf32>) {
      %c1_i64 = arith.constant 1 : i64
-@@ -69,49 +67,23 @@ module {
+@@ -69,49 +68,42 @@ module {
  }
  
  // CHECK-LABEL: @store
@@ -809,10 +815,29 @@ index 2580eaaeef..0fa0b3ec59 100644
 +// CHECK-SAME: %[[ARG2:[^:]*]]: i32
 +// CHECK-SAME: %[[ARG3:[^:]*]]: tensor<128x128xf32>
 +
-+// Stores never take the in-bounds fast path: a single masked store, no scf.if.
-+// CHECK-NOT: scf.if
-+// CHECK: tt.store {{.*}}, %[[ARG3]], {{.*}} : tensor<128x128x!tt.ptr<f32>>
-+// CHECK-NOT: scf.if
++// Scalar in-bounds check for dim 0: offset0 >= 0 && offset0 + 127 < 256
++// CHECK-DAG: %[[C0:.*]] = arith.constant 0 : i64
++// CHECK-DAG: %[[C127:.*]] = arith.constant 127 : i64
++// CHECK-DAG: %[[C256:.*]] = arith.constant 256 : i64
++// CHECK-DAG: %[[OFF0:.*]] = arith.extsi %[[ARG1]] : i32 to i64
++// CHECK-DAG: %[[OFF1:.*]] = arith.extsi %[[ARG2]] : i32 to i64
++// CHECK-DAG: %[[GE0:.*]] = arith.cmpi sge, %[[OFF0]], %[[C0]] : i64
++// CHECK-DAG: %[[HI0:.*]] = arith.addi %[[OFF0]], %[[C127]] : i64
++// CHECK-DAG: %[[LT0:.*]] = arith.cmpi slt, %[[HI0]], %[[C256]] : i64
++// CHECK-DAG: %[[DIM0:.*]] = arith.andi %[[GE0]], %[[LT0]] : i1
++// Scalar in-bounds check for dim 1: offset1 >= 0 && offset1 + 127 < 256
++// CHECK-DAG: %[[GE1:.*]] = arith.cmpi sge, %[[OFF1]], %[[C0]] : i64
++// CHECK-DAG: %[[HI1:.*]] = arith.addi %[[OFF1]], %[[C127]] : i64
++// CHECK-DAG: %[[LT1:.*]] = arith.cmpi slt, %[[HI1]], %[[C256]] : i64
++// CHECK-DAG: %[[DIM1:.*]] = arith.andi %[[GE1]], %[[LT1]] : i1
++// CHECK-DAG: %[[INBOUNDS:.*]] = arith.andi %[[DIM0]], %[[DIM1]] : i1
++
++// Branch on in-bounds: fast path (unmasked store) vs slow path (masked store).
++// CHECK: scf.if %[[INBOUNDS]] {
++// CHECK:   tt.store {{.*}}, %[[ARG3]] : tensor<128x128x!tt.ptr<f32>>
++// CHECK: } else {
++// CHECK:   tt.store {{.*}}, %[[ARG3]], {{.*}} : tensor<128x128x!tt.ptr<f32>>
++// CHECK: }
 +// CHECK: tt.return
  
  // -----
@@ -826,7 +851,7 @@ index 2580eaaeef..0fa0b3ec59 100644
      tt.return %tensordesc : !tt.tensordesc<128x128xf32>
    }
  
-@@ -126,28 +98,20 @@ module {
+@@ -126,28 +118,20 @@ module {
  }
  
  // CHECK-LABEL: @callee
@@ -865,7 +890,7 @@ index 2580eaaeef..0fa0b3ec59 100644
  
  // -----
  
-@@ -158,4 +122,4 @@ module {
+@@ -158,4 +142,4 @@ module {
  }
  
  // CHECK-LABEL: @arg_attr

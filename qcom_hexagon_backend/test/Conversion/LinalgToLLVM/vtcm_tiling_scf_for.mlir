@@ -1,4 +1,18 @@
-// RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(vtcm-tiling),canonicalize,one-shot-bufferize{bufferize-function-boundaries allow-return-allocs-from-loops})' | FileCheck %s
+//===- vtcm_tiling_scf_for.mlir -------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
+// This op is a pure elementwise add, which VTCMTilingPass now skips staging
+// into VTCM by default (see [VTCMTiling] Skip VTCM staging for pure
+// elementwise generics). Force tiling via tile-size-override so this test
+// keeps exercising VTCM staging inside an scf.for with return-alloc-from-loop
+// bufferization, which is what this test actually verifies.
+// RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(vtcm-tiling{tile-size-override=32}),canonicalize,one-shot-bufferize{bufferize-function-boundaries allow-return-allocs-from-loops})' | FileCheck %s
 
 func.func @add_kernel() -> tensor<32xf32> {
   %cst = arith.constant 1.000000e+00 : f32
@@ -23,8 +37,9 @@ func.func @add_kernel() -> tensor<32xf32> {
 }
 
 // CHECK: %[[ALLOCDDR:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32>
+// Output is write-only (%out_3 never read in body), so no DDR->VTCM copy.
 // CHECK: %[[ALLOC_VTCM_OUT:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32, 1>
-// CHECK-NEXT: memref.copy %[[ALLOCDDR]], %[[ALLOC_VTCM_OUT]] : memref<32xf32> to memref<32xf32, 1>
+// CHECK-NOT: memref.copy %[[ALLOCDDR]], %[[ALLOC_VTCM_OUT]]
 // CHECK: linalg.fill ins({{.*}} : f32) outs(%[[ALLOCDDR]] : memref<32xf32>)
 // CHECK: %[[FOR:.+]] = scf.for {{.*}} iter_args(%arg1 = %[[ALLOCDDR]]) -> (memref<32xf32>)  : i32 {
 // CHECK:       %[[ALLOC_VTCM_INP:.+]] = memref.alloc() {alignment = 64 : i64} : memref<32xf32, 1>

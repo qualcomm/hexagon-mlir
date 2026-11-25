@@ -60,6 +60,19 @@ void init_triton_hexagon_translation(py::module &m) {
     return hexagon_backend::extractSingleFuncName(module_op);
   });
 
+  m.def("get_func_i64_attr", [](mlir::ModuleOp &module_op, std::string fName,
+                                std::string attrName, int64_t defaultValue) {
+    return hexagon_backend::getFuncI64Attr(module_op, fName, attrName,
+                                           defaultValue);
+  });
+
+  m.def("get_func_str_attr",
+        [](mlir::ModuleOp &module_op, std::string fName, std::string attrName,
+           std::string defaultValue) {
+          return hexagon_backend::getFuncStrAttr(module_op, fName, attrName,
+                                                 defaultValue);
+        });
+
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     hexagon_backend::loadDialects(context);
   });
@@ -93,6 +106,21 @@ void init_triton_hexagon_translation(py::module &m) {
           return hexagon_backend::reorderFuncArgsAndCallsTensorFirst(module_op,
                                                                      fName);
         });
+  m.def("rewrite_i64_ptr_args_to_i32", [](mlir::ModuleOp &module_op) {
+    return hexagon_backend::rewriteI64PtrArgsToI32(module_op);
+  });
+  m.def("add_eliminate_safe_boundary_checks", [](mlir::PassManager &pm) {
+    pm.addPass(hexagon_backend::createEliminateSafeBoundaryChecksPass());
+  });
+  m.def(
+      "add_rewrite_masked_access_to_inbounds_fast_path",
+      [](mlir::PassManager &pm) {
+        pm.addPass(
+            hexagon_backend::createRewriteMaskedAccessToInboundsFastPathPass());
+      });
+  m.def("run_lower_libdevice", [](mlir::ModuleOp &module_op) {
+    return hexagon_backend::runLowerLibdevice(module_op);
+  });
 
   m.def(
       "translate_linalg_to_obj",

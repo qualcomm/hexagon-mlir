@@ -1,3 +1,12 @@
+//===- pack_and_wrap_i8.mlir ----------------------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt %s -pass-pipeline='builtin.module(func.func(seed-layout-conversions))' | FileCheck %s
 
 // CHECK: func.func @test1(%[[ARG0:.+]]: tensor<1x56x56x128xf32>) -> tensor<1x56x56x256xf32> {

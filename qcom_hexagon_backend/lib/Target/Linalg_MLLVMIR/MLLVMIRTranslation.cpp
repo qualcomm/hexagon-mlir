@@ -40,6 +40,7 @@
 #include <dlfcn.h>
 #include <filesystem>
 #include <iterator>
+#include <string>
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
@@ -69,13 +70,23 @@ void setLinalgToLLVMOptions(
       !arch_kwargs.at("enableSCFThreading").compare(TRUE);
   options.enableMultiThreading =
       !arch_kwargs.at("enableMultiThreading").compare(TRUE);
+  options.numThreads = std::stoll(arch_kwargs.at("num_threads"));
   options.enableVTCMTiling = !arch_kwargs.at("enableVTCMTiling").compare(TRUE);
+  options.enablePromoteTiledSCFLoopToVTCM =
+      !arch_kwargs.at("enablePromoteTiledSCFLoopToVTCM").compare(TRUE);
+  options.enableVectorAccumulatorForReduction =
+      !arch_kwargs.at("enableVectorAccumulatorForReduction").compare(TRUE);
   options.scratch = std::stoll(arch_kwargs.at("scratch"));
   options.enableConvertToHexagonmem =
       !arch_kwargs.at("enableConvertToHexagonmem").compare(TRUE);
   options.enableHexagonmemCopyToDMA =
       !arch_kwargs.at("enableHexagonmemCopyToDMA").compare(TRUE);
   options.enableHexKL = !arch_kwargs.at("enableHexKL").compare(TRUE);
+  {
+    auto it2 = arch_kwargs.find("relaxFP32MatmulToFP16");
+    options.relaxFP32MatmulToFP16 =
+        (it2 != arch_kwargs.end()) && !it2->second.compare(TRUE);
+  }
   options.hexKLMode = arch_kwargs.at("hexKLMode");
   options.enableCollapseAddressSpace =
       !arch_kwargs.at("enableCollapseAddressSpace").compare(TRUE);
@@ -94,6 +105,18 @@ void setLinalgToLLVMOptions(
   options.disableLWPLoop = !arch_kwargs.at("disableLWPLoop").compare(TRUE);
   options.enableVectorization =
       !arch_kwargs.at("enableVectorization").compare(TRUE);
+  options.enablePackedGenericVectorization =
+      !arch_kwargs.at("enablePackedGenericVectorization").compare(TRUE);
+  {
+    auto it2 = arch_kwargs.find("enablePackedGenericLoopSplitting");
+    options.enablePackedGenericLoopSplitting =
+        (it2 == arch_kwargs.end()) || !it2->second.compare(TRUE);
+  }
+  {
+    auto it2 = arch_kwargs.find("enablePackedGenericEagerVectorization");
+    options.enablePackedGenericEagerVectorization =
+        (it2 != arch_kwargs.end()) && !it2->second.compare(TRUE);
+  }
   options.enableSplitReduceGeneric =
       !arch_kwargs.at("enableSplitReduceGeneric").compare(TRUE);
   auto it = arch_kwargs.find("device_type");
@@ -106,8 +129,42 @@ void setLinalgToLLVMOptions(
       !arch_kwargs.at("enableHVXInlining").compare(TRUE);
   options.enableSCFLoopUnroll =
       !arch_kwargs.at("enableSCFLoopUnroll").compare(TRUE);
+  it = arch_kwargs.find("enableUnrollAndJam");
+  options.enableUnrollAndJam =
+      (it != arch_kwargs.end()) && !it->second.compare(TRUE);
+  it = arch_kwargs.find("unrollAndJamFactor");
+  options.unrollAndJamFactor =
+      (it != arch_kwargs.end()) ? std::stoll(it->second) : 2;
+  options.enableFastExpApprox =
+      !arch_kwargs.at("enableFastExpApprox").compare(TRUE);
+  options.fastExpApproxDegree =
+      static_cast<unsigned>(std::stoi(arch_kwargs.at("fastExpApproxDegree")));
   options.enableConversionToFp16 =
       !arch_kwargs.at("enableConversionToFp16").compare(TRUE);
+  options.specializeKernelToArgAlignment =
+      !arch_kwargs.at("specializeKernelToArgAlignment").compare(TRUE);
+  options.enableSetAliasScopes =
+      !arch_kwargs.at("enableSetAliasScopes").compare(TRUE);
+  options.enableBroadcastedReductionToButterfly =
+      !arch_kwargs.at("enableBroadcastedReductionToButterfly").compare(TRUE);
+  options.enableCompositeOps =
+      !arch_kwargs.at("enableCompositeOps").compare(TRUE);
+  {
+    auto it2 = arch_kwargs.find("enableFastInverse");
+    options.enableFastInverse =
+        (it2 == arch_kwargs.end()) || !it2->second.compare(TRUE);
+  }
+  {
+    auto it2 = arch_kwargs.find("outlineLinalgGeneric");
+    options.outlineLinalgGeneric =
+        (it2 != arch_kwargs.end()) && !it2->second.compare(TRUE);
+  }
+  it = arch_kwargs.find("deallocAfterLastUse");
+  options.deallocAfterLastUse =
+      (it == arch_kwargs.end()) || !it->second.compare(TRUE);
+  it = arch_kwargs.find("deallocChunkBytes");
+  options.deallocChunkBytes =
+      (it != arch_kwargs.end()) ? std::stoll(it->second) : 0;
 }
 
 namespace mlir {
@@ -130,6 +187,10 @@ mlir::ModuleOp translateLinalgToLLVMMLIR(
   } else {
     printingFlags.elideLargeElementsAttrs(16);
   }
+
+  // If the op has a NameLoc location, use it as %prefix
+  printingFlags.printNameLocAsPrefix();
+
   // Print the IR after HexagonLWPPass if enabled for debug purpose
   pm.enableIRPrinting(
       /*shouldPrintBeforePass=*/nullptr,

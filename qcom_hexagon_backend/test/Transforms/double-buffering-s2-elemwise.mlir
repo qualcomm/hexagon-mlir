@@ -1,3 +1,12 @@
+//===- double-buffering-s2-elemwise.mlir ----------------------------------===//
+//
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause.
+// For more license information:
+//   https://github.com/qualcomm/hexagon-mlir/LICENSE.txt
+//
+//===----------------------------------------------------------------------===//
+
 // RUN: linalg-hexagon-opt -pass-pipeline='builtin.module(func.func(hexagon-double-buffer-generic-s2),cse,canonicalize)' %s | FileCheck %s
 
 // CHECK-LABEL: func.func @kernel
@@ -14,10 +23,14 @@
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C64:.*]] = arith.constant 64 : index
 //
+// Output buffer.
 // CHECK: %[[ALLOC:.*]] = memref.alloc() {alignment = 64 : i64} : memref<1024x2048xf32>
+//
+// Toggle bool.
 // CHECK: %[[TOGGLE:.*]] = memref.alloc() : memref<i1>
 // CHECK: memref.store %[[TRUE]], %[[TOGGLE]][] : memref<i1>
 //
+// Six VTCM ping/pong buffers (interleaved per input/output).
 // CHECK: %[[ALLOC_PING_0:.*]] = memref.alloc() {alignment = 2048 : i64} : memref<64x2048xf32, 1>
 // CHECK: %[[ALLOC_PONG_0:.*]] = memref.alloc() {alignment = 2048 : i64} : memref<64x2048xf32, 1>
 // CHECK: %[[ALLOC_PING_1:.*]] = memref.alloc() {alignment = 2048 : i64} : memref<64x2048xf32, 1>
@@ -25,19 +38,29 @@
 // CHECK: %[[ALLOC_PING_2:.*]] = memref.alloc() {alignment = 2048 : i64} : memref<64x2048xf32, 1>
 // CHECK: %[[ALLOC_PONG_2:.*]] = memref.alloc() {alignment = 2048 : i64} : memref<64x2048xf32, 1>
 //
+// Non-zero-loop predicate.
 // CHECK: %[[ALLOC_CMP:.*]] = memref.alloc() : memref<i1>
 // CHECK: memref.store %[[TRUE]], %[[ALLOC_CMP]][] : memref<i1>
 // CHECK: %[[NON_ZERO_LOOP:.*]] = memref.load %[[ALLOC_CMP]][] : memref<i1>
 //
-// CHECK: %[[PING_TAG_0:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[PONG_TAG_0:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[PING_TAG_1:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[PONG_TAG_1:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[PING_TAG_2:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[PONG_TAG_2:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[WRITEBACK_PING_TAG:.*]] = memref.alloc() : memref<1xi32>
-// CHECK: %[[WRITEBACK_PONG_TAG:.*]] = memref.alloc() : memref<1xi32>
+// Eight DMA tag buffers, now stack-allocated (was memref.alloc).
+// CHECK: %[[PING_TAG_0:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[PONG_TAG_0:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[PING_TAG_1:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[PONG_TAG_1:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[PING_TAG_2:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[PONG_TAG_2:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[WRITEBACK_PING_TAG:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[WRITEBACK_PONG_TAG:.*]] = memref.alloca() : memref<1xi32>
 //
+// Deferred store-wait flags: pongHasRun guards the deferred wait inside pong,
+// pingHasRun guards the deferred wait inside ping.  Both initialised false.
+// CHECK: %[[PONG_ISSUED:.*]] = memref.alloca() : memref<i1>
+// CHECK: %[[PING_ISSUED:.*]] = memref.alloca() : memref<i1>
+// CHECK: memref.store %[[FALSE]], %[[PONG_ISSUED]][] : memref<i1>
+// CHECK: memref.store %[[FALSE]], %[[PING_ISSUED]][] : memref<i1>
+//
+// Prologue: three DMA starts into the ping buffers.
 // CHECK: scf.if %[[NON_ZERO_LOOP]] {
 // CHECK:   %[[SV_PROLOGUE_0:.*]] = memref.subview %[[ARG0]][0, 0] [64, 2048] [1, 1]
 // CHECK:   memref.dma_start %[[SV_PROLOGUE_0]][%[[C0]], %[[C0]]], %[[ALLOC_PING_0]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_0]][%[[C0]]]
@@ -47,85 +70,106 @@
 // CHECK:   memref.dma_start %[[SV_PROLOGUE_2]][%[[C0]], %[[C0]]], %[[ALLOC_PING_2]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_2]][%[[C0]]]
 // CHECK: } {db_generic = 0 : i64, db_prologue}
 //
+// Main pipeline loop.
 // CHECK: scf.for %[[IV:.*]] = %[[C0]] to %[[C1024]] step %[[C64]] {
 // CHECK:   %[[IS_PING_STAGE:.*]] = memref.load %[[TOGGLE]][] : memref<i1>
 // CHECK:   %[[NEXT_IV:.*]] = arith.addi %[[IV]], %[[C64]] : index
 // CHECK:   %[[NEXT_NEXT_IV:.*]] = arith.addi %[[IV]], %[[C128]] : index
 // CHECK:   %[[IS_NOT_LAST_ITERATION:.*]] = arith.cmpi sle, %[[NEXT_NEXT_IV]], %[[C1024]] : index
+//
+// === Ping kernel ===
 // CHECK:   scf.if %[[IS_PING_STAGE]] {
+// Prefetch next iteration's pong buffers (no store-wait at start).
 // CHECK:     scf.if %[[IS_NOT_LAST_ITERATION]] {
-// CHECK:       %[[SV_PREFETCH_0:.*]] = memref.subview %[[ARG0]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_0]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_0]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_0]][%[[C0]]]
-// CHECK:       %[[SV_PREFETCH_1:.*]] = memref.subview %[[ARG1]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_1]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_1]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_1]][%[[C0]]]
-// CHECK:       %[[SV_PREFETCH_2:.*]] = memref.subview %[[ALLOC]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_2]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_2]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_2]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PONG_0:.*]] = memref.subview %[[ARG0]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PONG_0]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_0]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_0]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PONG_1:.*]] = memref.subview %[[ARG1]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PONG_1]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_1]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_1]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PONG_2:.*]] = memref.subview %[[ALLOC]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PONG_2]][%[[C0]], %[[C0]]], %[[ALLOC_PONG_2]][%[[C0]], %[[C0]]], %[[C131072]], %[[PONG_TAG_2]][%[[C0]]]
 // CHECK:     } {db_prefetch}
+// Wait for current ping inputs.
 // CHECK:     memref.dma_wait %[[PING_TAG_0]][%[[C0]]], %[[C131072]] : memref<1xi32>
 // CHECK:     memref.dma_wait %[[PING_TAG_1]][%[[C0]]], %[[C131072]] : memref<1xi32>
 // CHECK:     memref.dma_wait %[[PING_TAG_2]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// Compute.
 // CHECK:     scf.for %[[IV_I:.*]] = %[[C0]] to %[[C64]] step %[[C1]] {
 // CHECK:       scf.for %[[IV_J:.*]] = %[[C0]] to %[[C2048]] step %[[C32]] {
 // CHECK:         %[[SV_PING_0:.*]] = memref.subview %[[ALLOC_PING_0]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
 // CHECK:         %[[SV_PING_1:.*]] = memref.subview %[[ALLOC_PING_1]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
 // CHECK:         %[[SV_PING_2:.*]] = memref.subview %[[ALLOC_PING_2]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
-// CHECK:         %[[VEC_READ_0:.*]] = vector.transfer_read %[[SV_PING_0]][%[[C0]]], %[[CST]] {in_bounds = [true]}
-// CHECK-SAME:                             : memref<32xf32, strided<[1], offset: ?>, 1>, vector<32xf32>
-// CHECK:         %[[VEC_READ_1:.*]] = vector.transfer_read %[[SV_PING_1]][%[[C0]]], %[[CST]] {in_bounds = [true]}
-// CHECK-SAME:                             : memref<32xf32, strided<[1], offset: ?>, 1>, vector<32xf32>
-// CHECK:         %[[SUBF:.*]] = arith.subf %[[VEC_READ_0]], %[[VEC_READ_1]] fastmath<fast> : vector<32xf32>
+// CHECK:         %[[VR_0:.*]] = vector.transfer_read %[[SV_PING_0]][%[[C0]]], %[[CST]] {in_bounds = [true]}
+// CHECK:         %[[VR_1:.*]] = vector.transfer_read %[[SV_PING_1]][%[[C0]]], %[[CST]] {in_bounds = [true]}
+// CHECK:         %[[SUBF:.*]] = arith.subf %[[VR_0]], %[[VR_1]] fastmath<fast> : vector<32xf32>
 // CHECK:         %[[EXP:.*]] = math.exp %[[SUBF]] fastmath<fast> : vector<32xf32>
 // CHECK:         vector.transfer_write %[[EXP]], %[[SV_PING_2]][%[[C0]]] {in_bounds = [true]}
-// CHECK-SAME:                             : vector<32xf32>, memref<32xf32, strided<[1], offset: ?>, 1>
 // CHECK:       }
 // CHECK:     }
-// CHECK:     %[[SV_WRITEBACK:.*]] = memref.subview %[[ALLOC]][%[[IV]], 0] [64, 2048] [1, 1]
-// CHECK:     memref.dma_start %[[ALLOC_PING_2]][%[[C0]], %[[C0]]], %[[SV_WRITEBACK]][%[[C0]], %[[C0]]], %[[C131072]], %[[WRITEBACK_PING_TAG]][%[[C0]]]
-// CHECK:     memref.dma_wait %[[WRITEBACK_PING_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// Deferred ping store-wait just before ping reuses its store tag.
+// CHECK:     %[[SV_WRITEBACK_PING:.*]] = memref.subview %[[ALLOC]][%[[IV]], 0] [64, 2048] [1, 1]
+// CHECK:     %[[PING_HAS_ISSUED:.*]] = memref.load %[[PING_ISSUED]][] : memref<i1>
+// CHECK:     scf.if %[[PING_HAS_ISSUED]] {
+// CHECK:       memref.dma_wait %[[WRITEBACK_PING_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// CHECK:     }
+// Writeback (async DMA, drained at next ping iteration or epilogue).
+// CHECK:     memref.dma_start %[[ALLOC_PING_2]][%[[C0]], %[[C0]]], %[[SV_WRITEBACK_PING]][%[[C0]], %[[C0]]], %[[C131072]], %[[WRITEBACK_PING_TAG]][%[[C0]]]
 // CHECK:     memref.store %[[FALSE]], %[[TOGGLE]][] : memref<i1>
+// CHECK:     memref.store %[[TRUE]], %[[PING_ISSUED]][] : memref<i1>
 // CHECK:   } {db_ping_kernel}
+//
+// === Pong kernel ===
 // CHECK:   %[[IS_PONG_STAGE:.*]] = arith.xori %[[IS_PING_STAGE]], %[[TRUE]] : i1
 // CHECK:   scf.if %[[IS_PONG_STAGE]] {
+// Prefetch next iteration's ping buffers (no store-wait at start).
 // CHECK:     scf.if %[[IS_NOT_LAST_ITERATION]] {
-// CHECK:       %[[SV_PREFETCH_0:.*]] = memref.subview %[[ARG0]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_0]][%[[C0]], %[[C0]]], %[[ALLOC_PING_0]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_0]][%[[C0]]]
-// CHECK:       %[[SV_PREFETCH_1:.*]] = memref.subview %[[ARG1]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_1]][%[[C0]], %[[C0]]], %[[ALLOC_PING_1]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_1]][%[[C0]]]
-// CHECK:       %[[SV_PREFETCH_2:.*]] = memref.subview %[[ALLOC]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
-// CHECK:       memref.dma_start %[[SV_PREFETCH_2]][%[[C0]], %[[C0]]], %[[ALLOC_PING_2]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_2]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PING_0:.*]] = memref.subview %[[ARG0]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PING_0]][%[[C0]], %[[C0]]], %[[ALLOC_PING_0]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_0]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PING_1:.*]] = memref.subview %[[ARG1]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PING_1]][%[[C0]], %[[C0]]], %[[ALLOC_PING_1]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_1]][%[[C0]]]
+// CHECK:       %[[SV_PREFETCH_PING_2:.*]] = memref.subview %[[ALLOC]][%[[NEXT_IV]], 0] [64, 2048] [1, 1]
+// CHECK:       memref.dma_start %[[SV_PREFETCH_PING_2]][%[[C0]], %[[C0]]], %[[ALLOC_PING_2]][%[[C0]], %[[C0]]], %[[C131072]], %[[PING_TAG_2]][%[[C0]]]
 // CHECK:     } {db_prefetch}
+// Wait for current pong inputs.
 // CHECK:     memref.dma_wait %[[PONG_TAG_0]][%[[C0]]], %[[C131072]] : memref<1xi32>
 // CHECK:     memref.dma_wait %[[PONG_TAG_1]][%[[C0]]], %[[C131072]] : memref<1xi32>
 // CHECK:     memref.dma_wait %[[PONG_TAG_2]][%[[C0]]], %[[C131072]] : memref<1xi32>
-// CHECK:     scf.for %[[IV_I:.*]] = %[[C0]] to %[[C64]] step %[[C1]] {
-// CHECK:       scf.for %[[IV_J:.*]] = %[[C0]] to %[[C2048]] step %[[C32]] {
-// CHECK:         %[[SV_PONG_0:.*]] = memref.subview %[[ALLOC_PONG_0]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
-// CHECK:         %[[SV_PONG_1:.*]] = memref.subview %[[ALLOC_PONG_1]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
-// CHECK:         %[[SV_PONG_2:.*]] = memref.subview %[[ALLOC_PONG_2]][%[[IV_I]], %[[IV_J]]] [1, 32] [1, 1]
-// CHECK:         %[[VEC_READ_0:.*]] = vector.transfer_read %[[SV_PONG_0]][%[[C0]]], %[[CST]] {in_bounds = [true]}
-// CHECK-SAME:                             : memref<32xf32, strided<[1], offset: ?>, 1>, vector<32xf32>
-// CHECK:         %[[VEC_READ_1:.*]] = vector.transfer_read %[[SV_PONG_1]][%[[C0]]], %[[CST]] {in_bounds = [true]}
-// CHECK-SAME:                             : memref<32xf32, strided<[1], offset: ?>, 1>, vector<32xf32>
-// CHECK:         %[[SUBF:.*]] = arith.subf %[[VEC_READ_0]], %[[VEC_READ_1]] fastmath<fast> : vector<32xf32>
-// CHECK:         %[[EXP:.*]] = math.exp %[[SUBF]] fastmath<fast> : vector<32xf32>
-// CHECK:         vector.transfer_write %[[EXP]], %[[SV_PONG_2]][%[[C0]]] {in_bounds = [true]}
-// CHECK-SAME:                            : vector<32xf32>, memref<32xf32, strided<[1], offset: ?>, 1>
+// Compute.
+// CHECK:     scf.for %{{.*}} = %[[C0]] to %[[C64]] step %[[C1]] {
+// CHECK:       scf.for %{{.*}} = %[[C0]] to %[[C2048]] step %[[C32]] {
+// CHECK:         %[[SV_PONG_0:.*]] = memref.subview %[[ALLOC_PONG_0]]
+// CHECK:         %[[SV_PONG_1:.*]] = memref.subview %[[ALLOC_PONG_1]]
+// CHECK:         %[[SV_PONG_2:.*]] = memref.subview %[[ALLOC_PONG_2]]
+// CHECK:         vector.transfer_read %[[SV_PONG_0]]
+// CHECK:         vector.transfer_read %[[SV_PONG_1]]
+// CHECK:         arith.subf
+// CHECK:         math.exp
+// CHECK:         vector.transfer_write %{{.*}}, %[[SV_PONG_2]]
 // CHECK:       }
 // CHECK:     }
-// CHECK:     %[[SV_WRITEBACK:.*]] = memref.subview %[[ALLOC]][%[[IV]], 0] [64, 2048] [1, 1]
-// CHECK:     memref.dma_start %[[ALLOC_PONG_2]][%[[C0]], %[[C0]]], %[[SV_WRITEBACK]][%[[C0]], %[[C0]]], %[[C131072]], %[[WRITEBACK_PONG_TAG]][%[[C0]]]
-// CHECK:     memref.dma_wait %[[WRITEBACK_PONG_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// Deferred pong store-wait just before pong reuses its store tag.
+// CHECK:     %[[SV_WRITEBACK_PONG:.*]] = memref.subview %[[ALLOC]][%[[IV]], 0] [64, 2048] [1, 1]
+// CHECK:     %[[PONG_HAS_ISSUED:.*]] = memref.load %[[PONG_ISSUED]][] : memref<i1>
+// CHECK:     scf.if %[[PONG_HAS_ISSUED]] {
+// CHECK:       memref.dma_wait %[[WRITEBACK_PONG_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// CHECK:     }
+// Writeback.
+// CHECK:     memref.dma_start %[[ALLOC_PONG_2]][%[[C0]], %[[C0]]], %[[SV_WRITEBACK_PONG]][%[[C0]], %[[C0]]], %[[C131072]], %[[WRITEBACK_PONG_TAG]][%[[C0]]]
 // CHECK:     memref.store %[[TRUE]], %[[TOGGLE]][] : memref<i1>
+// CHECK:     memref.store %[[TRUE]], %[[PONG_ISSUED]][] : memref<i1>
 // CHECK:   } {db_pong_kernel}
 // CHECK: } {db_generic = 0 : i64}
-// CHECK: memref.dealloc %[[PING_TAG_0]] : memref<1xi32>
-// CHECK: memref.dealloc %[[PONG_TAG_0]] : memref<1xi32>
-// CHECK: memref.dealloc %[[PING_TAG_1]] : memref<1xi32>
-// CHECK: memref.dealloc %[[PONG_TAG_1]] : memref<1xi32>
-// CHECK: memref.dealloc %[[PING_TAG_2]] : memref<1xi32>
-// CHECK: memref.dealloc %[[PONG_TAG_2]] : memref<1xi32>
-// CHECK: memref.dealloc %[[WRITEBACK_PING_TAG]] : memref<1xi32>
-// CHECK: memref.dealloc %[[WRITEBACK_PONG_TAG]] : memref<1xi32>
+//
+// Epilogue: drain whichever writeback DMA is still outstanding.
+// CHECK: %[[FINAL_TOGGLE:.*]] = memref.load %[[TOGGLE]][] : memref<i1>
+// CHECK: %[[FINAL_PONG:.*]] = memref.load %[[PONG_ISSUED]][] : memref<i1>
+// CHECK: %[[NEED_DRAIN_PING:.*]] = arith.xori %[[FINAL_TOGGLE]], %[[TRUE]] : i1
+// CHECK: %[[NEED_DRAIN_PONG:.*]] = arith.andi %[[FINAL_TOGGLE]], %[[FINAL_PONG]] : i1
+// CHECK: scf.if %[[NEED_DRAIN_PING]] {
+// CHECK:   memref.dma_wait %[[WRITEBACK_PING_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// CHECK: }
+// CHECK: scf.if %[[NEED_DRAIN_PONG]] {
+// CHECK:   memref.dma_wait %[[WRITEBACK_PONG_TAG]][%[[C0]]], %[[C131072]] : memref<1xi32>
+// CHECK: }
 // CHECK: memref.copy %[[ALLOC]], %[[ARG2]]
 // CHECK: return
 

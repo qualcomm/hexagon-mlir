@@ -1,0 +1,12 @@
+{
+  "enable_vtcm_tiling": [true, false],
+  "enable_hvx_inlining": [true, false],
+  "enable_double_buffering": [true, false],
+  "enable_multi_threading": [true, false],
+  "enable_broadcasted_reduction_to_butterfly": [true, false],
+  "fusion_elementwise_only": [true, false],
+  "enable_convert_to_hexagonmem": [true, false],
+  "enableHexagonmemCopyToDMA": [true, false],
+  "enable_hexkl": true,
+  "relax_fp32_matmul_to_fp16": [true, false]
+}

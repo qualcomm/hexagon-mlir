@@ -1,0 +1,10 @@
+# Python >=3.12; jax and jaxlib 0.12.0.1 require it.
+torch-xla==2.9.0
+torch==2.9.0
+jax==0.12.0.1
+jaxlib==0.12.0.1
+# Public release compatible with the checkpoint's Gemma3TextModel config.
+transformers==4.57.6
+safetensors==0.8.0
+# Required by AutoModel.from_pretrained(device_map="auto").
+accelerate==1.16.0
