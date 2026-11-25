@@ -162,11 +162,10 @@ struct HoistPartialFillPattern final : public OpRewritePattern<linalg::FillOp> {
     auto allocType = cast<MemRefType>(allocOp->getResult(0).getType());
     if (!allocType.hasStaticShape())
       return failure();
-    auto allocShape = allocType.getShape();
-    if (allocShape.size() != 1)
+    if (allocType.getRank() != 1)
       return failure();
 
-    int64_t N = allocShape[0];
+    int64_t N = allocType.getShape()[0]; // nosemgrep: reusable-workflows.semgrep_rules.cxx.rabv.check.array-access-before-reject-bounds-check,reusable-workflows.semgrep_rules.cxx.rabv.check.array-access-before-allow-bounds-check
 
     Block *fillBlock = fillOp->getBlock();
     if (allocOp->getBlock() == fillBlock)

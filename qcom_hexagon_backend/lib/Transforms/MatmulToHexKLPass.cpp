@@ -312,14 +312,12 @@ struct MatmulToHexKL final : public OpRewritePattern<linalg::MatmulOp> {
 
     auto [A, B, C] = *check;
 
-    auto aShape = A.getType().getShape();
-    auto bShape = B.getType().getShape();
-    if (aShape.size() < 2 || bShape.size() < 2)
+    if (A.getType().getRank() < 2 || B.getType().getRank() < 2)
       return failure();
 
-    int64_t M = aShape[0];
-    int64_t K = aShape[1];
-    int64_t N = bShape[1];
+    int64_t M = A.getType().getShape()[0]; // nosemgrep: reusable-workflows.semgrep_rules.cxx.rabv.check.array-access-before-reject-bounds-check,reusable-workflows.semgrep_rules.cxx.rabv.check.array-access-before-allow-bounds-check
+    int64_t K = A.getType().getShape()[1];
+    int64_t N = B.getType().getShape()[1];
 
     // The u8i8 weight-layout API processes complete K=32 blocks and has no
     // K-bound argument for zero-padding a tail tile.
